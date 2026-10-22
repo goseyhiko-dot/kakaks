@@ -3799,6 +3799,12 @@ _G.PRISONRP_HUB_RIGHTSHIFT_CONNECTION = game:GetService("UserInputService").Inpu
 end)
 
 _G.CombinedHubCleanup = function()
+    -- Arrête aussi le module Auto Purple intégré avant UNLOAD/rechargement.
+    pcall(function()
+        if type(_G.PRISONRP_AUTO_PURPLE_STOP) == "function" then
+            _G.PRISONRP_AUTO_PURPLE_STOP()
+        end
+    end)
     -- Coupe immédiatement les boucles principales du hub.
     running = false
     pcall(function()
@@ -14090,3 +14096,463 @@ pcall(function()
         ScreenGui.Enabled = true
     end
 end)
+
+--==============================================================
+-- AUTO PURPLE BASKETBALL — intégré dans AUTRES, sans interface séparée
+-- Détecte la petite cible Purple, aligne visuellement le curseur et relâche
+-- l'entrée de souris normale afin de laisser le jeu gérer l'animation du tir.
+--==============================================================
+do
+    -- Nettoyer une éventuelle ancienne interface standalone AutoPurple.
+    pcall(function()
+        local old = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        old = old and old:FindFirstChild("AutoPurpleUI")
+        if old then old:Destroy() end
+    end)
+    pcall(function()
+        if type(gethui) == "function" then
+            local holder = gethui()
+            local old = holder and holder:FindFirstChild("AutoPurpleUI")
+            if old then old:Destroy() end
+        end
+    end)
+
+    -- Si le hub est relancé, couper proprement l'ancienne instance du module.
+    pcall(function()
+        if type(_G.PRISONRP_AUTO_PURPLE_STOP) == "function" then
+            _G.PRISONRP_AUTO_PURPLE_STOP()
+        end
+    end)
+
+    local hubFrame = MainFrame
+    local autresPageRef = nil
+    if hubFrame then
+        autresPageRef = hubFrame:FindFirstChild("OmegaAutresPage", true)
+    end
+
+    if not autresPageRef then
+        warn("[AutoPurple] Page AUTRES introuvable ; module non ajouté.")
+    else
+        local previousButton = autresPageRef:FindFirstChild("PRISONRP_AutoPurpleToggle")
+        if previousButton then previousButton:Destroy() end
+        local previousStatus = autresPageRef:FindFirstChild("PRISONRP_AutoPurpleStatus")
+        if previousStatus then previousStatus:Destroy() end
+
+        local enabled = false
+        local wasVisible = false
+        local released = false
+        local visualLocked = false
+        local previousDelta = nil
+        local renderConnection = nil
+        local stopped = false
+
+        -- Carte Auto Purple : même format que les options à switch du hub,
+        -- texte centré et carte interactive au survol comme au clic.
+        local AutoPurpleButton = Instance.new("TextButton")
+        AutoPurpleButton.Name = "PRISONRP_AutoPurpleToggle"
+        AutoPurpleButton.Size = UDim2.new(1, -213, 0, 38)
+        AutoPurpleButton.Position = UDim2.fromOffset(0, 230)
+        AutoPurpleButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        AutoPurpleButton.BorderSizePixel = 0
+        AutoPurpleButton.Text = ""
+        AutoPurpleButton.AutoButtonColor = false
+        AutoPurpleButton.Active = true
+        AutoPurpleButton.Selectable = true
+        AutoPurpleButton.ZIndex = (autresPageRef.ZIndex or 1) + 2
+        AutoPurpleButton.Parent = autresPageRef
+
+        local buttonCorner = Instance.new("UICorner")
+        buttonCorner.CornerRadius = UDim.new(0, 7)
+        buttonCorner.Parent = AutoPurpleButton
+
+        -- Même contour temporaire que les autres boutons du hub :
+        -- invisible au repos, accent bleu au survol, plus épais à l'appui.
+        local buttonStroke = Instance.new("UIStroke")
+        buttonStroke.Name = "PRISONRP_UXHoverStroke"
+        buttonStroke.Color = Color3.fromRGB(79, 142, 255)
+        buttonStroke.Transparency = 1
+        buttonStroke.Thickness = 1.4
+        buttonStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        buttonStroke.Parent = AutoPurpleButton
+
+        local AutoPurpleTitle = Instance.new("TextLabel")
+        AutoPurpleTitle.Name = "Title"
+        -- Centrage horizontal sur toute la carte, comme les autres cases du hub.
+        AutoPurpleTitle.Size = UDim2.new(1, 0, 1, 0)
+        AutoPurpleTitle.Position = UDim2.fromOffset(0, 0)
+        AutoPurpleTitle.BackgroundTransparency = 1
+        AutoPurpleTitle.BorderSizePixel = 0
+        AutoPurpleTitle.Text = "🏀  AUTO PURPLE"
+        AutoPurpleTitle.TextColor3 = Color3.fromRGB(236, 240, 248)
+        AutoPurpleTitle.TextSize = 15
+        AutoPurpleTitle.Font = Enum.Font.GothamBold
+        AutoPurpleTitle.TextXAlignment = Enum.TextXAlignment.Center
+        AutoPurpleTitle.TextYAlignment = Enum.TextYAlignment.Center
+        AutoPurpleTitle.ZIndex = AutoPurpleButton.ZIndex + 1
+        AutoPurpleTitle.Parent = AutoPurpleButton
+
+        -- Vrai bouton comme les switches fonctionnels du hub (WalkSpeed, etc.).
+        local AutoPurpleSwitch = Instance.new("TextButton")
+        AutoPurpleSwitch.Name = "GDPCheckbox"
+        AutoPurpleSwitch.Size = UDim2.fromOffset(42, 22)
+        AutoPurpleSwitch.Position = UDim2.new(1, -52, 0.5, -11)
+        AutoPurpleSwitch.BackgroundColor3 = Color3.fromRGB(70, 76, 88)
+        AutoPurpleSwitch.BorderSizePixel = 0
+        AutoPurpleSwitch.Text = ""
+        AutoPurpleSwitch.AutoButtonColor = false
+        AutoPurpleSwitch.Active = true
+        AutoPurpleSwitch.Selectable = true
+        AutoPurpleSwitch.ZIndex = AutoPurpleButton.ZIndex + 2
+        AutoPurpleSwitch.Parent = AutoPurpleButton
+
+        local switchCorner = Instance.new("UICorner")
+        switchCorner.CornerRadius = UDim.new(1, 0)
+        switchCorner.Parent = AutoPurpleSwitch
+
+        local switchStroke = Instance.new("UIStroke")
+        switchStroke.Name = "SwitchBorder"
+        switchStroke.Color = Color3.fromRGB(48, 57, 72)
+        switchStroke.Transparency = 0.18
+        switchStroke.Thickness = 1
+        switchStroke.Parent = AutoPurpleSwitch
+
+        local AutoPurpleKnob = Instance.new("Frame")
+        AutoPurpleKnob.Name = "Knob"
+        AutoPurpleKnob.Size = UDim2.fromOffset(16, 16)
+        AutoPurpleKnob.Position = UDim2.fromOffset(3, 3)
+        AutoPurpleKnob.BackgroundColor3 = Color3.fromRGB(245, 247, 251)
+        AutoPurpleKnob.BorderSizePixel = 0
+        AutoPurpleKnob.ZIndex = AutoPurpleSwitch.ZIndex + 1
+        AutoPurpleKnob.Parent = AutoPurpleSwitch
+
+        local knobCorner = Instance.new("UICorner")
+        knobCorner.CornerRadius = UDim.new(1, 0)
+        knobCorner.Parent = AutoPurpleKnob
+
+        local AutoPurpleStatus = Instance.new("TextLabel")
+        AutoPurpleStatus.Name = "PRISONRP_AutoPurpleStatus"
+        AutoPurpleStatus.Size = UDim2.new(1, -213, 0, 18)
+        AutoPurpleStatus.Position = UDim2.fromOffset(0, 271)
+        AutoPurpleStatus.BackgroundTransparency = 1
+        AutoPurpleStatus.BorderSizePixel = 0
+        AutoPurpleStatus.Text = "Basketball : en attente"
+        AutoPurpleStatus.TextColor3 = Color3.fromRGB(145, 155, 172)
+        AutoPurpleStatus.TextSize = 9
+        AutoPurpleStatus.Font = Enum.Font.GothamMedium
+        AutoPurpleStatus.TextXAlignment = Enum.TextXAlignment.Center
+        AutoPurpleStatus.TextYAlignment = Enum.TextYAlignment.Center
+        AutoPurpleStatus.ZIndex = (autresPageRef.ZIndex or 1) + 2
+        AutoPurpleStatus.Parent = autresPageRef
+
+        local TweenService = game:GetService("TweenService")
+        local switchTweenInfo = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        local colorTweenInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local knobTween = nil
+        local switchColorTween = nil
+
+        local function updateButton(animated)
+            local targetPosition = enabled
+                and UDim2.new(1, -19, 0, 3)
+                or UDim2.fromOffset(3, 3)
+            local targetColor = enabled
+                and Color3.fromRGB(40, 150, 80)
+                or Color3.fromRGB(70, 76, 88)
+
+            if knobTween then pcall(function() knobTween:Cancel() end) end
+            if switchColorTween then pcall(function() switchColorTween:Cancel() end) end
+
+            if animated then
+                knobTween = TweenService:Create(AutoPurpleKnob, switchTweenInfo, {
+                    Position = targetPosition
+                })
+                switchColorTween = TweenService:Create(AutoPurpleSwitch, colorTweenInfo, {
+                    BackgroundColor3 = targetColor
+                })
+                knobTween:Play()
+                switchColorTween:Play()
+            else
+                AutoPurpleKnob.Position = targetPosition
+                AutoPurpleSwitch.BackgroundColor3 = targetColor
+            end
+        end
+
+        local function guiObjectVisible(obj)
+            local current = obj
+            while current do
+                if current:IsA("GuiObject") and not current.Visible then
+                    return false
+                end
+                if current:IsA("ScreenGui") and not current.Enabled then
+                    return false
+                end
+                current = current.Parent
+            end
+            return true
+        end
+
+        local function snapCursorToPurple(cursor, purple)
+            local parentFrame = cursor.Parent
+            if not parentFrame then return end
+
+            local targetCenter = purple.AbsolutePosition.Y + purple.AbsoluteSize.Y / 2
+            local targetTop = targetCenter - cursor.AbsoluteSize.Y / 2
+            local relativeY = targetTop - parentFrame.AbsolutePosition.Y
+                + cursor.AnchorPoint.Y * cursor.AbsoluteSize.Y
+
+            -- Conserver les composantes X de la position du curseur.
+            cursor.Position = UDim2.new(
+                cursor.Position.X.Scale,
+                cursor.Position.X.Offset,
+                0,
+                relativeY
+            )
+        end
+
+        local function getMeterParts()
+            local playerGuiRef = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+            local basketballGui = playerGuiRef and playerGuiRef:FindFirstChild("BasketballGui")
+            local meter = basketballGui and basketballGui:FindFirstChild("Meter")
+            local cursor = meter and meter:FindFirstChild("Cursor")
+            local green = meter and meter:FindFirstChild("Green")
+            local yellow = green and green:FindFirstChild("Yellow")
+            local purple = yellow and yellow:FindFirstChild("Purple")
+            return meter, cursor, purple
+        end
+
+        local function stopAutoPurple(removeControls)
+            enabled = false
+            stopped = true
+            if renderConnection then
+                pcall(function() renderConnection:Disconnect() end)
+                renderConnection = nil
+            end
+            visualLocked = false
+            wasVisible = false
+            released = false
+            previousDelta = nil
+            if AutoPurpleButton and AutoPurpleButton.Parent then
+                updateButton()
+            end
+            if removeControls then
+                pcall(function() AutoPurpleButton:Destroy() end)
+                pcall(function() AutoPurpleStatus:Destroy() end)
+            elseif AutoPurpleStatus and AutoPurpleStatus.Parent then
+                AutoPurpleStatus.Text = "Auto Purple arrêté"
+            end
+        end
+
+        _G.PRISONRP_AUTO_PURPLE_STOP = function()
+            stopAutoPurple(true)
+            _G.PRISONRP_AUTO_PURPLE_STOP = nil
+        end
+
+        local function startMonitor()
+            if renderConnection then
+                pcall(function() renderConnection:Disconnect() end)
+                renderConnection = nil
+            end
+            stopped = false
+
+            renderConnection = RunService.RenderStepped:Connect(function()
+                if stopped or not enabled then return end
+
+                local meter, cursor, purple = getMeterParts()
+                if not meter or not cursor or not purple then
+                    AutoPurpleStatus.Text = "BasketballGui.Meter introuvable"
+                    return
+                end
+
+                local active = guiObjectVisible(meter)
+                    and guiObjectVisible(cursor)
+                    and guiObjectVisible(purple)
+                    and cursor.AbsoluteSize.Y > 0
+                    and purple.AbsoluteSize.Y > 0
+
+                if not active then
+                    if wasVisible then
+                        released = false
+                        visualLocked = false
+                        previousDelta = nil
+                        AutoPurpleStatus.Text = "Prêt pour le prochain tir"
+                    end
+                    wasVisible = false
+                    return
+                end
+
+                if not wasVisible then
+                    released = false
+                    visualLocked = false
+                    previousDelta = nil
+                    AutoPurpleStatus.Text = "Barre détectée"
+                end
+                wasVisible = true
+
+                -- Maintenir l'affichage sur Purple jusqu'à la disparition de la barre.
+                if visualLocked then
+                    snapCursorToPurple(cursor, purple)
+                    return
+                end
+
+                local cursorPos = cursor.AbsolutePosition
+                local cursorSize = cursor.AbsoluteSize
+                local purplePos = purple.AbsolutePosition
+                local purpleSize = purple.AbsoluteSize
+                local cursorCenter = cursorPos.Y + cursorSize.Y / 2
+                local purpleCenter = purplePos.Y + purpleSize.Y / 2
+                local delta = cursorCenter - purpleCenter
+
+                -- Le curseur doit traverser le CENTRE de la cible Purple.
+                -- Ne pas utiliser le simple chevauchement des bords : le curseur
+                -- fait 4 px et peut toucher la cible alors que son centre est encore
+                -- dans la zone jaune.
+                local crossedPurpleCenter = previousDelta ~= nil
+                    and previousDelta > 0
+                    and delta <= 0
+
+                if not released and crossedPurpleCenter then
+                    if type(mouse1release) ~= "function" then
+                        released = true
+                        AutoPurpleStatus.Text = "Relâchement indisponible"
+                        warn("[AutoPurple] mouse1release() n'est pas disponible dans cet exécuteur.")
+                        return
+                    end
+
+                    -- Aligner l'affichage avant de laisser l'entrée normale déclencher le tir.
+                    snapCursorToPurple(cursor, purple)
+                    visualLocked = true
+                    released = true
+
+                    local ok, err = pcall(function()
+                        mouse1release()
+                    end)
+
+                    if ok then
+                        AutoPurpleStatus.Text = "Purple — clic relâché"
+                        print("[AutoPurple] Cible détectée ; relâchement normal déclenché.")
+                    else
+                        AutoPurpleStatus.Text = "Erreur de relâchement"
+                        warn("[AutoPurple] Échec de mouse1release():", err)
+                    end
+                    return
+                end
+
+                previousDelta = delta
+            end)
+        end
+
+        -- Animation de survol IDENTIQUE au style UX global du hub :
+        -- la carte ne change pas de fond, seul le contour bleu apparaît.
+        local TweenService = game:GetService("TweenService")
+        local cardTweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local cardHovered = false
+        local cardPressed = false
+        local activeCardTween = nil
+        local lastToggleAt = 0
+
+        local function applyCardStroke(transparency, thickness, duration)
+            if not buttonStroke or not buttonStroke.Parent then return end
+            if activeCardTween then
+                pcall(function() activeCardTween:Cancel() end)
+                activeCardTween = nil
+            end
+            activeCardTween = TweenService:Create(
+                buttonStroke,
+                TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                {
+                    Color = Color3.fromRGB(79, 142, 255),
+                    Transparency = transparency,
+                    Thickness = thickness,
+                }
+            )
+            activeCardTween:Play()
+        end
+
+        local function refreshCardStroke()
+            if cardPressed then
+                applyCardStroke(0.02, 2, 0.06)
+            elseif cardHovered then
+                applyCardStroke(0.08, 1.5, 0.11)
+            else
+                applyCardStroke(1, 1.4, 0.13)
+            end
+        end
+
+        AutoPurpleButton.MouseEnter:Connect(function()
+            cardHovered = true
+            refreshCardStroke()
+        end)
+        AutoPurpleButton.MouseLeave:Connect(function()
+            cardHovered = false
+            cardPressed = false
+            refreshCardStroke()
+        end)
+        AutoPurpleButton.MouseButton1Down:Connect(function()
+            cardPressed = true
+            refreshCardStroke()
+        end)
+        AutoPurpleButton.MouseButton1Up:Connect(function()
+            cardPressed = false
+            refreshCardStroke()
+        end)
+
+        local function toggleAutoPurple()
+            -- Empêche un même clic d'être compté deux fois si l'événement de la
+            -- carte et celui de l'interrupteur arrivent dans la même frame.
+            local now = os.clock()
+            if now - lastToggleAt < 0.18 then return end
+            lastToggleAt = now
+
+            enabled = not enabled
+            updateButton(true)
+            refreshCardStroke()
+
+            if enabled then
+                AutoPurpleStatus.Text = "Surveillance activée"
+                startMonitor()
+            else
+                AutoPurpleStatus.Text = "Auto Purple désactivé"
+                visualLocked = false
+                wasVisible = false
+                released = false
+                previousDelta = nil
+                if renderConnection then
+                    pcall(function() renderConnection:Disconnect() end)
+                    renderConnection = nil
+                end
+            end
+        end
+
+        -- Clic sur le switch OU sur la carte entière.
+        AutoPurpleSwitch.Activated:Connect(toggleAutoPurple)
+        AutoPurpleButton.Activated:Connect(toggleAutoPurple)
+
+        -- Petit effet de survol également sur l'interrupteur lui-même.
+        AutoPurpleSwitch.MouseEnter:Connect(function()
+            local hoverColor = enabled
+                and Color3.fromRGB(55, 175, 98)
+                or Color3.fromRGB(89, 97, 114)
+            pcall(function()
+                TweenService:Create(AutoPurpleSwitch, cardTweenInfo, {
+                    BackgroundColor3 = hoverColor
+                }):Play()
+                TweenService:Create(switchStroke, cardTweenInfo, {
+                    Transparency = 0.05
+                }):Play()
+            end)
+        end)
+        AutoPurpleSwitch.MouseLeave:Connect(function()
+            updateButton(true)
+            pcall(function()
+                TweenService:Create(switchStroke, cardTweenInfo, {
+                    Transparency = 0.18
+                }):Play()
+            end)
+        end)
+
+        updateButton(false)
+        refreshCardStroke()
+
+        print("[AutoPurple] Ajouté dans AUTRES, sans interface séparée.")
+    end
+end
+
