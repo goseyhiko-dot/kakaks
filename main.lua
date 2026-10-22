@@ -1,3 +1,4 @@
+-- V4 : Auto Eat/Drink différé après récupération de pêche ; blocage avec outil actif et jauge basketball visible.
 -- V215 | Renommage persistant des 5 sauvegardes dans Paramètres.
 -- V214 | Aimbot : suppression du raccourci clavier et du texte d’aide, contrôles remontés. Base V213.
 -- V218 | Mode réduit sans chevauchement de texte ; angles plus arrondis. Base V217.
@@ -13,6 +14,13 @@
 -- V186 : préserver la vraie vitesse avant le nettoyage de l'ancienne version.
 -- Les anciennes versions pouvaient remettre WalkSpeed à 16 pendant leur unload,
 -- ce qui contaminait ensuite la "vitesse normale" mémorisée par la nouvelle version.
+-- Chaque exécution possède son propre drapeau : un rechargement ne doit pas
+-- réactiver les boucles de l'ancienne exécution en remettant running à true.
+local running = false
+if _G.CombinedHubLoaded == true then
+    _G.running = false -- arrête aussi les anciennes versions qui utilisaient la globale
+end
+
 local __PRISONRP_PreviousHumanoidWalkSpeed = nil
 pcall(function()
     local __player = game:GetService("Players").LocalPlayer
@@ -95,6 +103,11 @@ AutoEatDrinkEnabled = false
 AutoEatDrinkBusy = false
 AutoEatDrinkThreadRunning = true
 AutoEatDrinkWasPushupActive = false
+-- Une action de consommation reste en attente tant que le joueur utilise un outil
+-- ou que l'Auto-Pêche n'a pas terminé la récupération du poisson.
+local AutoEatDrinkPending = false
+local AutoEatDrinkNextTryAt = 0
+local AutoFishingCatchWindow = false
 AUTO_EAT_DRINK_THRESHOLD = 50
 AUTO_EAT_DRINK_CHECK_INTERVAL = 0.5
 
@@ -149,6 +162,7 @@ TP_MAX_STEP_DISTANCE = 7
 TP_HOLD_TIME = 0.12
 
 function robustTeleportTo(targetCFrame)
+    if not running then return false end
     local char = LocalPlayer and LocalPlayer.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -160,7 +174,7 @@ function robustTeleportTo(targetCFrame)
     local distance = delta.Magnitude
 
     if distance <= 2 then
-        pcall(function()
+        local ok = pcall(function()
             if char and char.PivotTo then
                 char:PivotTo(targetCFrame)
             else
@@ -169,14 +183,14 @@ function robustTeleportTo(targetCFrame)
             root.AssemblyLinearVelocity = Vector3.zero
             root.AssemblyAngularVelocity = Vector3.zero
         end)
-        return true
+        return ok and root.Parent ~= nil and (root.Position - targetPos).Magnitude <= 10
     end
 
     local steps = math.max(1, math.ceil(distance / TP_MAX_STEP_DISTANCE))
     local started = os.clock()
 
     for i = 1, steps do
-        if not root.Parent then return false end
+        if not running or not root.Parent then return false end
 
         local alpha = i / steps
         local pos = startPos:Lerp(targetPos, alpha)
@@ -200,7 +214,7 @@ function robustTeleportTo(targetCFrame)
 
     -- Petite phase de stabilisation à l'arrivée.
     local holdUntil = os.clock() + TP_HOLD_TIME
-    while os.clock() < holdUntil do
+    while running and os.clock() < holdUntil do
         if not root.Parent then return false end
         pcall(function()
             if char and char.PivotTo then
@@ -214,7 +228,7 @@ function robustTeleportTo(targetCFrame)
         RunService.Heartbeat:Wait()
     end
 
-    return (root.Position - targetPos).Magnitude <= 10
+    return running and root.Parent ~= nil and (root.Position - targetPos).Magnitude <= 10
 end
 
 function saveCurrentTeleportPosition(mode)
@@ -596,6 +610,8 @@ AutoMinePreviousFlyEnabled = false
 AutoMineNoclipConnection = nil
 AutoMineFlyConnection = nil
 AutoMineMouseHeld = false
+-- Évite de retenter en boucle la même roche si elle est inaccessible ou si la pioche manque.
+AutoMineFailedTargets = setmetatable({}, {__mode = "k"})
 
 -- V206 : gestion partagée du Noclip entre Auto Mine et le Noclip manuel.
 -- Chaque valeur CanCollide est sauvegardée une seule fois, puis restaurée même
@@ -762,7 +778,23 @@ function autoMineFindRocksFolder()
         end
     end
 
-    return candidates[1]
+    -- Si les deux chemins existent, ne pas choisir aveuglément le premier :
+    -- il peut s'agir d'un dossier vide alors que les roches actives sont dans Tasks.
+    local firstExisting = candidates[1]
+    for _, folder in ipairs(candidates) do
+        for _, obj in ipairs(folder:GetChildren()) do
+            if type(autoMineGetRockPart) == "function" then
+                local ok, part = pcall(autoMineGetRockPart, obj)
+                if ok and part then
+                    return folder
+                end
+            elseif #folder:GetDescendants() > 0 then
+                return folder
+            end
+        end
+    end
+
+    return firstExisting
 end
 
 function autoMineVisiblePart(p)
@@ -828,7 +860,9 @@ function autoMineNearestRock()
     local best, dist = nil, math.huge
     for _, rock in ipairs(autoMineGetActiveRocks()) do
         local p = rock.part
-        if p and p.Parent and autoMineVisiblePart(p) then
+        local retryAt = AutoMineFailedTargets and AutoMineFailedTargets[rock.object]
+        local retryAllowed = retryAt == nil or retryAt <= os.clock()
+        if retryAllowed and p and p.Parent and autoMineVisiblePart(p) then
             local d = (r.Position - p.Position).Magnitude
             if d < dist then
                 dist = d
@@ -889,8 +923,10 @@ function autoMineStopFly()
         AutoMineFlyConnection = nil
     end
 
-    local rr = autoMineRoot()
-    local hum = autoMineCharacter():FindFirstChildOfClass("Humanoid")
+    -- Le nettoyage ne doit jamais attendre CharacterAdded : UNLOAD doit rester réactif.
+    local char = LocalPlayer and LocalPlayer.Character
+    local rr = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
     if rr then
         pcall(function()
             rr.AssemblyLinearVelocity = Vector3.zero
@@ -1028,7 +1064,7 @@ function autoMineFlyToPosition(targetPosition, maxTime)
         end)
     end)
 
-    while AutoMineRunning and os.clock() - started < (maxTime or 12) do
+    while running and AutoMineRunning and os.clock() - started < (maxTime or 12) do
         local rrNow = autoMineRoot()
         if not rrNow then
             autoMineStopFly()
@@ -1059,12 +1095,26 @@ function autoMineMine(rock)
     local hum = autoMineCharacter():FindFirstChildOfClass("Humanoid")
     if not hum then return false end
 
+    if not autoMineEquipPickaxe() then
+        autoMineStatus("⚠ Pioche introuvable")
+        AutoMineFailedTargets[rockObject] = os.clock() + 5
+        return false
+    end
+
     autoMineSetNoclip(true)
 
     -- Déplacement en Fly + noclip vers la roche.
     -- On vise légèrement au-dessus de la roche pour éviter d'entrer dans son volume.
     local targetPosition = currentPart.Position + Vector3.new(0, 2.5, 0)
-    autoMineFlyToPosition(targetPosition, 12)
+    local reachedTarget = autoMineFlyToPosition(targetPosition, 12)
+    if not reachedTarget then
+        autoMineReleaseMouse()
+        autoMineSetNoclip(false)
+        autoMineStopFly()
+        AutoMineFailedTargets[rockObject] = os.clock() + 5
+        if AutoMineRunning then autoMineStatus("⚠ Déplacement vers la roche échoué") end
+        return false
+    end
 
     local h = autoMineCharacter():FindFirstChildOfClass("Humanoid")
     local rr2 = autoMineRoot()
@@ -1083,10 +1133,12 @@ function autoMineMine(rock)
     local phase = 1
     local last = 0
     local missingSince = nil
+    local miningStartedAt = os.clock()
 
     autoMineStartAim()
 
-    while AutoMineRunning and rockObject.Parent do
+    while running and AutoMineRunning and rockObject.Parent
+        and os.clock() - miningStartedAt < (AUTO_MINE_CONFIG.MiningTimeout or 15) do
         currentPart = autoMineGetRockPart(rockObject)
 
         if currentPart then
@@ -1112,6 +1164,8 @@ function autoMineMine(rock)
             if os.clock() - missingSince >= 2 then
                 autoMineReleaseMouse()
                 autoMineSetNoclip(false)
+                autoMineStopFly()
+                AutoMineFailedTargets[rockObject] = nil
                 return true
             end
         end
@@ -1164,6 +1218,13 @@ function autoMineMine(rock)
     autoMineReleaseMouse()
     autoMineSetNoclip(false)
     autoMineStopFly()
+    if rockObject and rockObject.Parent and AutoMineRunning then
+        -- Timeout : laisse les autres roches être sélectionnées avant de réessayer.
+        AutoMineFailedTargets[rockObject] = os.clock() + 5
+        autoMineStatus("⚠ Délai de minage dépassé : nouvelle cible")
+        return false
+    end
+    AutoMineFailedTargets[rockObject] = nil
     return true
 end
 
@@ -1239,7 +1300,7 @@ function autoMineStart()
     AutoMineBtn.BackgroundColor3 = Color3.fromRGB(40, 145, 75)
 
     task.spawn(function()
-        while AutoMineRunning do
+        while running and AutoMineRunning do
             local folder = autoMineFindRocksFolder()
 
             if not folder then
@@ -1464,6 +1525,7 @@ MovementWalkSpeed = 35
 MovementFlySpeed = 80
 MovementWalkSpeedEnabled = false
 MovementNormalWalkSpeed = nil
+MovementWalkSpeedWasApplied = false
 MovementTrackedCharacter = nil
 MovementFlyEnabled = false
 MovementNoclipEnabled = false
@@ -1664,8 +1726,16 @@ function movementApplyWalkSpeed()
     local hum = movementGetHumanoid()
     if not hum then return end
 
-    -- OFF : ne touche pas à la vitesse normale du jeu.
+    -- OFF : ne restaure qu’une fois après désactivation, pour ne pas écraser
+    -- les changements de vitesse normaux du jeu à chaque Heartbeat.
     if not MovementWalkSpeedEnabled then
+        if MovementWalkSpeedWasApplied then
+            local normal = tonumber(MovementNormalWalkSpeed)
+            if normal and hum.WalkSpeed ~= normal then
+                pcall(function() hum.WalkSpeed = normal end)
+            end
+            MovementWalkSpeedWasApplied = false
+        end
         return
     end
 
@@ -1675,6 +1745,7 @@ function movementApplyWalkSpeed()
             hum.WalkSpeed = wanted
         end)
     end
+    MovementWalkSpeedWasApplied = true
 end
 
 -- V187 : nettoyage renforcé du Fly et restauration de la gravité normale.
@@ -1894,7 +1965,11 @@ function movementStartFly()
     -- contrôleurs de Fly manuel en même temps.
     if AutoMineRunning then
         MovementFlyEnabled = false
-        return
+        if MovementFlyBtn then
+            MovementFlyBtn.Text = "✈ FLY"
+            MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+        end
+        return false
     end
 
     -- Garder la pose lors du remplacement des contrôleurs : ne pas déclencher
@@ -1903,7 +1978,14 @@ function movementStartFly()
 
     local root = movementGetRoot()
     local hum = movementGetHumanoid()
-    if not root or not hum then return end
+    if not root or not hum then
+        MovementFlyEnabled = false
+        if MovementFlyBtn then
+            MovementFlyBtn.Text = "✈ FLY"
+            MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+        end
+        return false
+    end
 
     MovementFlyBodyVelocity = Instance.new("BodyVelocity")
     MovementFlyBodyVelocity.Name = "PRISONRP_FlyVelocity"
@@ -1927,7 +2009,7 @@ function movementStartFly()
     end)
 
     MovementFlyConnection = MovementRunService.Heartbeat:Connect(function()
-        if not MovementFlyEnabled then return end
+        if not running or not MovementFlyEnabled then return end
 
         local currentRoot = movementGetRoot()
         local currentHum = movementGetHumanoid()
@@ -1977,6 +2059,7 @@ function movementStartFly()
             currentHum:ChangeState(Enum.HumanoidStateType.Physics)
         end)
     end)
+    return true
 end
 
 MovementSpeedBtn.MouseButton1Click:Connect(function()
@@ -2586,7 +2669,7 @@ function startAutoPushup()
     activatePompes()
 
     AutoPushupWorker = task.spawn(function()
-        while _G.AutoPushupEnabled do
+        while running and _G.AutoPushupEnabled do
             local pushups, zone, needle = getTrackObjects()
 
             if pushups and pushups.Visible and zone and needle then
@@ -2730,6 +2813,7 @@ function findItemAnywhere(targetNames)
 end
 
 function forceConsumeFull(actionType, possibleNames)
+    if not running then return false end
     local char = LocalPlayer.Character
     local humanoid = char and char:FindFirstChildOfClass("Humanoid")
     local backpack = LocalPlayer:FindFirstChild("Backpack")
@@ -2763,17 +2847,25 @@ function forceConsumeFull(actionType, possibleNames)
         task.wait(0.4)
     end
 
+    local sentAnyAction = false
+    if not ToolEvent then
+        pcall(function() humanoid:UnequipTools() end)
+        return false
+    end
+
     for bite = 1, 3 do
-        if not item or not item.Parent then break end
+        if not running or not item or not item.Parent then break end
 
         if item.Parent ~= char then
-            humanoid:EquipTool(item)
+            local equipOk = pcall(function() humanoid:EquipTool(item) end)
+            if not equipOk then break end
             task.wait(0.3)
+            if not running then break end
         end
 
-        if ToolEvent then
-            pcall(function() ToolEvent:FireServer(actionType, item) end)
-        end
+        if not running then break end
+        local sentOk = pcall(function() ToolEvent:FireServer(actionType, item) end)
+        if sentOk then sentAnyAction = true end
 
         task.wait(2.8)
     end
@@ -2783,7 +2875,9 @@ function forceConsumeFull(actionType, possibleNames)
         humanoid:UnequipTools() 
     end
 
-    return true
+    -- FireServer ne confirme pas l’acceptation serveur ; ceci confirme seulement
+    -- qu’au moins une demande a été envoyée sans erreur locale.
+    return sentAnyAction
 end
 
 -- Cycle séquentiel : Manger d'abord (barre entière), puis Boire ensuite (soda entier)
@@ -2823,14 +2917,28 @@ function resetRod()
 end
 
 function getActiveRodFunctions()
-    if not get_gc then return nil, nil, nil end
+    if type(get_gc) ~= "function" or type(islclosure) ~= "function"
+        or type(debug) ~= "table" or type(debug.getinfo) ~= "function" then
+        return nil, nil, nil
+    end
+
+    local gcOk, gcObjects = pcall(get_gc, false)
+    if not gcOk or type(gcObjects) ~= "table" then
+        return nil, nil, nil
+    end
+
     local onActionBeganFunc, onActionEndedFunc, performCastFunc
-    for _, obj in ipairs(get_gc(false)) do
-        if typeof(obj) == "function" and islclosure(obj) then
-            local info = debug.getinfo(obj)
-            if info.name == "OnActionBegan" then onActionBeganFunc = obj
-            elseif info.name == "OnActionEnded" then onActionEndedFunc = obj
-            elseif info.name == "PerformCast" then performCastFunc = obj end
+    for _, obj in ipairs(gcObjects) do
+        if typeof(obj) == "function" then
+            local closureOk, isClosure = pcall(islclosure, obj)
+            if closureOk and isClosure then
+                local infoOk, info = pcall(debug.getinfo, obj)
+                if infoOk and info then
+                    if info.name == "OnActionBegan" then onActionBeganFunc = obj
+                    elseif info.name == "OnActionEnded" then onActionEndedFunc = obj
+                    elseif info.name == "PerformCast" then performCastFunc = obj end
+                end
+            end
         end
     end
     return onActionBeganFunc, onActionEndedFunc, performCastFunc
@@ -2871,9 +2979,9 @@ originalCFrame = nil
 originalVelocity = nil
 originalAngularVelocity = nil
 
--- Auto Buy Food : nouvelle approche par interaction du déclencheur.
--- Priorité : ProximityPrompt (si présent) -> RemoteEvent.
--- Aucun déplacement du personnage n'est effectué par cette version.
+-- Auto Buy Food : interaction avec les RemoteEvents du distributeur.
+-- Le personnage est placé devant le distributeur à l’activation, puis remis
+-- à sa position de départ lorsque l’Auto Buy est désactivé.
 isBuying = false
 buyRequest = false
 totalToBuy = 30
@@ -3128,16 +3236,16 @@ function startRemoteBuy()
     -- cooldown de 1 seconde, mais démarrent en même temps.
     task.spawn(function()
         local i = 0
-        while buyRequest and thisRunToken == remoteBuyRunToken do
+        while running and buyRequest and thisRunToken == remoteBuyRunToken do
             i += 1
-            while AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do task.wait(0.1) end
+            while running and AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do task.wait(0.1) end
             if not buyRequest or thisRunToken ~= remoteBuyRunToken then break end
 
             local foodOk = firePurchaseAtVending("food", foodEvent, thisRunToken)
             if FoodText then
                 FoodText.Text = foodOk
-                    and string.format("🥖 Nourriture : %d", i)
-                    or string.format("🥖 Échec achat : %d", i)
+                    and string.format("🥖 Demandes envoyées : %d", i)
+                    or string.format("🥖 Échec d’envoi : %d", i)
             end
 
             task.wait(cooldown)
@@ -3146,16 +3254,16 @@ function startRemoteBuy()
 
     task.spawn(function()
         local i = 0
-        while buyRequest and thisRunToken == remoteBuyRunToken do
+        while running and buyRequest and thisRunToken == remoteBuyRunToken do
             i += 1
-            while AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do task.wait(0.1) end
+            while running and AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do task.wait(0.1) end
             if not buyRequest or thisRunToken ~= remoteBuyRunToken then break end
 
             local drinkOk = firePurchaseAtVending("drink", drinkEvent, thisRunToken)
             if DrinkText then
                 DrinkText.Text = drinkOk
-                    and string.format("🥤 Boisson : %d", i)
-                    or string.format("🥤 Échec achat : %d", i)
+                    and string.format("🥤 Demandes envoyées : %d", i)
+                    or string.format("🥤 Échec d’envoi : %d", i)
             end
 
             task.wait(cooldown)
@@ -3164,7 +3272,7 @@ function startRemoteBuy()
 
     -- Le bouton reste ON jusqu'à désactivation manuelle.
     task.spawn(function()
-        while buyRequest and thisRunToken == remoteBuyRunToken do
+        while running and buyRequest and thisRunToken == remoteBuyRunToken do
             task.wait(0.25)
         end
         -- Une ancienne tâche ne doit pas réinitialiser l'interface d'une nouvelle session.
@@ -3205,14 +3313,15 @@ function stopMoveToTarget()
     end
 end
 
--- Correctif TP conservé : TP instantané par CFrame direct.
--- Aucun déplacement intermédiaire, aucune vitesse forcée, aucun Heartbeat.
+-- Téléportation progressive partagée par Shore et Black Market pour limiter le rubber-band.
 function directTeleportTo(targetCFrame)
     if typeof(targetCFrame) ~= "CFrame" then
         return false
     end
 
-    -- Stoppe uniquement un éventuel ancien déplacement du système TP.
+    -- Annule tout mouvement antérieur, puis utilise le TP progressif partagé.
+    -- Une affectation unique de RootPart.CFrame était corrigée immédiatement
+    -- par le serveur dans certains cas (rubber-band).
     stopMoveToTarget()
 
     local char = LocalPlayer and LocalPlayer.Character
@@ -3221,11 +3330,7 @@ function directTeleportTo(targetCFrame)
         return false
     end
 
-    local ok = pcall(function()
-        root.CFrame = targetCFrame
-    end)
-
-    return ok
+    return robustTeleportTo(targetCFrame)
 end
 
 -- TP Black Market : position devant le vendeur.
@@ -3302,9 +3407,101 @@ function updateAutoEatDrinkUI()
     AutoEatDrinkBtn.TextColor3 = Color3.fromRGB(236, 240, 248)
 end
 
+-- Bloque la consommation automatique pendant que le joueur tient un objet.
+-- Pendant l'Auto-Pêche, seule la canne peut être tolérée, et uniquement dans
+-- la fenêtre ouverte après la fin confirmée d'une récupération.
+local function autoEatDrinkGetEquippedTool()
+    local char = LocalPlayer and LocalPlayer.Character
+    if not char then return nil end
+    for _, child in ipairs(char:GetChildren()) do
+        if child:IsA("Tool") then
+            return child
+        end
+    end
+    return nil
+end
+
+local function autoEatDrinkIsFishingRod(tool)
+    if not tool then return false end
+    local normalized = string.lower(tostring(tool.Name or ""))
+    normalized = string.gsub(normalized, "[%s_%-]", "")
+    return string.find(normalized, "fishingrod", 1, true) ~= nil
+        or normalized == "rod"
+        or normalized == "fishingpole"
+end
+
+local function autoEatDrinkBasketballGuiActive()
+    local playerGui = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    local gui = playerGui and playerGui:FindFirstChild("BasketballGui")
+    local meter = gui and gui:FindFirstChild("Meter", true)
+    if not gui or not meter then return false end
+
+    -- BasketballGui peut rester créé/activé même hors d'un tir : ne bloque que
+    -- lorsque la jauge et ses marqueurs sont réellement visibles à l'écran.
+    local cursor = meter:FindFirstChild("Cursor", true)
+    local purple = meter:FindFirstChild("Purple", true)
+    if not cursor or not purple then return false end
+
+    local function visibleThroughAncestors(obj)
+        local current = obj
+        while current do
+            if current:IsA("GuiObject") and not current.Visible then return false end
+            if current:IsA("ScreenGui") and not current.Enabled then return false end
+            current = current.Parent
+        end
+        return true
+    end
+
+    local ok, active = pcall(function()
+        return visibleThroughAncestors(meter)
+            and visibleThroughAncestors(cursor)
+            and visibleThroughAncestors(purple)
+            and cursor.AbsoluteSize.Y > 0
+            and purple.AbsoluteSize.Y > 0
+    end)
+    return ok and active == true
+end
+
+local function autoEatDrinkMinigameActive()
+    if not MinigameSystem then return false end
+    local ok, active = pcall(function()
+        return MinigameSystem:IsActive()
+    end)
+    return ok and active == true
+end
+
+local function autoEatDrinkPlayerInputBusy()
+    local ok, busy = pcall(function()
+        local input = game:GetService("UserInputService")
+        return input:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+            or input:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+    end)
+    return ok and busy == true
+end
+
+local function autoEatDrinkCanStart()
+    if not running or not AutoEatDrinkEnabled or AutoEatDrinkBusy then return false end
+    -- Ne pas couper un coup de poing, un lancer ou une interaction souris en cours,
+    -- même lorsque le jeu représente l'action sans Tool équipé.
+    if autoEatDrinkBasketballGuiActive() or autoEatDrinkMinigameActive() or autoEatDrinkPlayerInputBusy() then return false end
+
+    local equipped = autoEatDrinkGetEquippedTool()
+    if _G.AutoFishingEnabled then
+        -- Aucune consommation pendant le lancer, l'attente ou le mini-jeu de pêche.
+        if not AutoFishingCatchWindow or autoEatDrinkMinigameActive() then return false end
+        -- Dans la fenêtre post-récupération, la canne est la seule exception admise.
+        if equipped and not autoEatDrinkIsFishingRod(equipped) then return false end
+        return true
+    end
+
+    -- Hors Auto-Pêche, ne jamais déséquiper une arme, les poings/outils ou un ballon.
+    return equipped == nil
+end
+
 AutoEatDrinkWasMineActive = false
 
 function pauseAllForConsumption()
+    if not running then return end
     AutoEatDrinkBusy = true
 
     AutoEatDrinkWasPushupActive = _G.AutoPushupEnabled == true
@@ -3326,6 +3523,13 @@ end
 
 function resumeAllAfterConsumption()
     AutoEatDrinkBusy = false
+
+    -- Ne jamais relancer des automatismes après UNLOAD ou lors d'un rechargement.
+    if not running then
+        AutoEatDrinkWasPushupActive = false
+        AutoEatDrinkWasMineActive = false
+        return
+    end
 
     if AutoEatDrinkWasPushupActive then
         AutoEatDrinkWasPushupActive = false
@@ -3349,29 +3553,65 @@ function resumeAllAfterConsumption()
 end
 
 function runAutoEatDrink(food, water)
-    if AutoEatDrinkBusy or not AutoEatDrinkEnabled then return end
+    if not autoEatDrinkCanStart() then
+        AutoEatDrinkPending = true
+        return
+    end
 
     local needEat = food ~= nil and food <= AUTO_EAT_DRINK_THRESHOLD
     local needDrink = water ~= nil and water <= AUTO_EAT_DRINK_THRESHOLD
-    if not needEat and not needDrink then return end
-
-    pauseAllForConsumption()
-
-    if needEat and AutoEatDrinkEnabled then
-        stats.status = "🍔 Nourriture ≤ 50 : je mange..."
-        updateUI()
-        forceConsumeFull("Eat", {"CerealBar", "Barre de céréale", "Pain", "Bread", "Food", "Bar"})
-        task.wait(0.5)
+    if not needEat and not needDrink then
+        AutoEatDrinkPending = false
+        return
     end
 
-    if needDrink and AutoEatDrinkEnabled then
-        stats.status = "🥤 Eau ≤ 50 : je bois..."
-        updateUI()
-        forceConsumeFull("Drink", {"Boîte de soda", "Soda", "Water", "Eau", "Bottle", "Drink"})
-        task.wait(0.5)
-    end
+    AutoEatDrinkPending = false
+    -- Ferme la fenêtre avant le premier yield pour empêcher un second déclenchement.
+    if _G.AutoFishingEnabled then AutoFishingCatchWindow = false end
 
-    resumeAllAfterConsumption()
+    -- Quoi qu’il arrive pendant l’équipement ou les RemoteEvents, on tente toujours
+    -- de libérer l’état Busy et de reprendre les automatismes mis en pause.
+    local workOk, workErr = pcall(function()
+        pauseAllForConsumption()
+        if not running then return end
+
+        if needEat and AutoEatDrinkEnabled then
+            stats.status = "🍔 Nourriture ≤ seuil : envoi de la demande..."
+            updateUI()
+            local sent = forceConsumeFull("Eat", {"CerealBar", "Barre de céréale", "Pain", "Bread", "Food", "Bar"})
+            if not sent then
+                stats.status = "⚠ Consommation impossible : nourriture introuvable ou action indisponible"
+                updateUI()
+            end
+            task.wait(0.5)
+        end
+
+        if not running then return end
+        if needDrink and AutoEatDrinkEnabled then
+            stats.status = "🥤 Boisson ≤ seuil : envoi de la demande..."
+            updateUI()
+            local sent = forceConsumeFull("Drink", {"Boîte de soda", "Soda", "Water", "Eau", "Bottle", "Drink"})
+            if not sent then
+                stats.status = "⚠ Consommation impossible : boisson introuvable ou action indisponible"
+                updateUI()
+            end
+            task.wait(0.5)
+        end
+    end)
+
+    local resumeOk, resumeErr = pcall(resumeAllAfterConsumption)
+    if not workOk then
+        warn("[Hub Prison RP] Erreur Auto Eat/Drink : " .. tostring(workErr))
+    end
+    if not resumeOk then
+        AutoEatDrinkBusy = false
+        AutoEatDrinkWasPushupActive = false
+        AutoEatDrinkWasMineActive = false
+        warn("[Hub Prison RP] Erreur lors de la reprise après consommation : " .. tostring(resumeErr))
+    end
+    -- Évite de renvoyer les mêmes demandes toutes les 0,5 s si l'objet manque
+    -- ou si le serveur n'a pas encore mis à jour les jauges.
+    AutoEatDrinkNextTryAt = os.clock() + 6
 end
 
 AutoEatDrinkBtn.MouseButton1Click:Connect(function()
@@ -3411,6 +3651,7 @@ end)
 
 ToggleFishBtn.MouseButton1Click:Connect(function()
     _G.AutoFishingEnabled = not _G.AutoFishingEnabled
+    AutoFishingCatchWindow = false
     stats.status = _G.AutoFishingEnabled and "Running..." or "Stopped"
     updateUI()
 end)
@@ -3466,9 +3707,22 @@ task.spawn(function()
         lastFoodValue = tonumber(food) or lastFoodValue
         lastWaterValue = tonumber(water) or lastWaterValue
 
-        if AutoEatDrinkEnabled and not AutoEatDrinkBusy then
-            if (food ~= nil and food <= AUTO_EAT_DRINK_THRESHOLD) or (water ~= nil and water <= AUTO_EAT_DRINK_THRESHOLD) then
-                task.spawn(runAutoEatDrink, food, water)
+            if AutoEatDrinkEnabled and not AutoEatDrinkBusy and os.clock() >= AutoEatDrinkNextTryAt then
+            local needsFoodOrWater = (food ~= nil and food <= AUTO_EAT_DRINK_THRESHOLD)
+                or (water ~= nil and water <= AUTO_EAT_DRINK_THRESHOLD)
+            if needsFoodOrWater then
+                if _G.AutoFishingEnabled then
+                    -- L'Auto-Pêche déclenchera la consommation elle-même après la récupération.
+                    AutoEatDrinkPending = true
+                elseif autoEatDrinkCanStart() then
+                    AutoEatDrinkPending = false
+                    task.spawn(runAutoEatDrink, food, water)
+                else
+                    -- On réessaiera quand l'objet sera rangé / l'activité sera terminée.
+                    AutoEatDrinkPending = true
+                end
+            else
+                AutoEatDrinkPending = false
             end
         end
     end
@@ -3823,6 +4077,8 @@ _G.CombinedHubCleanup = function()
         end
     end)
     AutoEatDrinkThreadRunning = false
+    AutoEatDrinkPending = false
+    AutoFishingCatchWindow = false
     _G.AutoFishingEnabled = false
     _G.AutoSellEnabled = false
     AutoEatDrinkEnabled = false
@@ -3925,6 +4181,7 @@ _G.CombinedHubCleanup = function()
     pcall(function()
         if _G.PRISONRP_MOVEMENT_CLEANUP then
             _G.PRISONRP_MOVEMENT_CLEANUP()
+            _G.PRISONRP_MOVEMENT_CLEANUP = nil
         end
     end)
 end
@@ -3935,7 +4192,7 @@ end
 -- le vrai système de pêche.
 
 local function getFishingState()
-    if not MinigameSystem or not MinigameSystem.SetHolding or not get_upvalues then
+    if not MinigameSystem or not MinigameSystem.SetHolding or type(get_upvalues) ~= "function" then
         return nil
     end
 
@@ -3950,6 +4207,12 @@ end
 
 local function autoFishApplyHolding()
     if not MinigameSystem or not MinigameSystem.SetHolding then
+        return false
+    end
+
+    -- La boucle rapide de maintien doit respecter la même pause que la pêche principale.
+    if AutoEatDrinkBusy then
+        pcall(function() MinigameSystem:SetHolding(false, "autofish") end)
         return false
     end
 
@@ -4026,6 +4289,9 @@ task.spawn(function()
     while running and ScreenGui and ScreenGui.Parent do
         task.wait(0.1)
         if _G.AutoFishingEnabled and not AutoEatDrinkBusy and MinigameSystem and SoundManager and GUIManager then
+            -- Ferme la fenêtre dès le début d'un nouveau cycle, avant toute attente.
+            AutoFishingCatchWindow = false
+            local fishCaughtThisCycle = false
 
             stats.status = "Equipping Rod..."
             updateUI()
@@ -4044,18 +4310,26 @@ task.spawn(function()
                 continue
             end
 
-            local rodState = get_upvalues(performCast)[1]
+            local rodState = nil
+            if type(get_upvalues) == "function" then
+                local upvaluesOk, upvalues = pcall(get_upvalues, performCast)
+                if upvaluesOk and type(upvalues) == "table" then
+                    rodState = upvalues[1]
+                end
+            end
             local miniState = getFishingState()
 
             stats.status = "Casting Rod..."
             updateUI()
-            onActionBegan()
+            local actionBeganOk = pcall(onActionBegan)
             task.wait(0.80)
+            -- Ne jamais sauter l’événement de fin : même si la consommation démarre
+            -- durant l’attente, la canne doit libérer son état d’action.
+            if actionBeganOk then pcall(onActionEnded) end
             if AutoEatDrinkBusy then
                 task.wait(0.1)
                 continue
             end
-            onActionEnded()
 
             local castTime = tick()
             local loopTimeout = 15
@@ -4106,6 +4380,8 @@ task.spawn(function()
                     stats.totalCaught = stats.totalCaught + 1
                     stats.perfectCount = stats.perfectCount + 1
                     stats.status = "Fish Caught!"
+                    fishCaughtThisCycle = true
+                    AutoFishingCatchWindow = true
                     updateUI()
                     break
                 end
@@ -4135,8 +4411,29 @@ task.spawn(function()
                 end
             end
 
+            -- Consommation uniquement après la détection de fin de récupération.
+            -- On la traite dans cette boucle avant qu'un nouveau lancer ne commence,
+            -- afin qu'un poisson en cours ne soit jamais interrompu par le besoin.
+            if fishCaughtThisCycle and AutoEatDrinkEnabled and os.clock() >= AutoEatDrinkNextTryAt then
+                local foodAfterCatch, waterAfterCatch = readNeedValues()
+                local needsFoodOrWater = (foodAfterCatch ~= nil and foodAfterCatch <= AUTO_EAT_DRINK_THRESHOLD)
+                    or (waterAfterCatch ~= nil and waterAfterCatch <= AUTO_EAT_DRINK_THRESHOLD)
+                if needsFoodOrWater then
+                    AutoEatDrinkPending = true
+                    local waitUntil = os.clock() + 2
+                    while running and os.clock() < waitUntil and autoEatDrinkMinigameActive() do
+                        task.wait(0.05)
+                    end
+                    if running and autoEatDrinkCanStart() then
+                        runAutoEatDrink(foodAfterCatch, waterAfterCatch)
+                    end
+                end
+            end
+            AutoFishingCatchWindow = false
+
             task.wait(0.4)
         else
+            AutoFishingCatchWindow = false
             if stats.status ~= "Sold All Fish!" then
                 stats.status = "Idle"
             end
@@ -4158,7 +4455,7 @@ updateAutoEatDrinkUI()
 -- PAGE 1 = hub actuel, inchangé
 -- PAGE 2 = AUTRES
 --==============================================================
-pcall(function()
+local __uiBuildOk, __uiBuildErr = pcall(function()
     MainFrame.Size = UDim2.new(0, 500, 0, 620)
     TitleLabel.Text = "PRISON RP FR GDP"
 
@@ -5522,62 +5819,8 @@ pcall(function()
     speedLabel.ZIndex = 13
     speedLabel.Parent = speedBtn
 
-    local walkSwitch = Instance.new("TextButton")
-    walkSwitch.Name = "WalkSpeedSwitch"
-    walkSwitch.Size = UDim2.fromOffset(42, 22)
-    walkSwitch.Position = UDim2.new(1, -52, 0.5, -11)
-    walkSwitch.BackgroundColor3 = Color3.fromRGB(75, 78, 95)
-    walkSwitch.BorderSizePixel = 0
-    walkSwitch.AutoButtonColor = false
-    walkSwitch.Text = ""
-    walkSwitch.Active = true
-    walkSwitch.Selectable = true
-    walkSwitch.ZIndex = 50
-    walkSwitch.Parent = speedBtn
+    -- Le switch SpeedHack est créé une seule fois par gdpCheckbox(speedBtn) plus bas.
 
-    local walkSwitchCorner = Instance.new("UICorner")
-    walkSwitchCorner.CornerRadius = UDim.new(1, 0)
-    walkSwitchCorner.Parent = walkSwitch
-
-    local walkKnob = Instance.new("Frame")
-    walkKnob.Name = "Knob"
-    walkKnob.Size = UDim2.fromOffset(16, 16)
-    walkKnob.Position = UDim2.fromOffset(3, 3)
-    walkKnob.BackgroundColor3 = Color3.fromRGB(235,235,235)
-    walkKnob.BorderSizePixel = 0
-    walkKnob.ZIndex = 51
-    walkKnob.Active = false
-    walkKnob.Parent = walkSwitch
-
-    local walkKnobCorner = Instance.new("UICorner")
-    walkKnobCorner.CornerRadius = UDim.new(1, 0)
-    walkKnobCorner.Parent = walkKnob
-
-    local TweenService = game:GetService("TweenService")
-    local walkSwitchTweenInfo = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-
-    local function updateWalkSpeedSwitch(animated)
-        local enabled = MovementWalkSpeedEnabled == true
-        local targetColor = enabled and Color3.fromRGB(60,200,100) or Color3.fromRGB(75,78,95)
-        local targetPosition = enabled and UDim2.new(1,-19,0,3) or UDim2.fromOffset(3,3)
-
-        if animated then
-            TweenService:Create(walkSwitch, walkSwitchTweenInfo, {BackgroundColor3 = targetColor}):Play()
-            TweenService:Create(walkKnob, walkSwitchTweenInfo, {Position = targetPosition}):Play()
-        else
-            walkSwitch.BackgroundColor3 = targetColor
-            walkKnob.Position = targetPosition
-        end
-    end
-
-    -- Seul le switch reçoit le clic.
-    walkSwitch.MouseButton1Click:Connect(function()
-        MovementWalkSpeedEnabled = not MovementWalkSpeedEnabled
-        movementApplyWalkSpeed()
-        updateWalkSpeedSwitch(true)
-    end)
-
-    updateWalkSpeedSwitch(false)
 
     flyBtn = Instance.new("TextButton")
     flyBtn.Size = UDim2.new(1, -281, 0, 34)
@@ -6143,7 +6386,7 @@ pcall(function()
         AutoArmWrestleState.Running = true
 
         task.spawn(function()
-            while AutoArmWrestleState.Enabled do
+            while running and AutoArmWrestleState.Enabled do
                 local armGui = autoArmGetGui()
                 local guiVisible = autoArmGuiVisible(armGui)
 
@@ -10528,7 +10771,7 @@ end)
                 updateGiveMoneyToggle()
 
                 task.spawn(function()
-                    while GiveMoneyRunning
+                    while running and GiveMoneyRunning
                         and thisRunToken == GiveMoneyRunToken
                         and GiveMoneySelectedPlayer do
                         local target = GiveMoneySelectedPlayer
@@ -10912,7 +11155,10 @@ end)
         end
     end)
 
-end) -- ferme le pcall principal ouvert ligne 2812
+end) -- ferme le pcall principal de construction de l’interface
+if not __uiBuildOk then
+    warn("[Hub Prison RP] Erreur pendant la construction de l’interface : " .. tostring(__uiBuildErr))
+end
 
 --==============================================================
 -- AIMBOT NEPTUNE -> PRISON RP FR GDP
@@ -11216,6 +11462,9 @@ Connections.InputEnded =
 
 Connections.RenderStepped =
     RunService.RenderStepped:Connect(function()
+        -- Roblox peut remplacer CurrentCamera lors d’un respawn ou d’un changement de caméra.
+        Camera = workspace.CurrentCamera or Camera
+        if not Camera then return end
         local Mouse = UserInputService:GetMouseLocation()
 
         if FOVCircle then
@@ -11789,7 +12038,7 @@ addColorCycle(r9, 0.5, "COULEUR", function() return Aimbot.FOVSettings.Color end
 local r10 = newRow(36)
 addColorCycle(r10, 0, "COULEUR LOCK", function() return Aimbot.FOVSettings.LockedColor end, function(v) Aimbot.FOVSettings.LockedColor = v end)
 addAction(r10, 0.5, "RESET", function()
-    Aimbot.Settings.Enabled = true
+    Aimbot.Settings.Enabled = false
     Aimbot.Settings.Toggle = false
     Aimbot.Settings.LockPart = "Head"
     Aimbot.Settings.TriggerKey = "MouseButton2"
@@ -11810,6 +12059,9 @@ addAction(r10, 0.5, "RESET", function()
     Aimbot.FOVSettings.LockedColor = Color3.fromRGB(255,70,70)
     Running = false
     CancelLock()
+    for _, control in ipairs(_G.PRISONRP_AIM_CONTROLS or {}) do
+        if control and type(control.Refresh) == "function" then pcall(control.Refresh) end
+    end
     UpdateFOV()
 end)
 
@@ -11818,6 +12070,25 @@ local r11 = newRow(36)
 addAction(r11, 0, "RESTART AIMBOT", function()
     Running = false
     CancelLock()
+
+    local triggerHeld = Aimbot.Settings.Toggle == true
+    if not triggerHeld then
+        local triggerKey = tostring(Aimbot.Settings.TriggerKey or "MouseButton2")
+        local mouseType = Enum.UserInputType[triggerKey]
+        if mouseType then
+            local ok, held = pcall(function() return UserInputService:IsMouseButtonPressed(mouseType) end)
+            triggerHeld = ok and held == true
+        else
+            local keyCode = Enum.KeyCode[triggerKey]
+            if keyCode then
+                local ok, held = pcall(function() return UserInputService:IsKeyDown(keyCode) end)
+                triggerHeld = ok and held == true
+            end
+        end
+    end
+    -- En mode maintien, redémarre uniquement si le déclencheur est encore tenu.
+    -- En mode Toggle, le redémarrage réactive le verrouillage.
+    Running = Aimbot.Settings.Enabled == true and triggerHeld
     UpdateFOV()
 end)
 addAction(r11, 0.5, "STOP AIMBOT", function()
@@ -12326,7 +12597,17 @@ do
             end
 
             local btn = entry.button
-            if btn and btn.Parent and btn:IsA("GuiButton") then
+            if not btn or not btn.Parent then return end
+
+            -- La carte parente est volontairement bloquée dans cette interface.
+            -- Il faut déclencher le vrai switch enfant pour exécuter son onToggle.
+            local nestedSwitch = btn:FindFirstChild("GDPCheckbox", true)
+            if not (nestedSwitch and nestedSwitch:IsA("GuiButton")) then
+                nestedSwitch = btn:FindFirstChild("WalkSpeedSwitch", true)
+            end
+            if nestedSwitch and nestedSwitch:IsA("GuiButton") then
+                pcall(function() nestedSwitch:Activate() end)
+            elseif btn:IsA("GuiButton") then
                 pcall(function() btn:Activate() end)
             end
         end
@@ -12443,6 +12724,7 @@ do
                     Fly=MovementFlyEnabled==true,
                     Noclip=MovementNoclipEnabled==true,
                     FreecamArmed=spec.Armed==true,
+                    FreecamEnabled=spec.Enabled==true,
                     InvisibleEnabled=(type(_G.PRISONRP_GET_INVISIBLE_STATE)=="function" and _G.PRISONRP_GET_INVISIBLE_STATE()) or false,
                     StaffESP=_G.PRISONRP_V128_ESP_STAFF_ENABLED==true,
                     StaffAutoLeave=StaffAutoLeaveEnabled==true,
@@ -12587,13 +12869,17 @@ do
                 t.Noclip
             )
 
-            -- FREECAM
-            if t.FreecamArmed ~= nil then
+            -- FREECAM : restaure séparément l’état du switch et celui de la caméra.
+            if t.FreecamArmed ~= nil or t.FreecamEnabled ~= nil then
                 pcall(function()
-                    specSetArmed(t.FreecamArmed == true)
-                    if t.FreecamArmed == true and not Spec.Enabled then
+                    local shouldArm = t.FreecamArmed == true
+                    local shouldEnable = t.FreecamEnabled
+                    -- Compatibilité avec les cinq anciennes sauvegardes.
+                    if shouldEnable == nil then shouldEnable = shouldArm end
+                    specSetArmed(shouldArm)
+                    if shouldEnable == true and not Spec.Enabled then
                         specEnable()
-                    elseif t.FreecamArmed ~= true and Spec.Enabled then
+                    elseif shouldEnable ~= true and Spec.Enabled then
                         specDisable()
                     end
                 end)
@@ -13505,6 +13791,7 @@ _G.PRISONRP_AIMBOT_STOP = function()
         if FOVCircle then FOVCircle:Remove() end
     end)
     _G.PRISONRP_AIMBOT = nil
+    _G.PRISONRP_AIMBOT_STOP = nil
 end
 
 
@@ -14072,7 +14359,7 @@ pcall(function()
     task.spawn(function()
         local lastPage = nil
         local lastExpanded = nil
-        while ScreenGui and ScreenGui.Parent and _G.CombinedHubLoaded do
+        while running and ScreenGui and ScreenGui.Parent and _G.CombinedHubLoaded do
             local currentPage = readActivePage()
             local scale = math.max((MainFrameScale and MainFrameScale.Scale) or 1, 0.01)
             local expanded = (navSidebar.AbsoluteSize.X / scale) >= 100
@@ -14143,6 +14430,9 @@ do
         local released = false
         local visualLocked = false
         local previousDelta = nil
+        local previousSampleTime = nil
+        local releasePending = false
+        local releaseGeneration = 0
         local renderConnection = nil
         local stopped = false
 
@@ -14150,7 +14440,9 @@ do
         -- texte centré et carte interactive au survol comme au clic.
         local AutoPurpleButton = Instance.new("TextButton")
         AutoPurpleButton.Name = "PRISONRP_AutoPurpleToggle"
-        AutoPurpleButton.Size = UDim2.new(1, -213, 0, 38)
+        -- Même largeur, hauteur et espacement que les autres cases d'AUTRES.
+        -- Auto Purple occupe la première ligne disponible sous les cinq cases existantes.
+        AutoPurpleButton.Size = UDim2.new(1, -213, 0, 34)
         AutoPurpleButton.Position = UDim2.fromOffset(0, 230)
         AutoPurpleButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
         AutoPurpleButton.BorderSizePixel = 0
@@ -14232,7 +14524,7 @@ do
         local AutoPurpleStatus = Instance.new("TextLabel")
         AutoPurpleStatus.Name = "PRISONRP_AutoPurpleStatus"
         AutoPurpleStatus.Size = UDim2.new(1, -213, 0, 18)
-        AutoPurpleStatus.Position = UDim2.fromOffset(0, 271)
+        AutoPurpleStatus.Position = UDim2.fromOffset(0, 336)
         AutoPurpleStatus.BackgroundTransparency = 1
         AutoPurpleStatus.BorderSizePixel = 0
         AutoPurpleStatus.Text = "Basketball : en attente"
@@ -14243,6 +14535,7 @@ do
         AutoPurpleStatus.TextYAlignment = Enum.TextYAlignment.Center
         AutoPurpleStatus.ZIndex = (autresPageRef.ZIndex or 1) + 2
         AutoPurpleStatus.Parent = autresPageRef
+        AutoPurpleStatus.Visible = false -- Masquer le petit texte sous la case.
 
         local TweenService = game:GetService("TweenService")
         local switchTweenInfo = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
@@ -14291,32 +14584,97 @@ do
         end
 
         local function snapCursorToPurple(cursor, purple)
-            local parentFrame = cursor.Parent
-            if not parentFrame then return end
+            local parentFrame = cursor and cursor.Parent
+            if not parentFrame or parentFrame.AbsoluteSize.Y <= 0 then
+                return false
+            end
 
+            -- Position doit être calculée dans les coordonnées du parent, pas en
+            -- pixels écran. Utiliser Scale rend l'alignement fiable même si un
+            -- UIScale ou une mise à l'échelle intervient dans l'interface.
             local targetCenter = purple.AbsolutePosition.Y + purple.AbsoluteSize.Y / 2
-            local targetTop = targetCenter - cursor.AbsoluteSize.Y / 2
-            local relativeY = targetTop - parentFrame.AbsolutePosition.Y
-                + cursor.AnchorPoint.Y * cursor.AbsoluteSize.Y
+            local anchorY = targetCenter + (cursor.AnchorPoint.Y - 0.5) * cursor.AbsoluteSize.Y
+            local relativeYScale = (anchorY - parentFrame.AbsolutePosition.Y) / parentFrame.AbsoluteSize.Y
 
-            -- Conserver les composantes X de la position du curseur.
             cursor.Position = UDim2.new(
                 cursor.Position.X.Scale,
                 cursor.Position.X.Offset,
-                0,
-                relativeY
+                relativeYScale,
+                0
             )
+            return true
         end
 
         local function getMeterParts()
             local playerGuiRef = LocalPlayer and LocalPlayer:FindFirstChildOfClass("PlayerGui")
             local basketballGui = playerGuiRef and playerGuiRef:FindFirstChild("BasketballGui")
-            local meter = basketballGui and basketballGui:FindFirstChild("Meter")
-            local cursor = meter and meter:FindFirstChild("Cursor")
-            local green = meter and meter:FindFirstChild("Green")
-            local yellow = green and green:FindFirstChild("Yellow")
+            local meter = basketballGui and basketballGui:FindFirstChild("Meter", true)
+            if not meter then
+                return nil, nil, nil
+            end
+
+            -- Préférer la hiérarchie attendue, avec recherche récursive en secours
+            -- si le jeu déplace un élément dans un conteneur supplémentaire.
+            local cursor = meter:FindFirstChild("Cursor") or meter:FindFirstChild("Cursor", true)
+            local green = meter:FindFirstChild("Green") or meter:FindFirstChild("Green", true)
+            local yellow = green and (green:FindFirstChild("Yellow") or green:FindFirstChild("Yellow", true))
             local purple = yellow and yellow:FindFirstChild("Purple")
+            if not purple then
+                purple = meter:FindFirstChild("Purple", true)
+            end
             return meter, cursor, purple
+        end
+
+        local function schedulePurpleRelease(cursor, purple)
+            if released or releasePending then
+                return
+            end
+
+            if type(mouse1release) ~= "function" then
+                released = true
+                AutoPurpleStatus.Text = "Relâchement indisponible"
+                warn("[AutoPurple] mouse1release() n'est pas disponible dans cet exécuteur.")
+                return
+            end
+
+            -- D'abord aligner le vrai GuiObject au centre de Purple et laisser
+            -- Roblox appliquer sa nouvelle AbsolutePosition avant de relâcher.
+            -- Un relâchement dans la même callback RenderStepped peut partir avec
+            -- l'ancienne position, ce qui explique des tirs enregistrés sur jaune.
+            if not snapCursorToPurple(cursor, purple) then
+                AutoPurpleStatus.Text = "Alignement Purple impossible"
+                return
+            end
+
+            releasePending = true
+            released = true
+            visualLocked = true
+            releaseGeneration += 1
+            local thisGeneration = releaseGeneration
+            AutoPurpleStatus.Text = "Alignement Purple…"
+
+            task.spawn(function()
+                RunService.RenderStepped:Wait()
+                if stopped or not enabled or thisGeneration ~= releaseGeneration then
+                    releasePending = false
+                    return
+                end
+
+                -- Ne pas réécrire Position dans cette callback : le positionnement
+                -- fait à la frame précédente a eu le temps d'être appliqué au layout.
+                local ok, err = pcall(function()
+                    mouse1release()
+                end)
+                releasePending = false
+
+                if ok then
+                    AutoPurpleStatus.Text = "Purple — relâchement envoyé"
+                    print("[AutoPurple] Curseur aligné sur Purple ; relâchement envoyé.")
+                else
+                    AutoPurpleStatus.Text = "Erreur de relâchement"
+                    warn("[AutoPurple] Échec de mouse1release():", err)
+                end
+            end)
         end
 
         local function stopAutoPurple(removeControls)
@@ -14330,6 +14688,9 @@ do
             wasVisible = false
             released = false
             previousDelta = nil
+            previousSampleTime = nil
+            releasePending = false
+            releaseGeneration += 1
             if AutoPurpleButton and AutoPurpleButton.Parent then
                 updateButton()
             end
@@ -14359,6 +14720,8 @@ do
                 local meter, cursor, purple = getMeterParts()
                 if not meter or not cursor or not purple then
                     AutoPurpleStatus.Text = "BasketballGui.Meter introuvable"
+                    previousDelta = nil
+                    previousSampleTime = nil
                     return
                 end
 
@@ -14370,24 +14733,38 @@ do
 
                 if not active then
                     if wasVisible then
-                        released = false
-                        visualLocked = false
-                        previousDelta = nil
-                        AutoPurpleStatus.Text = "Prêt pour le prochain tir"
+                        -- Ne pas annuler un relâchement déjà planifié : le jeu peut
+                        -- cacher la barre précisément au moment où le tir démarre.
+                        if releasePending then
+                            AutoPurpleStatus.Text = "Relâchement en cours"
+                        else
+                            released = false
+                            visualLocked = false
+                            previousDelta = nil
+                            previousSampleTime = nil
+                            releaseGeneration += 1
+                            AutoPurpleStatus.Text = "Prêt pour le prochain tir"
+                        end
                     end
                     wasVisible = false
                     return
                 end
 
                 if not wasVisible then
-                    released = false
-                    visualLocked = false
-                    previousDelta = nil
-                    AutoPurpleStatus.Text = "Barre détectée"
+                    -- Une disparition/réapparition très rapide ne doit pas annuler
+                    -- un relâchement en attente pour la cible déjà détectée.
+                    if not releasePending then
+                        released = false
+                        visualLocked = false
+                        previousDelta = nil
+                        previousSampleTime = nil
+                        AutoPurpleStatus.Text = "Barre détectée"
+                    end
                 end
                 wasVisible = true
 
-                -- Maintenir l'affichage sur Purple jusqu'à la disparition de la barre.
+                -- Tant que l'animation du tir est en cours, garder le curseur
+                -- visuellement aligné. Le relâchement est envoyé une seule fois.
                 if visualLocked then
                     snapCursorToPurple(cursor, purple)
                     return
@@ -14400,43 +14777,50 @@ do
                 local cursorCenter = cursorPos.Y + cursorSize.Y / 2
                 local purpleCenter = purplePos.Y + purpleSize.Y / 2
                 local delta = cursorCenter - purpleCenter
+                local now = os.clock()
 
-                -- Le curseur doit traverser le CENTRE de la cible Purple.
-                -- Ne pas utiliser le simple chevauchement des bords : le curseur
-                -- fait 4 px et peut toucher la cible alors que son centre est encore
-                -- dans la zone jaune.
+                -- Tolérance étroite autour du centre ; le test de traversée reste
+                -- nécessaire car un curseur rapide peut sauter la zone entre deux frames.
+                local centerTolerance = math.max(1, math.min(3, purpleSize.Y * 0.12))
                 local crossedPurpleCenter = previousDelta ~= nil
-                    and previousDelta > 0
-                    and delta <= 0
+                    and ((previousDelta < 0 and delta >= 0)
+                        or (previousDelta > 0 and delta <= 0))
 
-                if not released and crossedPurpleCenter then
-                    if type(mouse1release) ~= "function" then
-                        released = true
-                        AutoPurpleStatus.Text = "Relâchement indisponible"
-                        warn("[AutoPurple] mouse1release() n'est pas disponible dans cet exécuteur.")
-                        return
+                -- Prédire le passage au centre à partir de la vitesse observée. Si
+                -- le centre arrivera dans la prochaine frame, on aligne le curseur
+                -- maintenant plutôt que d'attendre que la frame l'ait déjà dépassé.
+                local predictedCenterSoon = false
+                if previousDelta ~= nil and previousSampleTime ~= nil then
+                    local sampleDt = now - previousSampleTime
+                    if sampleDt > 0 and sampleDt <= 0.15 then
+                        local velocityY = (delta - previousDelta) / sampleDt
+                        local movingTowardCenter = delta * velocityY < 0
+                        if movingTowardCenter and math.abs(velocityY) > 0.001 then
+                            local timeToCenter = math.abs(delta / velocityY)
+                            local predictionWindow = math.max(sampleDt * 1.15, 1 / 120)
+                            predictedCenterSoon = timeToCenter <= predictionWindow
+                        end
                     end
+                end
 
-                    -- Aligner l'affichage avant de laisser l'entrée normale déclencher le tir.
-                    snapCursorToPurple(cursor, purple)
-                    visualLocked = true
-                    released = true
+                local approachingCenter = previousDelta == nil
+                    or math.abs(delta) < math.abs(previousDelta)
+                    or crossedPurpleCenter
+                local insidePrecisionWindow = math.abs(delta) <= centerTolerance and approachingCenter
 
-                    local ok, err = pcall(function()
-                        mouse1release()
-                    end)
-
-                    if ok then
-                        AutoPurpleStatus.Text = "Purple — clic relâché"
-                        print("[AutoPurple] Cible détectée ; relâchement normal déclenché.")
-                    else
-                        AutoPurpleStatus.Text = "Erreur de relâchement"
-                        warn("[AutoPurple] Échec de mouse1release():", err)
-                    end
+                -- Utiliser la prédiction et la traversée pour les mouvements rapides,
+                -- et une tolérance serrée pour les mouvements lents ou un curseur immobile.
+                if not released and (crossedPurpleCenter or predictedCenterSoon or insidePrecisionWindow) then
+                    schedulePurpleRelease(cursor, purple)
+                    previousDelta = delta
+                    previousSampleTime = now
                     return
                 end
 
+                -- Conserver aussi l'horodatage pour diagnostics/anti-sauts lors des
+                -- prochaines frames ; les positions écran restent la référence.
                 previousDelta = delta
+                previousSampleTime = now
             end)
         end
 
@@ -14515,6 +14899,9 @@ do
                 wasVisible = false
                 released = false
                 previousDelta = nil
+                previousSampleTime = nil
+                releasePending = false
+                releaseGeneration += 1
                 if renderConnection then
                     pcall(function() renderConnection:Disconnect() end)
                     renderConnection = nil
@@ -14556,3 +14943,433 @@ do
     end
 end
 
+--==============================================================
+-- INFINITE YIELD — lanceur intégré dans AUTRES
+-- Le bouton lance le script une seule fois ; il ne peut pas l'arrêter
+-- une fois chargé. Aucun switch ni petit texte de statut n'est affiché.
+--==============================================================
+do
+    pcall(function()
+        local autresPageRef = MainFrame and MainFrame:FindFirstChild("OmegaAutresPage", true)
+        if not autresPageRef then
+            warn("[Infinite Yield] Page AUTRES introuvable ; module non ajouté.")
+            return
+        end
+
+        local previousButton = autresPageRef:FindFirstChild("PRISONRP_InfiniteYieldToggle")
+        if previousButton then previousButton:Destroy() end
+        local previousStatus = autresPageRef:FindFirstChild("PRISONRP_InfiniteYieldStatus")
+        if previousStatus then previousStatus:Destroy() end
+
+        local TweenService = game:GetService("TweenService")
+        local launched = (_G.PRISONRP_IY_LAUNCHED == true)
+        local launching = (_G.PRISONRP_IY_LAUNCHING == true)
+        local busy = false
+        local lastToggleAt = 0
+
+        local InfiniteYieldButton = Instance.new("TextButton")
+        InfiniteYieldButton.Name = "PRISONRP_InfiniteYieldToggle"
+        -- Infinite Yield est juste sous Auto Purple, avec le même écart de 6 px.
+        InfiniteYieldButton.Size = UDim2.new(1, -213, 0, 34)
+        InfiniteYieldButton.Position = UDim2.fromOffset(0, 270)
+        InfiniteYieldButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        InfiniteYieldButton.BorderSizePixel = 0
+        InfiniteYieldButton.Text = ""
+        InfiniteYieldButton.AutoButtonColor = false
+        InfiniteYieldButton.Active = true
+        InfiniteYieldButton.Selectable = true
+        InfiniteYieldButton.ZIndex = (autresPageRef.ZIndex or 1) + 2
+        InfiniteYieldButton.Parent = autresPageRef
+
+        local cardCorner = Instance.new("UICorner")
+        cardCorner.CornerRadius = UDim.new(0, 7)
+        cardCorner.Parent = InfiniteYieldButton
+
+        local cardStroke = Instance.new("UIStroke")
+        cardStroke.Name = "PRISONRP_UXHoverStroke"
+        cardStroke.Color = Color3.fromRGB(79, 142, 255)
+        cardStroke.Transparency = 1
+        cardStroke.Thickness = 1.4
+        cardStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        cardStroke.Parent = InfiniteYieldButton
+
+        local InfiniteYieldTitle = Instance.new("TextLabel")
+        InfiniteYieldTitle.Name = "Title"
+        InfiniteYieldTitle.Size = UDim2.new(1, 0, 1, 0)
+        InfiniteYieldTitle.Position = UDim2.fromOffset(0, 0)
+        InfiniteYieldTitle.BackgroundTransparency = 1
+        InfiniteYieldTitle.BorderSizePixel = 0
+        InfiniteYieldTitle.Text = "♾️  INFINITE YIELD"
+        InfiniteYieldTitle.TextColor3 = Color3.fromRGB(236, 240, 248)
+        InfiniteYieldTitle.TextSize = 15
+        InfiniteYieldTitle.Font = Enum.Font.GothamBold
+        InfiniteYieldTitle.TextXAlignment = Enum.TextXAlignment.Center
+        InfiniteYieldTitle.TextYAlignment = Enum.TextYAlignment.Center
+        InfiniteYieldTitle.ZIndex = InfiniteYieldButton.ZIndex + 1
+        InfiniteYieldTitle.Parent = InfiniteYieldButton
+
+        local InfiniteYieldSwitch = Instance.new("TextButton")
+        InfiniteYieldSwitch.Name = "GDPCheckbox"
+        InfiniteYieldSwitch.Size = UDim2.fromOffset(42, 22)
+        InfiniteYieldSwitch.Position = UDim2.new(1, -52, 0.5, -11)
+        InfiniteYieldSwitch.BackgroundColor3 = Color3.fromRGB(70, 76, 88)
+        InfiniteYieldSwitch.BorderSizePixel = 0
+        InfiniteYieldSwitch.Text = ""
+        InfiniteYieldSwitch.AutoButtonColor = false
+        InfiniteYieldSwitch.Active = true
+        InfiniteYieldSwitch.Selectable = true
+        InfiniteYieldSwitch.ZIndex = InfiniteYieldButton.ZIndex + 2
+        InfiniteYieldSwitch.Parent = InfiniteYieldButton
+
+        local switchCorner = Instance.new("UICorner")
+        switchCorner.CornerRadius = UDim.new(1, 0)
+        switchCorner.Parent = InfiniteYieldSwitch
+
+        local switchStroke = Instance.new("UIStroke")
+        switchStroke.Name = "SwitchBorder"
+        switchStroke.Color = Color3.fromRGB(48, 57, 72)
+        switchStroke.Transparency = 0.18
+        switchStroke.Thickness = 1
+        switchStroke.Parent = InfiniteYieldSwitch
+
+        InfiniteYieldSwitch.Visible = false -- Infinite Yield est un bouton d'action, pas un switch.
+
+        local InfiniteYieldKnob = Instance.new("Frame")
+        InfiniteYieldKnob.Name = "Knob"
+        InfiniteYieldKnob.Size = UDim2.fromOffset(16, 16)
+        InfiniteYieldKnob.Position = UDim2.fromOffset(3, 3)
+        InfiniteYieldKnob.BackgroundColor3 = Color3.fromRGB(245, 247, 251)
+        InfiniteYieldKnob.BorderSizePixel = 0
+        InfiniteYieldKnob.ZIndex = InfiniteYieldSwitch.ZIndex + 1
+        InfiniteYieldKnob.Parent = InfiniteYieldSwitch
+
+        local knobCorner = Instance.new("UICorner")
+        knobCorner.CornerRadius = UDim.new(1, 0)
+        knobCorner.Parent = InfiniteYieldKnob
+
+        local InfiniteYieldStatus = Instance.new("TextLabel")
+        InfiniteYieldStatus.Name = "PRISONRP_InfiniteYieldStatus"
+        InfiniteYieldStatus.Size = UDim2.new(1, -213, 0, 18)
+        InfiniteYieldStatus.Position = UDim2.fromOffset(0, 271)
+        InfiniteYieldStatus.BackgroundTransparency = 1
+        InfiniteYieldStatus.BorderSizePixel = 0
+        InfiniteYieldStatus.Text = launched and "Déjà lancé • pas d'arrêt ici"
+            or (launching and "Chargement déjà en cours" or "Infinite Yield : inactif")
+        InfiniteYieldStatus.TextColor3 = Color3.fromRGB(145, 155, 172)
+        InfiniteYieldStatus.TextSize = 9
+        InfiniteYieldStatus.Font = Enum.Font.GothamMedium
+        InfiniteYieldStatus.TextXAlignment = Enum.TextXAlignment.Center
+        InfiniteYieldStatus.TextYAlignment = Enum.TextYAlignment.Center
+        InfiniteYieldStatus.ZIndex = (autresPageRef.ZIndex or 1) + 2
+        InfiniteYieldStatus.Parent = autresPageRef
+        InfiniteYieldStatus.Visible = false -- Masquer le petit texte sous la case.
+
+        local switchTweenInfo = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        local colorTweenInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local knobTween = nil
+        local switchColorTween = nil
+
+        local function updateSwitch(state, animated)
+            local targetPosition = state
+                and UDim2.new(1, -19, 0, 3)
+                or UDim2.fromOffset(3, 3)
+            local targetColor = state
+                and Color3.fromRGB(40, 150, 80)
+                or Color3.fromRGB(70, 76, 88)
+
+            if knobTween then pcall(function() knobTween:Cancel() end) end
+            if switchColorTween then pcall(function() switchColorTween:Cancel() end) end
+
+            if animated then
+                knobTween = TweenService:Create(InfiniteYieldKnob, switchTweenInfo, {
+                    Position = targetPosition
+                })
+                switchColorTween = TweenService:Create(InfiniteYieldSwitch, colorTweenInfo, {
+                    BackgroundColor3 = targetColor
+                })
+                knobTween:Play()
+                switchColorTween:Play()
+            else
+                InfiniteYieldKnob.Position = targetPosition
+                InfiniteYieldSwitch.BackgroundColor3 = targetColor
+            end
+        end
+
+        local cardTweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local cardHovered = false
+        local cardPressed = false
+        local activeCardTween = nil
+
+        local function refreshCardStroke()
+            if not cardStroke or not cardStroke.Parent then return end
+            if activeCardTween then pcall(function() activeCardTween:Cancel() end) end
+            local transparency = cardPressed and 0.02 or (cardHovered and 0.08 or 1)
+            local thickness = cardPressed and 2 or (cardHovered and 1.5 or 1.4)
+            activeCardTween = TweenService:Create(cardStroke, cardTweenInfo, {
+                Color = Color3.fromRGB(79, 142, 255),
+                Transparency = transparency,
+                Thickness = thickness,
+            })
+            activeCardTween:Play()
+        end
+
+        InfiniteYieldButton.MouseEnter:Connect(function()
+            cardHovered = true
+            refreshCardStroke()
+        end)
+        InfiniteYieldButton.MouseLeave:Connect(function()
+            cardHovered = false
+            cardPressed = false
+            refreshCardStroke()
+        end)
+        InfiniteYieldButton.MouseButton1Down:Connect(function()
+            cardPressed = true
+            refreshCardStroke()
+        end)
+        InfiniteYieldButton.MouseButton1Up:Connect(function()
+            cardPressed = false
+            refreshCardStroke()
+        end)
+        InfiniteYieldSwitch.MouseEnter:Connect(function()
+            pcall(function()
+                TweenService:Create(switchStroke, cardTweenInfo, {Transparency = 0.05}):Play()
+            end)
+        end)
+        InfiniteYieldSwitch.MouseLeave:Connect(function()
+            updateSwitch(launched, true)
+            pcall(function()
+                TweenService:Create(switchStroke, cardTweenInfo, {Transparency = 0.18}):Play()
+            end)
+        end)
+
+        local function setStatus(message, color)
+            if InfiniteYieldStatus and InfiniteYieldStatus.Parent then
+                InfiniteYieldStatus.Text = message
+                InfiniteYieldStatus.TextColor3 = color or Color3.fromRGB(145, 155, 172)
+            end
+        end
+
+        local function launchInfiniteYield()
+            local now = os.clock()
+            if now - lastToggleAt < 0.18 then return end
+            lastToggleAt = now
+
+            if launched or _G.PRISONRP_IY_LAUNCHED == true then
+                launched = true
+                updateSwitch(true, true)
+                setStatus("Déjà lancé • pas d'arrêt ici", Color3.fromRGB(100, 210, 130))
+                return
+            end
+
+            if busy or _G.PRISONRP_IY_LAUNCHING == true then
+                setStatus("Chargement déjà en cours")
+                return
+            end
+
+            busy = true
+            _G.PRISONRP_IY_LAUNCHING = true
+            updateSwitch(true, true)
+            setStatus("Chargement d'Infinite Yield...", Color3.fromRGB(180, 200, 255))
+
+            task.spawn(function()
+                local ok, result = pcall(function()
+                    if type(loadstring) ~= "function" then
+                        error("loadstring indisponible dans cet executor")
+                    end
+                    local source = game:HttpGet("https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source")
+                    local compiled, compileError = loadstring(source)
+                    if type(compiled) ~= "function" then
+                        error(compileError or "Compilation impossible")
+                    end
+                    return compiled
+                end)
+
+                if not ok then
+                    _G.PRISONRP_IY_LAUNCHING = false
+                    _G.PRISONRP_IY_LAUNCHED = false
+                    launched = false
+                    busy = false
+                    updateSwitch(false, true)
+                    setStatus("Échec du chargement", Color3.fromRGB(235, 110, 110))
+                    warn("[Infinite Yield] " .. tostring(result))
+                    return
+                end
+
+                local compiled = result
+                _G.PRISONRP_IY_LAUNCHING = false
+                _G.PRISONRP_IY_LAUNCHED = true
+                launched = true
+                busy = false
+                updateSwitch(true, true)
+                setStatus("Lancé • ce switch ne l'arrête pas", Color3.fromRGB(100, 210, 130))
+
+                task.spawn(function()
+                    local runtimeOk, runtimeError = pcall(compiled)
+                    if not runtimeOk then
+                        _G.PRISONRP_IY_LAUNCHED = false
+                        launched = false
+                        updateSwitch(false, true)
+                        setStatus("Erreur d'exécution", Color3.fromRGB(235, 110, 110))
+                        warn("[Infinite Yield] " .. tostring(runtimeError))
+                    end
+                end)
+            end)
+        end
+
+        -- Expose le même lanceur pour que les autres boutons puissent le réutiliser.
+        _G.PRISONRP_LaunchInfiniteYield = launchInfiniteYield
+
+        InfiniteYieldSwitch.Activated:Connect(launchInfiniteYield)
+        InfiniteYieldButton.Activated:Connect(launchInfiniteYield)
+
+        updateSwitch(launched, false)
+        refreshCardStroke()
+        print("[Infinite Yield] Lanceur ajouté dans AUTRES.")
+    end)
+end
+
+
+
+--==============================================================
+-- TROIS BOUTONS PERSONNALISABLES — AUTRES
+-- Les callbacks ci-dessous sont des emplacements réservés.
+-- Pour une fonction légitime, ajoute son action dans le callback
+-- correspondant. Les scripts Anti-VC-Ban demandés ne sont pas chargés.
+--==============================================================
+do
+    pcall(function()
+        local autresPageRef = MainFrame and MainFrame:FindFirstChild("OmegaAutresPage", true)
+        if not autresPageRef then
+            warn("[Cases personnalisables] Page AUTRES introuvable.")
+            return
+        end
+
+        local TweenService = game:GetService("TweenService")
+        local definitions = {
+            {name = "🛡️ Anti VCB", objectName = "PRISONRP_Custom_AntiV", y = 310},
+            {name = "⚡ Novoline", objectName = "PRISONRP_Custom_Novoline", y = 350},
+            {name = "🎯 M7", objectName = "PRISONRP_Custom_M7", y = 390},
+        }
+
+        for _, definition in ipairs(definitions) do
+            local previous = autresPageRef:FindFirstChild(definition.objectName)
+            if previous then previous:Destroy() end
+
+            local button = Instance.new("TextButton")
+            button.Name = definition.objectName
+            button.Size = UDim2.new(1, -213, 0, 34)
+            button.Position = UDim2.fromOffset(0, definition.y)
+            button.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+            button.BorderSizePixel = 0
+            button.Text = ""
+            button.AutoButtonColor = false
+            button.Active = true
+            button.Selectable = true
+            button.ZIndex = (autresPageRef.ZIndex or 1) + 2
+            button.Parent = autresPageRef
+
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 7)
+            corner.Parent = button
+
+            local stroke = Instance.new("UIStroke")
+            stroke.Name = "PRISONRP_UXHoverStroke"
+            stroke.Color = Color3.fromRGB(79, 142, 255)
+            stroke.Transparency = 1
+            stroke.Thickness = 1.4
+            stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            stroke.Parent = button
+
+            local title = Instance.new("TextLabel")
+            title.Name = "Title"
+            title.Size = UDim2.new(1, 0, 1, 0)
+            title.Position = UDim2.fromOffset(0, 0)
+            title.BackgroundTransparency = 1
+            title.BorderSizePixel = 0
+            title.Text = definition.name
+            title.TextColor3 = Color3.fromRGB(236, 240, 248)
+            title.TextSize = 15
+            title.Font = Enum.Font.GothamBold
+            title.TextXAlignment = Enum.TextXAlignment.Center
+            title.TextYAlignment = Enum.TextYAlignment.Center
+            title.ZIndex = button.ZIndex + 1
+            title.Parent = button
+
+            local tweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+            local hovered, pressed = false, false
+            local activeTween
+
+            local function refreshStroke()
+                if not stroke.Parent then return end
+                if activeTween then pcall(function() activeTween:Cancel() end) end
+                activeTween = TweenService:Create(stroke, tweenInfo, {
+                    Transparency = pressed and 0.02 or (hovered and 0.08 or 1),
+                    Thickness = pressed and 2 or (hovered and 1.5 or 1.4),
+                })
+                activeTween:Play()
+            end
+
+            button.MouseEnter:Connect(function()
+                hovered = true
+                refreshStroke()
+            end)
+            button.MouseLeave:Connect(function()
+                hovered, pressed = false, false
+                refreshStroke()
+            end)
+            button.MouseButton1Down:Connect(function()
+                pressed = true
+                refreshStroke()
+            end)
+            button.MouseButton1Up:Connect(function()
+                pressed = false
+                refreshStroke()
+            end)
+
+            refreshStroke()
+        end
+
+        -- Chaque case possède son propre callback, séparément.
+        -- Anti V charge le script distant demandé ; les deux autres gardent Infinite Yield.
+        autresPageRef:WaitForChild("PRISONRP_Custom_AntiV").Activated:Connect(function()
+            local url = "https://raw.githubusercontent.com/imshrak/anti-vcb/refs/heads/main/main"
+            local ok, err = pcall(function()
+                local source = game:HttpGet(url)
+                local compiled, compileError = loadstring(source)
+                if not compiled then error(compileError or "Impossible de compiler le script distant") end
+                task.spawn(compiled)
+            end)
+            if not ok then
+                warn("[Anti V] Échec du chargement : " .. tostring(err))
+            end
+        end)
+
+        autresPageRef:WaitForChild("PRISONRP_Custom_Novoline").Activated:Connect(function()
+            local url = "https://novoline.pro"
+            local ok, err = pcall(function()
+                local source = game:HttpGet(url)
+                local compiled, compileError = loadstring(source)
+                if not compiled then error(compileError or "Impossible de compiler le script distant") end
+                task.spawn(compiled)
+            end)
+            if not ok then
+                warn("[Novoline] Échec du chargement : " .. tostring(err))
+            end
+        end)
+
+        autresPageRef:WaitForChild("PRISONRP_Custom_M7").Activated:Connect(function()
+            local url = "https://rawscripts.net/raw/Universal-Script-Anti-VC-Ban-NO-KEY-191311"
+            local ok, err = pcall(function()
+                local source = game:HttpGet(url)
+                local compiled, compileError = loadstring(source)
+                if not compiled then error(compileError or "Impossible de compiler le script distant") end
+                task.spawn(compiled)
+            end)
+            if not ok then
+                warn("[M7] Échec du chargement : " .. tostring(err))
+            end
+        end)
+
+        print("[Cases personnalisables] Anti V, Novoline et M7 ajoutés dans AUTRES.")
+    end)
+end
