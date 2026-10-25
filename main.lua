@@ -1,3 +1,7 @@
+-- V7 : ajout du compteur FPS dans les statistiques.
+-- V6 : confirmation des captures par le signal CatchPrompt reçu côté client.
+-- V5 : reprise différée Auto Eat/Drink et en-tête compactés.
+-- corrige les chevauchements de l'en-tête et met à jour les commentaires d'échelle.
 -- V4 : Auto Eat/Drink différé après récupération de pêche ; blocage avec outil actif et jauge basketball visible.
 -- V215 | Renommage persistant des 5 sauvegardes dans Paramètres.
 -- V214 | Aimbot : suppression du raccourci clavier et du texte d’aide, contrôles remontés. Base V213.
@@ -21,15 +25,9 @@ if _G.CombinedHubLoaded == true then
     _G.running = false -- arrête aussi les anciennes versions qui utilisaient la globale
 end
 
+-- La vitesse normale sera capturée APRÈS le nettoyage de l'ancienne instance.
+-- La lire avant CombinedHubCleanup pouvait mémoriser la vitesse du SpeedHack.
 local __PRISONRP_PreviousHumanoidWalkSpeed = nil
-pcall(function()
-    local __player = game:GetService("Players").LocalPlayer
-    local __char = __player and __player.Character
-    local __hum = __char and __char:FindFirstChildOfClass("Humanoid")
-    if __hum then
-        __PRISONRP_PreviousHumanoidWalkSpeed = __hum.WalkSpeed
-    end
-end)
 
 _G.CombinedHubReady = false
 
@@ -66,13 +64,29 @@ if _G.CombinedHubLoaded and type(_G.CombinedHubCleanup) == "function" then
     pcall(_G.CombinedHubCleanup)
 end
 
--- Restaurer immédiatement la vitesse qui existait avant l'unload.
+-- Récupération de sécurité au démarrage : si une ancienne exécution a laissé
+-- la caméra en mode Scriptable, rattacher la caméra au Humanoid local.
+-- Ne rien modifier si la caméra du jeu est déjà dans son mode normal.
+pcall(function()
+    local player = game:GetService("Players").LocalPlayer
+    local character = player and player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local camera = workspace.CurrentCamera
+    if camera and humanoid and camera.CameraType == Enum.CameraType.Scriptable then
+        camera.CameraType = Enum.CameraType.Custom
+        camera.CameraSubject = humanoid
+    end
+end)
+
+-- Lire la vitesse après l'unload : l'ancien CombinedHubCleanup vient de restaurer
+-- MovementNormalWalkSpeed. Ne pas réappliquer une valeur capturée avant le nettoyage,
+-- car elle pourrait correspondre à la vitesse temporaire du SpeedHack.
 pcall(function()
     local __player = game:GetService("Players").LocalPlayer
     local __char = __player and __player.Character
     local __hum = __char and __char:FindFirstChildOfClass("Humanoid")
-    if __hum and tonumber(__PRISONRP_PreviousHumanoidWalkSpeed) then
-        __hum.WalkSpeed = __PRISONRP_PreviousHumanoidWalkSpeed
+    if __hum then
+        __PRISONRP_PreviousHumanoidWalkSpeed = __hum.WalkSpeed
     end
 end)
 
@@ -161,12 +175,13 @@ TP_STEP_TIME = 0.45
 TP_MAX_STEP_DISTANCE = 7
 TP_HOLD_TIME = 0.12
 
-function robustTeleportTo(targetCFrame)
+function robustTeleportTo(targetCFrame, requestedSpeed, cancelCheck)
     if not running then return false end
     local char = LocalPlayer and LocalPlayer.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not root or typeof(targetCFrame) ~= "CFrame" then return false end
+    if cancelCheck and cancelCheck() then return false end
 
     local startPos = root.Position
     local targetPos = targetCFrame.Position
@@ -186,36 +201,66 @@ function robustTeleportTo(targetCFrame)
         return ok and root.Parent ~= nil and (root.Position - targetPos).Magnitude <= 10
     end
 
-    local steps = math.max(1, math.ceil(distance / TP_MAX_STEP_DISTANCE))
-    local started = os.clock()
+    local teleportSpeed = tonumber(requestedSpeed)
+    if teleportSpeed and teleportSpeed > 0 then
+        -- Déplacement plafonné à la vitesse demandée (studs/seconde).
+        -- La limite par frame évite les grands sauts si une frame est ralentie.
+        local alpha = 0
+        while alpha < 1 do
+            if not running or not root.Parent or (cancelCheck and cancelCheck()) then return false end
 
-    for i = 1, steps do
-        if not running or not root.Parent then return false end
+            local dt = RunService.Heartbeat:Wait()
+            if not running or not root.Parent or (cancelCheck and cancelCheck()) then return false end
+            local stepDistance = math.min(teleportSpeed * dt, TP_MAX_STEP_DISTANCE)
+            alpha = math.min(alpha + (stepDistance / distance), 1)
+            local pos = startPos:Lerp(targetPos, alpha)
+            local cf = CFrame.new(pos) * targetCFrame.Rotation
 
-        local alpha = i / steps
-        local pos = startPos:Lerp(targetPos, alpha)
-        local cf = CFrame.new(pos) * targetCFrame.Rotation
+            pcall(function()
+                if char and char.PivotTo then
+                    char:PivotTo(cf)
+                else
+                    root.CFrame = cf
+                end
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+                if hum then
+                    hum:Move(Vector3.zero, false)
+                end
+            end)
+        end
+    else
+        -- Comportement historique conservé pour les téléportations qui ne
+        -- demandent pas explicitement une vitesse.
+        local steps = math.max(1, math.ceil(distance / TP_MAX_STEP_DISTANCE))
+        for i = 1, steps do
+            if not running or not root.Parent then return false end
 
-        pcall(function()
-            if char and char.PivotTo then
-                char:PivotTo(cf)
-            else
-                root.CFrame = cf
-            end
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
-            if hum then
-                hum:Move(Vector3.zero, false)
-            end
-        end)
+            local alpha = i / steps
+            local pos = startPos:Lerp(targetPos, alpha)
+            local cf = CFrame.new(pos) * targetCFrame.Rotation
 
-        RunService.Heartbeat:Wait()
+            pcall(function()
+                if char and char.PivotTo then
+                    char:PivotTo(cf)
+                else
+                    root.CFrame = cf
+                end
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+                if hum then
+                    hum:Move(Vector3.zero, false)
+                end
+            end)
+
+            RunService.Heartbeat:Wait()
+        end
     end
 
     -- Petite phase de stabilisation à l'arrivée.
     local holdUntil = os.clock() + TP_HOLD_TIME
     while running and os.clock() < holdUntil do
-        if not root.Parent then return false end
+        if not root.Parent or (cancelCheck and cancelCheck()) then return false end
         pcall(function()
             if char and char.PivotTo then
                 char:PivotTo(targetCFrame)
@@ -261,7 +306,7 @@ function returnToSavedTeleportPosition(expectedMode)
     end
     return ok
 end
-stats = {totalCaught = 0, perfectCount = 0, lastFish = "None", status = "Idle"}
+stats = {totalCaught = 0, perfectCount = 0, lastFish = "None", status = "Idle", fps = 0}
 
 pcall(function()
     local old = guiParent:FindFirstChild("CombinedHubUI")
@@ -291,8 +336,8 @@ MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
 
--- Agrandissement réel de toute l'interface.
--- UIScale applique le facteur 1.25 à MainFrame et à tous ses enfants.
+-- Mise à l'échelle globale de l'interface.
+-- La valeur 0.875 réduit MainFrame et tous ses enfants.
 MainFrameScale = Instance.new("UIScale")
 MainFrameScale.Name = "InterfaceScale"
 MainFrameScale.Scale = 0.875
@@ -395,6 +440,155 @@ UnloadBtnCorner = Instance.new("UICorner")
 UnloadBtnCorner.CornerRadius = UDim.new(0, 9)
 UnloadBtnCorner.Parent = UnloadBtn
 
+-- Bouton flottant visible lorsque le hub est réduit.
+-- Placé dans la zone libre à droite des icônes Roblox, comme indiqué sur la capture.
+MinimizedHubButton = Instance.new("TextButton")
+MinimizedHubButton.Name = "MinimizedHubButton"
+-- Par défaut, à droite des icônes Roblox, comme sur la capture fournie.
+MinimizedHubButton.Size = UDim2.fromOffset(122, 34)
+MinimizedHubButton.Position = UDim2.fromOffset(376, 18)
+MinimizedHubButton.AnchorPoint = Vector2.new(0, 0)
+MinimizedHubButton.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
+MinimizedHubButton.BorderSizePixel = 0
+-- Le texte est recréé dans un TextLabel indépendant pour éviter tout ancien style hérité.
+MinimizedHubButton.Text = ""
+MinimizedHubButton.TextStrokeTransparency = 1
+MinimizedHubButton.AutoButtonColor = false
+
+MinimizedHubTitleLabel = Instance.new("TextLabel")
+MinimizedHubTitleLabel.Name = "MinimizedHubTitleLabel"
+MinimizedHubTitleLabel.Size = UDim2.fromScale(1, 1)
+MinimizedHubTitleLabel.Position = UDim2.fromScale(0, 0)
+MinimizedHubTitleLabel.BackgroundTransparency = 1
+MinimizedHubTitleLabel.BorderSizePixel = 0
+MinimizedHubTitleLabel.Text = "Prison RP GDP"
+MinimizedHubTitleLabel.TextColor3 = Color3.fromRGB(225, 229, 237)
+MinimizedHubTitleLabel.TextStrokeTransparency = 1
+MinimizedHubTitleLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+MinimizedHubTitleLabel.TextSize = 13
+MinimizedHubTitleLabel.Font = Enum.Font.GothamMedium
+MinimizedHubTitleLabel.TextXAlignment = Enum.TextXAlignment.Center
+MinimizedHubTitleLabel.TextYAlignment = Enum.TextYAlignment.Center
+MinimizedHubTitleLabel.TextWrapped = false
+MinimizedHubTitleLabel.TextScaled = false
+MinimizedHubTitleLabel.RichText = false
+MinimizedHubTitleLabel.Active = false
+MinimizedHubTitleLabel.Selectable = false
+MinimizedHubTitleLabel.ZIndex = 1001
+MinimizedHubTitleLabel.Parent = MinimizedHubButton
+MinimizedHubButton.AutoButtonColor = false
+MinimizedHubButton.Active = true
+-- Exclut explicitement ce bouton des effets de survol globaux du hub.
+MinimizedHubButton:SetAttribute("PRISONRP_NoHoverEffect", true)
+MinimizedHubButton.Visible = false
+MinimizedHubButton.ZIndex = 1000
+MinimizedHubButton.Parent = ScreenGui
+
+MinimizedHubCorner = Instance.new("UICorner")
+MinimizedHubCorner.CornerRadius = UDim.new(0, 16)
+MinimizedHubCorner.Parent = MinimizedHubButton
+
+MinimizedHubStroke = Instance.new("UIStroke")
+-- Contour discret assorti au thème sombre du hub, sans effet de survol.
+MinimizedHubStroke.Color = Color3.fromRGB(75, 88, 112)
+MinimizedHubStroke.Thickness = 1
+MinimizedHubStroke.Transparency = 0.28
+MinimizedHubStroke.Parent = MinimizedHubButton
+
+-- Déplacement du bouton réduit.
+-- Important : le delta est calculé avec input.Position au début ET pendant le drag,
+-- puis ajouté à Position (coordonnées du ScreenGui). On ne mélange pas GetMouseLocation
+-- avec AbsolutePosition, ce qui pouvait provoquer un saut vertical au clic.
+-- Déconnecter d'éventuels handlers d'une exécution précédente avant d'en créer de nouveaux.
+if MinimizedHubDragInputChangedConnection then
+    pcall(function() MinimizedHubDragInputChangedConnection:Disconnect() end)
+end
+if MinimizedHubDragInputEndedConnection then
+    pcall(function() MinimizedHubDragInputEndedConnection:Disconnect() end)
+end
+
+MinimizedHubDragging = false
+MinimizedHubDragDidMove = false
+MinimizedHubDragStart = nil
+MinimizedHubDragStartPosition = nil
+MinimizedHubDragInputType = nil
+MinimizedHubDragTouchInput = nil
+MinimizedHubDragUserInputService = game:GetService("UserInputService")
+
+local function getMinimizedHubInputPosition(input)
+    -- input.Position garde le même repère au début et pendant le déplacement.
+    return Vector2.new(input.Position.X, input.Position.Y)
+end
+
+MinimizedHubButton.InputBegan:Connect(function(input)
+    if not MinimizedHubButton.Visible then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+
+    MinimizedHubDragging = true
+    MinimizedHubDragDidMove = false
+    MinimizedHubDragInputType = input.UserInputType
+    MinimizedHubDragTouchInput = input.UserInputType == Enum.UserInputType.Touch and input or nil
+    MinimizedHubDragStart = getMinimizedHubInputPosition(input)
+    MinimizedHubDragStartPosition = MinimizedHubButton.Position
+end)
+
+MinimizedHubDragInputChangedConnection = MinimizedHubDragUserInputService.InputChanged:Connect(function(input)
+    if not MinimizedHubDragging or not MinimizedHubDragStart or not MinimizedHubDragStartPosition then return end
+
+    if MinimizedHubDragInputType == Enum.UserInputType.MouseButton1 then
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    elseif MinimizedHubDragInputType == Enum.UserInputType.Touch then
+        if input ~= MinimizedHubDragTouchInput then return end
+    else
+        return
+    end
+
+    local pointerPosition = getMinimizedHubInputPosition(input)
+    local delta = pointerPosition - MinimizedHubDragStart
+    if delta.Magnitude > 3 then
+        MinimizedHubDragDidMove = true
+    end
+    if not MinimizedHubDragDidMove then return end
+
+    local viewport = ScreenGui.AbsoluteSize
+    local buttonSize = MinimizedHubButton.AbsoluteSize
+    local maxX = math.max(0, viewport.X - buttonSize.X)
+    local maxY = math.max(0, viewport.Y - buttonSize.Y)
+
+    -- Le bouton utilise une position en offsets ; partir de cette valeur évite
+    -- toute conversion AbsolutePosition -> Position qui pourrait introduire un décalage.
+    local x = MinimizedHubDragStartPosition.X.Offset + delta.X
+    local y = MinimizedHubDragStartPosition.Y.Offset + delta.Y
+    x = math.clamp(x, 0, maxX)
+    y = math.clamp(y, 0, maxY)
+    MinimizedHubButton.Position = UDim2.fromOffset(math.floor(x + 0.5), math.floor(y + 0.5))
+end)
+
+MinimizedHubDragInputEndedConnection = MinimizedHubDragUserInputService.InputEnded:Connect(function(input)
+    local isMatchingEnd = false
+    if MinimizedHubDragInputType == Enum.UserInputType.MouseButton1 then
+        isMatchingEnd = input.UserInputType == Enum.UserInputType.MouseButton1
+    elseif MinimizedHubDragInputType == Enum.UserInputType.Touch then
+        isMatchingEnd = input == MinimizedHubDragTouchInput
+    end
+    if not MinimizedHubDragging or not isMatchingEnd then return end
+
+    MinimizedHubDragging = false
+    MinimizedHubDragStart = nil
+    MinimizedHubDragStartPosition = nil
+    MinimizedHubDragInputType = nil
+    MinimizedHubDragTouchInput = nil
+    if MinimizedHubDragDidMove then
+        -- Ignore le clic émis à la fin d'un drag, sans bloquer le prochain vrai clic.
+        task.delay(0.15, function()
+            MinimizedHubDragDidMove = false
+        end)
+    end
+end)
+
 UnloadBtnStroke = Instance.new("UIStroke")
 UnloadBtnStroke.Color = Color3.fromRGB(170, 75, 78)
 UnloadBtnStroke.Transparency = 0.45
@@ -427,7 +621,7 @@ StatsLabel = Instance.new("TextLabel")
 StatsLabel.Size = UDim2.new(1, 0, 0, 22)
 StatsLabel.Position = UDim2.new(0, 0, 0, 26)
 StatsLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
-StatsLabel.Text = "Caught: 0 | Perfect: 0"
+StatsLabel.Text = "Caught: 0 | Perfect: 0 | FPS: 0"
 StatsLabel.TextColor3 = Color3.fromRGB(150, 240, 160)
 StatsLabel.TextSize = 11
 StatsLabel.Font = Enum.Font.GothamMedium
@@ -918,6 +1112,9 @@ function autoMineReleaseMouse()
 end
 
 function autoMineStopFly()
+    -- Ne toucher à la physique que si la boucle de déplacement était réellement active.
+    -- CombinedHubCleanup appelle aussi autoMineStop() quand Auto Mine est déjà OFF.
+    local wasAutoMineFlying = AutoMineFlyConnection ~= nil
     if AutoMineFlyConnection then
         pcall(function() AutoMineFlyConnection:Disconnect() end)
         AutoMineFlyConnection = nil
@@ -927,7 +1124,7 @@ function autoMineStopFly()
     local char = LocalPlayer and LocalPlayer.Character
     local rr = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if rr then
+    if rr and wasAutoMineFlying then
         pcall(function()
             rr.AssemblyLinearVelocity = Vector3.zero
             rr.AssemblyAngularVelocity = Vector3.zero
@@ -935,7 +1132,7 @@ function autoMineStopFly()
     end
     if hum then
         pcall(function()
-            hum.PlatformStand = false
+            if wasAutoMineFlying then hum.PlatformStand = false end
             if AutoMinePreviousAutoRotate ~= nil then
                 hum.AutoRotate = AutoMinePreviousAutoRotate
             end
@@ -965,7 +1162,11 @@ function autoMineRestorePreviousFly()
     else
         if MovementFlyConnection or MovementFlyBodyVelocity or MovementFlyBodyGyro then
             pcall(function()
-                if type(movementStopFly) == "function" then movementStopFly() end
+                if type(movementStopFly) == "function" then
+                    -- En fermeture/rechargement, arrêter le Fly sans réaligner le corps
+                    -- sur la caméra ni imposer un changement d'état au Humanoid.
+                    movementStopFly(not running)
+                end
             end)
         end
     end
@@ -1254,7 +1455,13 @@ function autoMineStop()
     autoMineStopFly()
     autoMineSetNoclip(false)
 
-    -- Restaure l'état du Fly d'avant Auto Mine sans créer de boucle en double.
+    -- Pendant UNLOAD/rechargement, ne pas réactiver l'ancien Fly même brièvement.
+    -- Cela évite une impulsion/rotation du personnage au lancement du nouveau hub.
+    if not running then
+        AutoMinePreviousFlyEnabled = false
+    end
+
+    -- Restaure l'état du Fly d'avant Auto Mine uniquement en fonctionnement normal.
     autoMineRestorePreviousFly()
 
     AutoMineBtn.Text = "⛏ AUTO MINE : OFF"
@@ -1680,7 +1887,9 @@ end
 
 function movementCleanup()
     pcall(function()
-        if type(movementStopFly) == "function" then movementStopFly() end
+        -- À l'UNLOAD/rechargement, supprimer les contrôleurs sans forcer le personnage
+        -- à regarder la caméra ni lancer GettingUp/Running artificiellement.
+        if type(movementStopFly) == "function" then movementStopFly(true) end
     end)
     MovementWalkSpeedEnabled = false
     MovementFlyEnabled = false
@@ -1847,6 +2056,13 @@ end
 -- de l'état Humanoid normal. Si le Noclip est resté actif, on le coupe aussi
 -- à l'arrêt du Fly pour éviter de traverser le sol pendant l'atterrissage.
 function movementStopFly(keepPose)
+    -- Déterminer l'état AVANT de déconnecter/détruire les contrôleurs : cette fonction
+    -- est également appelée au rechargement alors que le Fly est parfois déjà OFF.
+    local hadFlyControl = MovementFlyEnabled == true
+        or MovementFlyConnection ~= nil
+        or MovementFlyBodyVelocity ~= nil
+        or MovementFlyBodyGyro ~= nil
+
     if MovementFlyConnection then
         pcall(function()
             MovementFlyConnection:Disconnect()
@@ -1882,12 +2098,13 @@ function movementStopFly(keepPose)
             local isOldFlyVelocity = mover:IsA("BodyVelocity") and mover.Name == "PRISONRP_FlyVelocity"
             local isOldFlyGyro = mover:IsA("BodyGyro") and mover.Name == "PRISONRP_FlyGyro"
             if isOldFlyVelocity or isOldFlyGyro then
+                hadFlyControl = true
                 pcall(function() mover:Destroy() end)
             end
         end
     end
 
-    if root then
+    if root and hadFlyControl then
         pcall(function()
             root.Anchored = false
 
@@ -1915,7 +2132,7 @@ function movementStopFly(keepPose)
 
     -- Le Fly place le Humanoid en Physics/PlatformStand. Le forcer à reprendre
     -- un état normal évite qu'il reste couché ou en chute physique indéfinie.
-    if hum then
+    if hum and hadFlyControl then
         pcall(function()
             hum.PlatformStand = false
             hum.AutoRotate = true
@@ -1949,7 +2166,7 @@ function movementStopFly(keepPose)
 
     -- Noclip activé = aucune collision avec le sol. On le désactive à l'arrêt
     -- du Fly pour garantir un atterrissage normal et synchroniser le bouton.
-    if not keepPose and MovementNoclipEnabled then
+    if hadFlyControl and not keepPose and MovementNoclipEnabled then
         pcall(function() movementSetNoclip(false) end)
         if MovementNoclipBtn then
             MovementNoclipBtn.Text = "👻 NOCLIP : OFF"
@@ -2620,7 +2837,7 @@ end
 
 function updateUI()
     StatusLabel.Text = "Status: " .. stats.status
-    StatsLabel.Text = string.format("Caught: %d | Perfect: %d", stats.totalCaught, stats.perfectCount)
+    StatsLabel.Text = string.format("Caught: %d | Perfect: %d | FPS: %d", stats.totalCaught, stats.perfectCount, stats.fps or 0)
     LastFishLabel.Text = "Last Fish: " .. stats.lastFish
     local selectedRarity = RarityList[_G.MinRarityIndex]
     RarityBtn.Text = "Pêcher à partir de : " .. selectedRarity
@@ -2640,6 +2857,35 @@ function updateUI()
     ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
     ESPToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 end
+
+-- V7 : mesure la cadence rendue sur une fenêtre d'une seconde.
+-- L'affichage est actualisé une fois par seconde et s'arrête avec le hub.
+task.spawn(function()
+    local frameCount = 0
+    local elapsed = 0
+
+    while running and ScreenGui and ScreenGui.Parent do
+        local deltaTime = RunService.RenderStepped:Wait()
+        if type(deltaTime) == "number" and deltaTime > 0 then
+            frameCount = frameCount + 1
+            elapsed = elapsed + deltaTime
+        end
+
+        if elapsed >= 1 then
+            stats.fps = math.floor((frameCount / elapsed) + 0.5)
+            if StatsLabel and StatsLabel.Parent then
+                StatsLabel.Text = string.format(
+                    "Caught: %d | Perfect: %d | FPS: %d",
+                    stats.totalCaught,
+                    stats.perfectCount,
+                    stats.fps
+                )
+            end
+            frameCount = 0
+            elapsed = 0
+        end
+    end
+end)
 
 -- V205 : les fonctions AUTO POMPES sont définies une seule fois plus haut.
 
@@ -2970,26 +3216,17 @@ function getRarityIndex(rarityName)
     return #RarityList
 end
 
--- Logique d'achat à distance
+-- Auto Buy Food : TP progressif au distributeur, sans retour automatique.
+-- Cycle en boucle : 15 secondes de barre de céréales, puis 15 secondes de boisson.
 isBuying = false
 buyRequest = false
-totalToBuy = 30
 cooldown = 1.0
-originalCFrame = nil
-originalVelocity = nil
-originalAngularVelocity = nil
-
--- Auto Buy Food : interaction avec les RemoteEvents du distributeur.
--- Le personnage est placé devant le distributeur à l’activation, puis remis
--- à sa position de départ lorsque l’Auto Buy est désactivé.
-isBuying = false
-buyRequest = false
-totalToBuy = 30
-cooldown = 1.0
-originalCFrame = nil
 local remoteBuyBusy = false
--- V210 : invalide explicitement les anciennes boucles lors d'un stop/restart rapide.
+-- Invalide les anciennes boucles lors d'un stop/restart rapide.
 remoteBuyRunToken = tonumber(remoteBuyRunToken) or 0
+
+local AUTO_BUY_TP_SPEED = 60
+local AUTO_BUY_PHASE_SECONDS = 15
 
 local function findPurchasePrompt(kind)
     if not vendingMachine then return nil end
@@ -3068,13 +3305,7 @@ local function createVisualPresence(char, savedCFrame)
         end
     end
 
-    local cloneRoot = clone:FindFirstChild("HumanoidRootPart")
-    if cloneRoot then
-        clone:PivotTo(savedCFrame)
-    else
-        clone:PivotTo(savedCFrame)
-    end
-
+    clone:PivotTo(savedCFrame)
     clone.Parent = workspace
     return clone
 end
@@ -3092,9 +3323,6 @@ local function firePurchaseAtVending(kind, remote, runToken)
     if runToken ~= nil and (not buyRequest or runToken ~= remoteBuyRunToken) then
         return false, "stopped"
     end
-    -- AUTO BUY TP : le personnage est déjà placé devant le distributeur
-    -- pendant toute la session d'achat. Le retour à la position d'activation
-    -- est effectué uniquement lorsque l'utilisateur désactive l'Auto Buy.
     if not remote or not remote:IsA("RemoteEvent") then
         return false, "none"
     end
@@ -3110,25 +3338,24 @@ local function firePurchaseAtVending(kind, remote, runToken)
         return false, "none"
     end
 
-    -- Si le personnage a été déplacé manuellement pendant l'Auto Buy,
-    -- on le remet près du distributeur avant l'achat.
-    local distance = (hrp.Position - (target.Position)).Magnitude
+    -- Si le joueur s'est éloigné, rejoindre de nouveau le distributeur à 60 studs/s.
+    -- L'annulation vérifie le token pour que le bouton OFF reste réactif.
+    local distance = (hrp.Position - target.Position).Magnitude
     if distance > 7 then
-        pcall(function()
-            hrp.CFrame = target * CFrame.new(0, 0, -3)
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
+        local destination = target * CFrame.new(0, 0, -3)
+        local moved = robustTeleportTo(destination, AUTO_BUY_TP_SPEED, function()
+            return not running or not buyRequest or runToken ~= remoteBuyRunToken
         end)
-        RunService.Heartbeat:Wait()
-        -- L'arrêt peut survenir pendant le Heartbeat: ne pas envoyer la requête ensuite.
-        if runToken ~= nil and (not buyRequest or runToken ~= remoteBuyRunToken) then
+        if not moved then
+            return false, (not buyRequest or runToken ~= remoteBuyRunToken) and "stopped" or "tp-failed"
+        end
+        if not buyRequest or runToken ~= remoteBuyRunToken then
             return false, "stopped"
         end
     end
 
-    -- Food et Drink passent tous les deux par leur RemoteEvent dédié.
-    -- On évite de considérer un ProximityPrompt comme un achat réussi :
-    -- dans PRISON RP il peut exister un prompt qui ne déclenche pas le paiement.
+    -- Le RemoteEvent Food correspond à l'achat de nourriture du distributeur,
+    -- utilisé ici pendant la phase barre de céréales. Drink est utilisé pendant la phase boisson.
     local ok = pcall(function()
         remote:FireServer()
     end)
@@ -3137,24 +3364,12 @@ local function firePurchaseAtVending(kind, remote, runToken)
 end
 
 function stopRemoteBuy()
-    -- Le token empêche une boucle ancienne de repartir si Auto Buy est réactivé vite.
+    -- Invalide immédiatement l'ancienne boucle et annule tout TP Auto Buy en cours.
     remoteBuyRunToken = (tonumber(remoteBuyRunToken) or 0) + 1
     buyRequest = false
     isBuying = false
 
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp and originalCFrame then
-        pcall(function()
-            hrp.CFrame = originalCFrame
-            hrp.AssemblyLinearVelocity = originalVelocity or Vector3.zero
-            hrp.AssemblyAngularVelocity = originalAngularVelocity or Vector3.zero
-        end)
-    end
-
-    originalCFrame = nil
-    originalVelocity = nil
-    originalAngularVelocity = nil
+    -- Intentionnellement : ne pas ramener le personnage à sa position précédente.
 
     if StartBtn then
         StartBtn.Text = "🛒 Auto Buy Food"
@@ -3177,9 +3392,7 @@ function startRemoteBuy()
 
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        return
-    end
+    if not hrp then return end
 
     local vendorTarget = getVendingTargetCFrame()
     if not vendorTarget then
@@ -3188,95 +3401,99 @@ function startRemoteBuy()
         return
     end
 
-    -- Position exacte à laquelle l'utilisateur a activé l'Auto Buy.
-    originalCFrame = hrp.CFrame
-    originalVelocity = hrp.AssemblyLinearVelocity
-    originalAngularVelocity = hrp.AssemblyAngularVelocity
     remoteBuyRunToken = (tonumber(remoteBuyRunToken) or 0) + 1
     local thisRunToken = remoteBuyRunToken
-    -- Bloque les clics doubles pendant le petit Heartbeat de stabilisation.
     isBuying = true
+    buyRequest = false
 
-    -- TP une fois au distributeur et reste sur place pendant les achats.
-    local moved = pcall(function()
-        hrp.CFrame = vendorTarget * CFrame.new(0, 0, -3)
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
+    if StartBtn then
+        StartBtn.Text = "🛒 TP distributeur (60) ..."
+        StartBtn.BackgroundColor3 = Color3.fromRGB(40, 125, 170)
+    end
+
+    -- Déplacement progressif comme TP Shore, à 60 studs/s. On ne sauvegarde pas
+    -- la position de départ : l'arrêt d'Auto Buy ne ramènera pas le joueur.
+    local vendorDestination = vendorTarget * CFrame.new(0, 0, -3)
+    local moved = robustTeleportTo(vendorDestination, AUTO_BUY_TP_SPEED, function()
+        return not running or not isBuying or thisRunToken ~= remoteBuyRunToken
     end)
 
     if not moved then
         if thisRunToken == remoteBuyRunToken then
-            originalCFrame = nil
-            originalVelocity = nil
-            originalAngularVelocity = nil
-            isBuying = false
-            buyRequest = false
-            remoteBuyRunToken += 1
+            stopRemoteBuy()
+            if FoodText then FoodText.Text = "🥖 Achat : TP distributeur échoué" end
+            if DrinkText then DrinkText.Text = "🥤 Achat : TP distributeur échoué" end
         end
         return
     end
 
-    RunService.Heartbeat:Wait()
-    if thisRunToken ~= remoteBuyRunToken or not running then
-        -- Si le token est toujours le même, il faut restaurer l'état de départ.
-        if thisRunToken == remoteBuyRunToken then
-            stopRemoteBuy()
-        end
+    if thisRunToken ~= remoteBuyRunToken or not running or not isBuying then
         return
     end
 
     buyRequest = true
-
     if StartBtn then
-        StartBtn.Text = "🛒 Auto Buy Food : ON"
+        StartBtn.Text = "🛒 Auto Buy : BARRES 15s"
         StartBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 80)
     end
 
-    -- Deux boucles indépendantes : Food et Drink ont chacune leur propre
-    -- cooldown de 1 seconde, mais démarrent en même temps.
+    -- Un seul worker : 15 s de Food (barres de céréales), puis 15 s de Drink,
+    -- puis recommence tant que l'utilisateur laisse Auto Buy activé.
     task.spawn(function()
-        local i = 0
-        while running and buyRequest and thisRunToken == remoteBuyRunToken do
-            i += 1
-            while running and AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do task.wait(0.1) end
-            if not buyRequest or thisRunToken ~= remoteBuyRunToken then break end
+        local phase = "food"
+        local phaseEndsAt = os.clock() + AUTO_BUY_PHASE_SECONDS
+        local requestCount = 0
 
-            local foodOk = firePurchaseAtVending("food", foodEvent, thisRunToken)
-            if FoodText then
-                FoodText.Text = foodOk
-                    and string.format("🥖 Demandes envoyées : %d", i)
-                    or string.format("🥖 Échec d’envoi : %d", i)
+        while running and buyRequest and thisRunToken == remoteBuyRunToken do
+            if os.clock() >= phaseEndsAt then
+                if phase == "food" then
+                    phase = "drink"
+                    if StartBtn then StartBtn.Text = "🛒 Auto Buy : BOISSONS 15s" end
+                    if FoodText then FoodText.Text = "🥖 Barres de céréales : pause" end
+                    if DrinkText then DrinkText.Text = "🥤 Phase boisson : 15 secondes" end
+                else
+                    phase = "food"
+                    if StartBtn then StartBtn.Text = "🛒 Auto Buy : BARRES 15s" end
+                    if DrinkText then DrinkText.Text = "🥤 Boissons : pause" end
+                    if FoodText then FoodText.Text = "🥖 Phase barres de céréales : 15 secondes" end
+                end
+                phaseEndsAt = os.clock() + AUTO_BUY_PHASE_SECONDS
+                requestCount = 0
             end
 
-            task.wait(cooldown)
-        end
-    end)
+            while running and AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do
+                task.wait(0.1)
+            end
+            if not running or not buyRequest or thisRunToken ~= remoteBuyRunToken then break end
 
-    task.spawn(function()
-        local i = 0
-        while running and buyRequest and thisRunToken == remoteBuyRunToken do
-            i += 1
-            while running and AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do task.wait(0.1) end
-            if not buyRequest or thisRunToken ~= remoteBuyRunToken then break end
-
-            local drinkOk = firePurchaseAtVending("drink", drinkEvent, thisRunToken)
-            if DrinkText then
-                DrinkText.Text = drinkOk
-                    and string.format("🥤 Demandes envoyées : %d", i)
-                    or string.format("🥤 Échec d’envoi : %d", i)
+            -- Si la pause a duré jusqu'à la fin de la phase, passe immédiatement à la suivante.
+            if os.clock() >= phaseEndsAt then
+                continue
             end
 
-            task.wait(cooldown)
-        end
-    end)
+            requestCount += 1
+            local selectedRemote = phase == "food" and foodEvent or drinkEvent
+            local sent = firePurchaseAtVending(phase, selectedRemote, thisRunToken)
+            if phase == "food" then
+                if FoodText then
+                    FoodText.Text = sent
+                        and string.format("🥖 Demandes de barres envoyées : %d", requestCount)
+                        or string.format("🥖 Échec d'achat : %d", requestCount)
+                end
+            else
+                if DrinkText then
+                    DrinkText.Text = sent
+                        and string.format("🥤 Demandes de boissons envoyées : %d", requestCount)
+                        or string.format("🥤 Échec d'achat : %d", requestCount)
+                end
+            end
 
-    -- Le bouton reste ON jusqu'à désactivation manuelle.
-    task.spawn(function()
-        while running and buyRequest and thisRunToken == remoteBuyRunToken do
-            task.wait(0.25)
+            local remaining = math.max(0, phaseEndsAt - os.clock())
+            if remaining > 0 then task.wait(math.min(cooldown, remaining)) end
         end
-        -- Une ancienne tâche ne doit pas réinitialiser l'interface d'une nouvelle session.
+
         if thisRunToken == remoteBuyRunToken then
+            buyRequest = false
             isBuying = false
             if StartBtn then
                 StartBtn.Text = "🛒 Auto Buy Food"
@@ -3314,7 +3531,7 @@ function stopMoveToTarget()
 end
 
 -- Téléportation progressive partagée par Shore et Black Market pour limiter le rubber-band.
-function directTeleportTo(targetCFrame)
+function directTeleportTo(targetCFrame, requestedSpeed)
     if typeof(targetCFrame) ~= "CFrame" then
         return false
     end
@@ -3330,7 +3547,7 @@ function directTeleportTo(targetCFrame)
         return false
     end
 
-    return robustTeleportTo(targetCFrame)
+    return robustTeleportTo(targetCFrame, requestedSpeed)
 end
 
 -- TP Black Market : position devant le vendeur.
@@ -3630,7 +3847,7 @@ end)
 
 
 TeleportBtn.MouseButton1Click:Connect(function()
-    if directTeleportTo(POND_GROUND_CFRAME) then
+    if directTeleportTo(POND_GROUND_CFRAME, 60) then
         TeleportBtn.Text = "🏃 SHORE"
     end
 end)
@@ -3777,14 +3994,7 @@ local function keepMinimizeClickPointUnderCursor(mousePosition, clickOffset)
 end
 
 CloseBtn.Text = "−"
-CloseBtn.MouseButton1Click:Connect(function()
-    local mousePosition = MovementUserInputService:GetMouseLocation()
-    local buttonPositionBefore = CloseBtn.AbsolutePosition
-    local clickOffset = Vector2.new(
-        mousePosition.X - buttonPositionBefore.X,
-        mousePosition.Y - buttonPositionBefore.Y
-    )
-
+local function toggleHubMinimize()
     local v7BodyRef = MainFrame:FindFirstChild("V7Body")
     local v7SidebarRef = v7BodyRef and v7BodyRef:FindFirstChild("V7Sidebar")
 
@@ -3796,7 +4006,7 @@ CloseBtn.MouseButton1Click:Connect(function()
         MainFrame.Size = UDim2.fromOffset(320, 44)
 
         -- V218 : cacher les textes secondaires en mode réduit pour éviter les chevauchements.
-        -- Le titre principal reste visible ; le rappel Right Shift et le compteur de joueurs reviendront à l'ouverture.
+        -- Le titre principal reste visible ; le compteur revient à l'ouverture, le rappel clavier reste masqué.
         if RightShiftLabel and RightShiftLabel.Parent then
             RightShiftLabel.Visible = false
         end
@@ -3806,37 +4016,27 @@ CloseBtn.MouseButton1Click:Connect(function()
             minimizedStatusPill.Visible = false
         end
 
-        -- Mode reduit : masquer le corps; la barre de titre reste sous le curseur.
+        -- Le panneau disparaît et un bouton compact reste accessible en haut à gauche.
         if v7BodyRef then v7BodyRef.Visible = false end
         if Content then Content.Visible = false end
         if movementPage then movementPage.Visible = false end
         if espPage then espPage.Visible = false end
         if autresPage then autresPage.Visible = false end
-
-        keepMinimizeClickPointUnderCursor(mousePosition, clickOffset)
+        MainFrame.Visible = false
+        MinimizedHubButton.Visible = true
     else
-        -- Si la barre reduite a ete deplacee, appliquer son deplacement a la position
-        -- restauree. Sans deplacement manuel, on revient exactement a la position initiale.
-        local dragX, dragY = 0, 0
-        if HubMinimizedPosition then
-            local currentPosition = MainFrame.Position
-            dragX = currentPosition.X.Offset - HubMinimizedPosition.X.Offset
-            dragY = currentPosition.Y.Offset - HubMinimizedPosition.Y.Offset
-        end
-        HubExpandedPosition = UDim2.new(
-            HubExpandedPosition.X.Scale, HubExpandedPosition.X.Offset + dragX,
-            HubExpandedPosition.Y.Scale, HubExpandedPosition.Y.Offset + dragY
-        )
+        -- Le bouton compact restaure le panneau à sa dernière position ouverte.
         HubMinimizedPosition = nil
-
         HubExpanded = true
+        MinimizedHubButton.Visible = false
+        MainFrame.Visible = true
         CloseBtn.Text = "−"
         MainFrame.Size = HubFullSize
         MainFrame.Position = HubExpandedPosition
 
-        -- V218 : restaurer les textes et le compteur uniquement lorsque le panneau est réouvert.
+        -- V218 : restaurer le compteur lorsque le panneau est réouvert ; garder le rappel masqué.
         if RightShiftLabel and RightShiftLabel.Parent then
-            RightShiftLabel.Visible = true
+            RightShiftLabel.Visible = false
         end
         local restoredTitleBar = MainFrame:FindFirstChild("TitleBar")
         local restoredStatusPill = restoredTitleBar and restoredTitleBar:FindFirstChild("PRISONRP_HeaderStatus")
@@ -3889,6 +4089,12 @@ CloseBtn.MouseButton1Click:Connect(function()
             end
         end)
     end
+end
+
+CloseBtn.MouseButton1Click:Connect(toggleHubMinimize)
+MinimizedHubButton.MouseButton1Click:Connect(function()
+    if MinimizedHubDragDidMove then return end
+    toggleHubMinimize()
 end)
 
 --==============================================================
@@ -4061,7 +4267,23 @@ _G.CombinedHubCleanup = function()
     end)
     -- Coupe immédiatement les boucles principales du hub.
     running = false
+    -- Arrête le Chat Dock intégré et déconnecte ses écouteurs avant UNLOAD.
     pcall(function()
+        if type(_G.PRISONRP_CHAT_DOCK_CLEANUP) == "function" then
+            _G.PRISONRP_CHAT_DOCK_CLEANUP()
+        end
+    end)
+    pcall(function()
+        if MinimizedHubDragInputChangedConnection then
+            MinimizedHubDragInputChangedConnection:Disconnect()
+            MinimizedHubDragInputChangedConnection = nil
+        end
+        if MinimizedHubDragInputEndedConnection then
+            MinimizedHubDragInputEndedConnection:Disconnect()
+            MinimizedHubDragInputEndedConnection = nil
+        end
+        MinimizedHubDragging = false
+        MinimizedHubDragDidMove = false
         if _G.PRISONRP_HUB_RIGHTSHIFT_CONNECTION then
             _G.PRISONRP_HUB_RIGHTSHIFT_CONNECTION:Disconnect()
             _G.PRISONRP_HUB_RIGHTSHIFT_CONNECTION = nil
@@ -4074,6 +4296,12 @@ _G.CombinedHubCleanup = function()
         if type(_G.PRISONRP_ANTIAFK_STOP) == "function" then
             _G.PRISONRP_ANTIAFK_STOP()
             _G.PRISONRP_ANTIAFK_STOP = nil
+        end
+    end)
+    pcall(function()
+        if _G.PRISONRP_FISHING_CATCH_CONNECTION then
+            _G.PRISONRP_FISHING_CATCH_CONNECTION:Disconnect()
+            _G.PRISONRP_FISHING_CATCH_CONNECTION = nil
         end
     end)
     AutoEatDrinkThreadRunning = false
@@ -4112,8 +4340,8 @@ _G.CombinedHubCleanup = function()
             _G.PRISONRP_GIVE_MONEY_STOP = nil
         end
     end)
-    -- V208 : l'Auto Buy a ses propres boucles (buyRequest), indépendantes de
-    -- running. L'arrêter ici évite les achats après UNLOAD et restaure la position.
+    -- Auto Buy possède ses propres boucles (buyRequest), indépendantes de running.
+    -- L'arrêter ici évite les achats après UNLOAD. Le joueur reste à la position atteinte.
     pcall(function() if type(stopRemoteBuy) == "function" then stopRemoteBuy() end end)
     pcall(function()
         if _G.PRISONRP_INVISIBLE_STOP then
@@ -4284,14 +4512,78 @@ end)
 -- Boucle Pêche principale
 -- V208 : mémorise le dernier compteur vendu pour éviter de renvoyer
 -- Inventory_SellAll à chaque cycle tant que totalCaught reste un multiple de 3.
+-- V6 : suivre la notification de poisson reçue après le traitement côté serveur.
+-- Le même identifiant/payload peut être notifié deux fois ; dédupliquer les doublons rapprochés.
+_G.PRISONRP_FISHING_CATCH_COUNT = 0
+_G.PRISONRP_FISHING_LAST_CATCH = nil
+_G.PRISONRP_FISHING_LAST_CATCH_KEY = nil
+_G.PRISONRP_FISHING_LAST_CATCH_TIME = 0
+pcall(function()
+    if _G.PRISONRP_FISHING_CATCH_CONNECTION then
+        _G.PRISONRP_FISHING_CATCH_CONNECTION:Disconnect()
+    end
+end)
+_G.PRISONRP_FISHING_CATCH_CONNECTION = nil
+
+local catchPromptFolder = ReplicatedStorage:FindFirstChild("FishingSystem")
+local catchPromptEvent = catchPromptFolder and catchPromptFolder:FindFirstChild("CatchPrompt")
+if catchPromptEvent then
+    local connectOk, connection = pcall(function()
+        return catchPromptEvent.OnClientEvent:Connect(function(data)
+            if type(data) ~= "table" or type(data.Name) ~= "string" or type(data.Rarity) ~= "string" then
+                return
+            end
+
+            local now = os.clock()
+            local catchKey = type(data.Id) == "string"
+                and data.Id
+                or (data.Name .. "|" .. data.Rarity .. "|" .. tostring(data.Price))
+            if catchKey == _G.PRISONRP_FISHING_LAST_CATCH_KEY
+                and now - (tonumber(_G.PRISONRP_FISHING_LAST_CATCH_TIME) or 0) < 2 then
+                return
+            end
+
+            _G.PRISONRP_FISHING_LAST_CATCH_KEY = catchKey
+            _G.PRISONRP_FISHING_LAST_CATCH_TIME = now
+            _G.PRISONRP_FISHING_LAST_CATCH = data
+            _G.PRISONRP_FISHING_CATCH_COUNT = (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) + 1
+        end)
+    end)
+    if connectOk then
+        _G.PRISONRP_FISHING_CATCH_CONNECTION = connection
+    else
+        warn("[Auto-Fish] CatchPrompt indisponible : " .. tostring(connection))
+    end
+else
+    warn("[Auto-Fish] RemoteEvent FishingSystem.CatchPrompt introuvable ; la confirmation de capture sera indisponible.")
+end
 local lastAutoSellCatchCount = 0
 task.spawn(function()
     while running and ScreenGui and ScreenGui.Parent do
         task.wait(0.1)
         if _G.AutoFishingEnabled and not AutoEatDrinkBusy and MinigameSystem and SoundManager and GUIManager then
-            -- Ferme la fenêtre dès le début d'un nouveau cycle, avant toute attente.
+            -- Si une consommation a été reportée après une capture, réessayer avant
+            -- de lancer une nouvelle pêche. La fenêtre reste ouverte pendant les blocages.
+            if AutoFishingCatchWindow and AutoEatDrinkPending and AutoEatDrinkEnabled then
+                local pendingFood, pendingWater = readNeedValues()
+                local stillNeedsFoodOrWater = (pendingFood ~= nil and pendingFood <= AUTO_EAT_DRINK_THRESHOLD)
+                    or (pendingWater ~= nil and pendingWater <= AUTO_EAT_DRINK_THRESHOLD)
+
+                if not stillNeedsFoodOrWater then
+                    AutoEatDrinkPending = false
+                    AutoFishingCatchWindow = false
+                elseif os.clock() >= AutoEatDrinkNextTryAt and autoEatDrinkCanStart() then
+                    runAutoEatDrink(pendingFood, pendingWater)
+                else
+                    task.wait(0.1)
+                    continue
+                end
+            end
+
+            -- Ferme la fenêtre au début d'un nouveau cycle de pêche.
             AutoFishingCatchWindow = false
             local fishCaughtThisCycle = false
+            local catchCountAtCycleStart = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0
 
             stats.status = "Equipping Rod..."
             updateUI()
@@ -4376,9 +4668,17 @@ task.spawn(function()
                     end
                 end
 
-                if (tick() - castTime > 3.5) and rodState and (not rodState.Casted) and (not rodState.FishingInProgress) then
+                if (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) > catchCountAtCycleStart then
                     stats.totalCaught = stats.totalCaught + 1
-                    stats.perfectCount = stats.perfectCount + 1
+                    local confirmedCatch = _G.PRISONRP_FISHING_LAST_CATCH
+                    if confirmedCatch then
+                        stats.lastFish = tostring(confirmedCatch.Name or "Unknown")
+                            .. " (" .. tostring(confirmedCatch.Rarity or "Unknown") .. ")"
+                        -- Le signal ne compte comme "parfait" que s'il fournit explicitement ce booléen.
+                        if confirmedCatch.Perfect == true or confirmedCatch.perfect == true or confirmedCatch.IsPerfect == true then
+                            stats.perfectCount = stats.perfectCount + 1
+                        end
+                    end
                     stats.status = "Fish Caught!"
                     fishCaughtThisCycle = true
                     AutoFishingCatchWindow = true
@@ -4412,24 +4712,24 @@ task.spawn(function()
             end
 
             -- Consommation uniquement après la détection de fin de récupération.
-            -- On la traite dans cette boucle avant qu'un nouveau lancer ne commence,
-            -- afin qu'un poisson en cours ne soit jamais interrompu par le besoin.
-            if fishCaughtThisCycle and AutoEatDrinkEnabled and os.clock() >= AutoEatDrinkNextTryAt then
+            -- Si un blocage temporaire empêche l'action, garder la fenêtre ouverte :
+            -- le prochain passage réessaiera avant tout nouveau lancer.
+            if fishCaughtThisCycle and AutoEatDrinkEnabled then
                 local foodAfterCatch, waterAfterCatch = readNeedValues()
                 local needsFoodOrWater = (foodAfterCatch ~= nil and foodAfterCatch <= AUTO_EAT_DRINK_THRESHOLD)
                     or (waterAfterCatch ~= nil and waterAfterCatch <= AUTO_EAT_DRINK_THRESHOLD)
                 if needsFoodOrWater then
                     AutoEatDrinkPending = true
-                    local waitUntil = os.clock() + 2
-                    while running and os.clock() < waitUntil and autoEatDrinkMinigameActive() do
-                        task.wait(0.05)
-                    end
-                    if running and autoEatDrinkCanStart() then
+                    if os.clock() >= AutoEatDrinkNextTryAt and autoEatDrinkCanStart() then
                         runAutoEatDrink(foodAfterCatch, waterAfterCatch)
                     end
+                else
+                    AutoEatDrinkPending = false
                 end
             end
-            AutoFishingCatchWindow = false
+            if not AutoEatDrinkPending then
+                AutoFishingCatchWindow = false
+            end
 
             task.wait(0.4)
         else
@@ -4808,8 +5108,10 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpSelected.BackgroundTransparency = 1
     tpSelected.Text = "Sélection : aucune"
     tpSelected.TextColor3 = Color3.fromRGB(185, 185, 190)
-    tpSelected.TextSize = 8
+    tpSelected.TextSize = 10
     tpSelected.Font = Enum.Font.GothamMedium
+    tpSelected.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+    tpSelected.TextStrokeTransparency = 0.65
     tpSelected.TextXAlignment = Enum.TextXAlignment.Left
     tpSelected.TextTruncate = Enum.TextTruncate.AtEnd
     tpSelected.ZIndex = 13
@@ -5210,25 +5512,60 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         for _, player in ipairs(players) do
             if tpSpecSearchMatches(player, query) then
                 local button = Instance.new("TextButton")
-            button.Size = UDim2.new(1, -2, 0, 30)
-            button.BackgroundTransparency = 0
-            button.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
-            button.BorderSizePixel = 0
-            button.AutoButtonColor = false
-            button.Active = true
-            button.Text = "  " .. tpSpecGetRPPseudo(player) .. "\n  @" .. player.Name
-            button.TextColor3 = Color3.fromRGB(225, 225, 225)
-            button.TextSize = 8
-            button.Font = Enum.Font.GothamMedium
-            button.TextXAlignment = Enum.TextXAlignment.Left
-            button.TextTruncate = Enum.TextTruncate.AtEnd
-            button.ZIndex = 15
-            button.Parent = tpList
-            TPSpecPlayerButtons[player] = button
+                button.Size = UDim2.new(1, -2, 0, 32)
+                button.BackgroundTransparency = 0
+                button.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+                button.BorderSizePixel = 0
+                button.AutoButtonColor = false
+                button.Active = true
+                button.Text = ""
+                button.TextColor3 = Color3.fromRGB(225, 225, 225)
+                button.TextSize = 12
+                button.Font = Enum.Font.GothamMedium
+                button.TextXAlignment = Enum.TextXAlignment.Left
+                button.TextTruncate = Enum.TextTruncate.AtEnd
+                button.ZIndex = 15
+                button.Parent = tpList
+                TPSpecPlayerButtons[player] = button
 
-            local corner = Instance.new("UICorner")
-            corner.CornerRadius = UDim.new(0, 4)
-            corner.Parent = button
+                -- Deux labels distincts : le nom RP est prioritaire et le @ reste lisible.
+                local rpLabel = Instance.new("TextLabel")
+                rpLabel.Name = "RPPseudoLabel"
+                rpLabel.BackgroundTransparency = 1
+                rpLabel.Position = UDim2.fromOffset(8, 0)
+                rpLabel.Size = UDim2.new(1, -16, 0, 16)
+                rpLabel.Text = tpSpecGetRPPseudo(player)
+                rpLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                rpLabel.TextSize = 12
+                rpLabel.Font = Enum.Font.GothamBold
+                rpLabel.TextXAlignment = Enum.TextXAlignment.Left
+                rpLabel.TextYAlignment = Enum.TextYAlignment.Center
+                rpLabel.TextTruncate = Enum.TextTruncate.AtEnd
+                rpLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                rpLabel.TextStrokeTransparency = 0.55
+                rpLabel.ZIndex = 16
+                rpLabel.Parent = button
+
+                local usernameLabel = Instance.new("TextLabel")
+                usernameLabel.Name = "UsernameLabel"
+                usernameLabel.BackgroundTransparency = 1
+                usernameLabel.Position = UDim2.fromOffset(8, 16)
+                usernameLabel.Size = UDim2.new(1, -16, 0, 13)
+                usernameLabel.Text = "@" .. player.Name
+                usernameLabel.TextColor3 = Color3.fromRGB(190, 205, 230)
+                usernameLabel.TextSize = 10
+                usernameLabel.Font = Enum.Font.GothamMedium
+                usernameLabel.TextXAlignment = Enum.TextXAlignment.Left
+                usernameLabel.TextYAlignment = Enum.TextYAlignment.Center
+                usernameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+                usernameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                usernameLabel.TextStrokeTransparency = 0.65
+                usernameLabel.ZIndex = 16
+                usernameLabel.Parent = button
+
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 4)
+                corner.Parent = button
 
                 button.Activated:Connect(function()
                     if TPSpecEnabled then tpSpecStop() end
@@ -12473,11 +12810,44 @@ do
             AutoFishing = {label="START AUTO FISH", key=nil, button=ToggleFishBtn},
             AutoEatDrink = {label="AUTO DRINK / EAT", key=nil, button=AutoEatDrinkBtn},
             AutoMine = {label="AUTO MINE", key=nil, button=AutoMineBtn},
-            SpeedHack = {label="SPEEDHACK", key=nil, button=speedBtn},
+            SpeedHack = {
+                label="SPEEDHACK",
+                key=nil,
+                button=speedBtn,
+                -- Le bind appelle directement le moteur, sans dépendre de :Activate()
+                -- sur un switch graphique qui peut être masqué/inactif.
+                callback=function()
+                    MovementWalkSpeedEnabled = not (MovementWalkSpeedEnabled == true)
+                    movementApplyWalkSpeed()
+
+                    if MovementSpeedBtn then
+                        MovementSpeedBtn.Text = MovementWalkSpeedEnabled
+                            and ("🏃 SPEEDHACK : ON (" .. tostring(MovementWalkSpeed) .. ")")
+                            or "🏃 SPEEDHACK : OFF"
+                        MovementSpeedBtn.BackgroundColor3 = MovementWalkSpeedEnabled
+                            and Color3.fromRGB(40, 150, 80)
+                            or Color3.fromRGB(45, 48, 62)
+                    end
+
+                    -- Synchronise le switch visible avec l’état réel du SpeedHack.
+                    local refresh = GDPRefreshers and GDPRefreshers[speedBtn]
+                    if type(refresh) == "function" then
+                        pcall(refresh, true)
+                    end
+                end,
+            },
             Fly = {label="FLY", key=nil, button=flyBtn},
             Noclip = {label="NOCLIP", key=nil, button=noclipBtn},
             Freecam = {label="FREECAM", key=nil, button=SpecCard},
             Invisible = {label="INVISIBLE", key=nil, button=InvisibleCard},
+            ChatDock = {
+                label="CHAT",
+                key=nil,
+                callback=function()
+                    local toggle = _G.PRISONRP_CHAT_DOCK_TOGGLE
+                    if type(toggle) == "function" then pcall(toggle) end
+                end,
+            },
             AimEnabled = {label="AIMBOT", key=nil, aimControl="AIMBOT"},
             ESPCheckedButtons = {
                 label="ESP : ACTIVER LES BOUTONS COCHÉS",
@@ -12490,7 +12860,7 @@ do
         }
 
         local BindOrder = {
-            "AutoFishing", "AutoEatDrink", "AutoMine", "SpeedHack", "Fly", "Noclip", "Freecam", "Invisible",
+            "AutoFishing", "AutoEatDrink", "AutoMine", "SpeedHack", "Fly", "Noclip", "Freecam", "Invisible", "ChatDock",
             "AimEnabled", "ESPCheckedButtons"
         }
 
@@ -13540,7 +13910,43 @@ do
             -- Priorité à la sauvegarde 1 pour conserver le chargement automatique existant.
             local data = readSettingsFile(slotFiles[1]) or readSettingsFile(settingsFile)
             if type(data) == "table" then
-                pcall(function() applyLoadedSettings(data) end)
+                -- Au démarrage, recharger les réglages mais ne pas relancer
+                -- automatiquement les actions actives de la sauvegarde. Certaines
+                -- peuvent téléporter/figer le personnage ou prendre le contrôle caméra
+                -- (Auto Mine, Freecam, TP Spec, Fly, Aimbot, etc.).
+                -- Les chargements manuels par le bouton CHARGER gardent leur comportement.
+                local startupData = {}
+                for key, value in pairs(data) do
+                    startupData[key] = value
+                end
+
+                if type(data.Toggles) == "table" then
+                    local safeToggles = {}
+                    for key, value in pairs(data.Toggles) do
+                        safeToggles[key] = value
+                    end
+                    for _, key in ipairs({
+                        "AutoFishing", "AutoSell", "AutoEatDrink", "AutoPushup",
+                        "AutoMine", "SpeedHack", "Fly", "Noclip", "FreecamArmed",
+                        "FreecamEnabled", "InvisibleEnabled", "StaffESP",
+                        "StaffAutoLeave", "BlackMarketESP", "MoneyView",
+                        "AutoArmWrestle", "TPSpec"
+                    }) do
+                        safeToggles[key] = false
+                    end
+                    startupData.Toggles = safeToggles
+                end
+
+                if type(data.Aimbot) == "table" then
+                    local safeAimbot = {}
+                    for key, value in pairs(data.Aimbot) do
+                        safeAimbot[key] = value
+                    end
+                    safeAimbot.Enabled = false
+                    startupData.Aimbot = safeAimbot
+                end
+
+                pcall(function() applyLoadedSettings(startupData) end)
             end
         end
 
@@ -13882,19 +14288,22 @@ pcall(function()
 
         if TitleLabel then
             TitleLabel.Position = UDim2.fromOffset(14, 0)
-            TitleLabel.Size = UDim2.fromOffset(210, 44)
+            TitleLabel.Size = UDim2.fromOffset(100, 44)
             TitleLabel.Text = "⛏ PRISON RP"
             TitleLabel.TextColor3 = UX.Text
             TitleLabel.TextSize = 13
             TitleLabel.Font = Enum.Font.GothamBold
         end
         if RightShiftLabel then
+            -- La barre de 320 px n'a pas de place pour le rappel et les boutons.
+            -- On le masque pour éviter qu'il passe sous UNLOAD ou hors écran.
             RightShiftLabel.Position = UDim2.fromOffset(238, 0)
             RightShiftLabel.Size = UDim2.fromOffset(310, 44)
             RightShiftLabel.Text = "RIGHT SHIFT  •  AFFICHER / MASQUER"
             RightShiftLabel.TextColor3 = UX.Muted
             RightShiftLabel.TextSize = 9
             RightShiftLabel.Font = Enum.Font.GothamMedium
+            RightShiftLabel.Visible = false
         end
 
         local accentLine = TitleBar:FindFirstChild("PRISONRP_HeaderAccent")
@@ -13916,8 +14325,8 @@ pcall(function()
             statusPill.Parent = TitleBar
         end
         statusPill.AnchorPoint = Vector2.new(0, 0)
-        statusPill.Position = UDim2.new(1, -216, 0, 10)
-        statusPill.Size = UDim2.fromOffset(88, 24)
+        statusPill.Position = UDim2.new(1, -202, 0, 10)
+        statusPill.Size = UDim2.fromOffset(70, 24)
         statusPill.BackgroundColor3 = Color3.fromRGB(25, 43, 36)
         statusPill.BorderSizePixel = 0
         statusPill.ZIndex = 118
@@ -13943,8 +14352,8 @@ pcall(function()
             statusText.Name = "PRISONRP_StatusText"
             statusText.Parent = statusPill
         end
-        statusText.Position = UDim2.fromOffset(20, 0)
-        statusText.Size = UDim2.new(1, -23, 1, 0)
+        statusText.Position = UDim2.fromOffset(18, 0)
+        statusText.Size = UDim2.new(1, -21, 1, 0)
         statusText.BackgroundTransparency = 1
         statusText.Text = "0 / 0"
         statusText.TextColor3 = Color3.fromRGB(176, 235, 200)
@@ -14050,13 +14459,14 @@ pcall(function()
             -- ensureStroke venait de créer un contour, ce qui laissait la majorité
             -- des boutons sans survol après AutoButtonColor = false.
             local stroke = nil
-            if hasVisibleFill then
+            local noHoverFeedback = obj:GetAttribute("PRISONRP_NoHoverEffect") == true
+            if hasVisibleFill and not noHoverFeedback then
                 stroke = ensureTransientStroke(obj, "PRISONRP_UXHoverStroke", UX.Accent, 1, 1.4)
                 obj.AutoButtonColor = false
             else
-                -- Les boutons transparents (tabs / click blockers) gardent le
-                -- feedback natif Roblox ; on évite de leur ajouter un contour visible.
-                obj.AutoButtonColor = true
+                -- Certains boutons (comme le bouton réduit) restent parfaitement neutres au survol.
+                -- Les autres boutons transparents conservent le feedback natif Roblox.
+                obj.AutoButtonColor = not noHoverFeedback
             end
 
             if stroke and not obj:GetAttribute("PRISONRP_UXHoverBound") then
@@ -15373,3 +15783,583 @@ do
         print("[Cases personnalisables] Anti V, Novoline et M7 ajoutés dans AUTRES.")
     end)
 end
+
+--==============================================================
+-- CHAT DOCK — intégré dans AUTRES avec switch ON/OFF
+-- Palette assortie à la GDP UI : bg 16/19/25, panel 22/27/35,
+-- card 31/38/48, border 62/73/88, accent 38/135/235, muted 165/174/188.
+-- Affiche les messages reçus une seule fois, garde un historique limité,
+-- permet de déplacer le panneau par sa barre ; son raccourci est configurable dans BINDS.
+--==============================================================
+do
+    local initOk, initErr = pcall(function()
+        local autresPageRef = MainFrame and MainFrame:FindFirstChild("OmegaAutresPage", true)
+        if not autresPageRef then
+            warn("[Chat Dock] Page AUTRES introuvable ; module non ajouté.")
+            return
+        end
+
+        local Players = game:GetService("Players")
+        local TextChatService = game:GetService("TextChatService")
+        local UserInputService = game:GetService("UserInputService")
+        local TweenService = game:GetService("TweenService")
+        local playerGui = guiParent or (Players.LocalPlayer and Players.LocalPlayer:FindFirstChildOfClass("PlayerGui"))
+
+        local oldCard = autresPageRef:FindFirstChild("PRISONRP_ChatDockToggle")
+        if oldCard then oldCard:Destroy() end
+        local oldStatus = autresPageRef:FindFirstChild("PRISONRP_ChatDockStatus")
+        if oldStatus then oldStatus:Destroy() end
+
+        local ChatDockCard = Instance.new("TextButton")
+        ChatDockCard.Name = "PRISONRP_ChatDockToggle"
+        ChatDockCard.Size = UDim2.new(1, -213, 0, 34)
+        ChatDockCard.Position = UDim2.fromOffset(0, 430)
+        ChatDockCard.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        ChatDockCard.BorderSizePixel = 0
+        ChatDockCard.Text = ""
+        ChatDockCard.AutoButtonColor = false
+        ChatDockCard.Active = true
+        ChatDockCard.Selectable = true
+        ChatDockCard.ZIndex = (autresPageRef.ZIndex or 1) + 2
+        ChatDockCard.Parent = autresPageRef
+        Instance.new("UICorner", ChatDockCard).CornerRadius = UDim.new(0, 7)
+
+        local cardStroke = Instance.new("UIStroke")
+        cardStroke.Name = "PRISONRP_ChatDockHoverStroke"
+        cardStroke.Color = Color3.fromRGB(38, 135, 235)
+        cardStroke.Transparency = 1
+        cardStroke.Thickness = 1.4
+        cardStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        cardStroke.Parent = ChatDockCard
+
+        local cardTitle = Instance.new("TextLabel")
+        cardTitle.Name = "Title"
+        -- Même taille et même centrage que les autres cases de l'onglet AUTRES.
+        cardTitle.Size = UDim2.new(1, 0, 1, 0)
+        cardTitle.Position = UDim2.fromOffset(0, 0)
+        cardTitle.BackgroundTransparency = 1
+        cardTitle.BorderSizePixel = 0
+        cardTitle.Text = "Chat"
+        cardTitle.TextColor3 = Color3.fromRGB(236, 240, 248)
+        cardTitle.TextSize = 15
+        cardTitle.Font = Enum.Font.GothamBold
+        cardTitle.TextXAlignment = Enum.TextXAlignment.Center
+        cardTitle.TextYAlignment = Enum.TextYAlignment.Center
+        cardTitle.ZIndex = ChatDockCard.ZIndex + 1
+        cardTitle.Parent = ChatDockCard
+
+        local chatSwitch = Instance.new("TextButton")
+        chatSwitch.Name = "GDPCheckbox"
+        chatSwitch.Size = UDim2.fromOffset(42, 22)
+        chatSwitch.Position = UDim2.new(1, -52, 0.5, -11)
+        chatSwitch.BackgroundColor3 = Color3.fromRGB(70, 80, 94)
+        chatSwitch.BorderSizePixel = 0
+        chatSwitch.Text = ""
+        chatSwitch.AutoButtonColor = false
+        chatSwitch.Active = true
+        chatSwitch.Selectable = true
+        chatSwitch.ZIndex = ChatDockCard.ZIndex + 2
+        chatSwitch.Parent = ChatDockCard
+        Instance.new("UICorner", chatSwitch).CornerRadius = UDim.new(1, 0)
+
+        local switchStroke = Instance.new("UIStroke")
+        switchStroke.Name = "SwitchBorder"
+        switchStroke.Color = Color3.fromRGB(62, 73, 88)
+        switchStroke.Transparency = 0.18
+        switchStroke.Thickness = 1
+        switchStroke.Parent = chatSwitch
+
+        local knob = Instance.new("Frame")
+        knob.Name = "Knob"
+        knob.Size = UDim2.fromOffset(16, 16)
+        knob.Position = UDim2.fromOffset(3, 3)
+        knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        knob.BorderSizePixel = 0
+        knob.ZIndex = chatSwitch.ZIndex + 1
+        knob.Parent = chatSwitch
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+        local cardTweenInfo = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local switchTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        local enabled = false
+        local panelGui = nil
+        local panelFrame = nil
+        local messageList = nil
+        local messageLayout = nil
+        local chatConnections = {}
+        local messageRows = {}
+        local maxMessages = 120
+        local lastToggleAt = -math.huge
+        local dragging = false
+        local dragInput = nil
+        local dragStart = nil
+        local dragStartPosition = nil
+        local knobTween = nil
+        local switchTween = nil
+        local cardHovered, cardPressed = false, false
+        local cardStrokeTween = nil
+
+        local function trackChatConnection(connection)
+            if connection then table.insert(chatConnections, connection) end
+            return connection
+        end
+
+        local function updateSwitch(state, animated)
+            local targetPosition = state and UDim2.new(1, -19, 0, 3) or UDim2.fromOffset(3, 3)
+            local targetColor = state and Color3.fromRGB(38, 135, 235) or Color3.fromRGB(70, 80, 94)
+            if knobTween then pcall(function() knobTween:Cancel() end) end
+            if switchTween then pcall(function() switchTween:Cancel() end) end
+            if animated then
+                knobTween = TweenService:Create(knob, switchTweenInfo, {Position = targetPosition})
+                switchTween = TweenService:Create(chatSwitch, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor})
+                knobTween:Play()
+                switchTween:Play()
+            else
+                knob.Position = targetPosition
+                chatSwitch.BackgroundColor3 = targetColor
+            end
+        end
+
+        local function refreshCardStroke()
+            if not cardStroke or not cardStroke.Parent then return end
+            if cardStrokeTween then pcall(function() cardStrokeTween:Cancel() end) end
+            cardStrokeTween = TweenService:Create(cardStroke, cardTweenInfo, {
+                Transparency = cardPressed and 0.02 or (cardHovered and 0.08 or 1),
+                Thickness = cardPressed and 2 or (cardHovered and 1.5 or 1.4),
+            })
+            cardStrokeTween:Play()
+        end
+
+        -- Cherche le nom RP comme les autres fonctions du hub : Humanoid.DisplayName,
+        -- attributs RP, puis StringValue correspondant au nom du personnage.
+        local function getChatRPName(player)
+            if not player then return "Inconnu" end
+            local character = player.Character
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+            if humanoid and humanoid.DisplayName and humanoid.DisplayName ~= ""
+                and humanoid.DisplayName ~= player.Name
+                and humanoid.DisplayName ~= player.DisplayName then
+                return humanoid.DisplayName
+            end
+
+            local keys = {
+                "RPName", "RP_Name", "RoleplayName", "CharacterName", "CharName",
+                "PseudoRP", "Pseudo_RP", "NomRP", "Nom_RP",
+            }
+            for _, container in ipairs({player, character}) do
+                if container then
+                    for _, key in ipairs(keys) do
+                        local value = container:GetAttribute(key)
+                        if typeof(value) == "string" and value ~= ""
+                            and value ~= player.Name and value ~= player.DisplayName then
+                            return value
+                        end
+                    end
+                    for _, obj in ipairs(container:GetChildren()) do
+                        if obj:IsA("StringValue") then
+                            local objectName = obj.Name:lower()
+                            if objectName:find("rp") or objectName:find("roleplay")
+                                or objectName:find("charactername") or objectName:find("charname")
+                                or objectName:find("pseudorp") or objectName:find("nomrp") then
+                                local value = tostring(obj.Value or "")
+                                if value ~= "" and value ~= player.Name and value ~= player.DisplayName then
+                                    return value
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            return player.DisplayName or player.Name
+        end
+
+        local function pushMessage(rpName, username, message)
+            if not messageList or not messageList.Parent then return end
+            rpName = tostring(rpName or "Inconnu")
+            username = tostring(username or "inconnu")
+            message = tostring(message or "")
+            if message == "" then return end
+            if #message > 600 then message = string.sub(message, 1, 597) .. "..." end
+
+            local row = Instance.new("TextLabel")
+            row.Name = "ChatMessage"
+            row.Size = UDim2.new(1, -6, 0, 0)
+            row.AutomaticSize = Enum.AutomaticSize.Y
+            row.BackgroundTransparency = 1
+            row.BorderSizePixel = 0
+            row.Font = Enum.Font.Gotham
+            row.TextSize = 14
+            row.TextXAlignment = Enum.TextXAlignment.Left
+            row.TextYAlignment = Enum.TextYAlignment.Top
+            row.TextWrapped = true
+            row.RichText = false
+            row.TextColor3 = Color3.fromRGB(238, 241, 245)
+            row.Text = rpName .. "(@" .. username .. ") : " .. message
+            row.Parent = messageList
+            table.insert(messageRows, row)
+
+            while #messageRows > maxMessages do
+                local oldest = table.remove(messageRows, 1)
+                if oldest then oldest:Destroy() end
+            end
+
+            task.defer(function()
+                if messageList and messageList.Parent and messageLayout then
+                    local maxY = math.max(0, messageLayout.AbsoluteContentSize.Y - messageList.AbsoluteSize.Y)
+                    messageList.CanvasPosition = Vector2.new(0, maxY)
+                end
+            end)
+        end
+
+        local function connectMessageSource()
+            local chatVersion = nil
+            pcall(function() chatVersion = TextChatService.ChatVersion end)
+
+            if chatVersion == Enum.ChatVersion.TextChatService then
+                local ok, err = pcall(function()
+                    trackChatConnection(TextChatService.MessageReceived:Connect(function(message)
+                        local source = message and message.TextSource
+                        -- Ignore les messages système/annonces : seul le chat des joueurs est affiché.
+                        if not source or not source.UserId then return end
+                        local sender = Players:GetPlayerByUserId(source.UserId)
+                        if not sender then return end
+                        pushMessage(getChatRPName(sender), sender.Name, message and message.Text or "")
+                    end))
+                end)
+                if ok then return true end
+                warn("[Chat Dock] Écoute TextChatService indisponible : " .. tostring(err))
+            end
+
+            -- Compatibilité avec l'ancien chat Roblox : une seule voie d'écoute est activée.
+            local function attachPlayer(player)
+                trackChatConnection(player.Chatted:Connect(function(message)
+                    pushMessage(getChatRPName(player), player.Name, message)
+                end))
+            end
+            for _, player in ipairs(Players:GetPlayers()) do attachPlayer(player) end
+            trackChatConnection(Players.PlayerAdded:Connect(attachPlayer))
+            return true
+        end
+
+        local function createPanel()
+            if panelGui and panelGui.Parent then return true end
+            if not playerGui then return false, "PlayerGui introuvable" end
+
+            local ok, err = pcall(function()
+                local previous = playerGui:FindFirstChild("PrisonChatDockUI")
+                if previous then previous:Destroy() end
+
+                panelGui = Instance.new("ScreenGui")
+                panelGui.Name = "PrisonChatDockUI"
+                panelGui.ResetOnSpawn = false
+                panelGui.IgnoreGuiInset = true
+                panelGui.DisplayOrder = 1000000
+                panelGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+                panelGui.Parent = playerGui
+
+                panelFrame = Instance.new("Frame")
+                panelFrame.Name = "Dock"
+                panelFrame.Size = UDim2.fromOffset(476, 194)
+                panelFrame.Position = UDim2.fromOffset(8, 120)
+                panelFrame.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
+                panelFrame.BorderSizePixel = 0
+                panelFrame.Active = true
+                panelFrame.Parent = panelGui
+                Instance.new("UICorner", panelFrame).CornerRadius = UDim.new(0, 8)
+
+                local panelStroke = Instance.new("UIStroke")
+                panelStroke.Color = Color3.fromRGB(62, 73, 88)
+                panelStroke.Transparency = 0.18
+                panelStroke.Thickness = 1
+                panelStroke.Parent = panelFrame
+
+                local header = Instance.new("Frame")
+                header.Name = "Header"
+                header.Size = UDim2.new(1, 0, 0, 30)
+                header.BackgroundColor3 = Color3.fromRGB(22, 27, 35)
+                header.BorderSizePixel = 0
+                header.Active = true
+                header.Parent = panelFrame
+                Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+                local headerFill = Instance.new("Frame")
+                headerFill.Size = UDim2.new(1, 0, 0, 9)
+                headerFill.Position = UDim2.new(0, 0, 1, -9)
+                headerFill.BackgroundColor3 = header.BackgroundColor3
+                headerFill.BorderSizePixel = 0
+                headerFill.Parent = header
+
+                local headerText = Instance.new("TextLabel")
+                headerText.Size = UDim2.new(1, -72, 1, 0)
+                headerText.Position = UDim2.fromOffset(10, 0)
+                headerText.BackgroundTransparency = 1
+                headerText.Font = Enum.Font.GothamBold
+                headerText.TextSize = 14
+                headerText.TextXAlignment = Enum.TextXAlignment.Left
+                headerText.TextColor3 = Color3.fromRGB(255, 255, 255)
+                headerText.Text = "PRISON CHAT"
+                headerText.Parent = header
+
+                local closeButton = Instance.new("TextButton")
+                closeButton.Name = "HideButton"
+                closeButton.Size = UDim2.fromOffset(21, 21)
+                closeButton.Position = UDim2.new(1, -27, 0, 4)
+                closeButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                closeButton.BorderSizePixel = 0
+                closeButton.AutoButtonColor = false
+                closeButton.Font = Enum.Font.GothamBold
+                closeButton.TextSize = 13
+                closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+                closeButton.Text = "×"
+                closeButton.Parent = header
+                Instance.new("UICorner", closeButton).CornerRadius = UDim.new(0, 6)
+                trackChatConnection(closeButton.Activated:Connect(function()
+                    if panelFrame then panelFrame.Visible = false end
+                end))
+
+                messageList = Instance.new("ScrollingFrame")
+                messageList.Name = "Messages"
+                messageList.Position = UDim2.fromOffset(8, 37)
+                messageList.Size = UDim2.new(1, -16, 1, -45)
+                messageList.BackgroundTransparency = 1
+                messageList.BorderSizePixel = 0
+                messageList.ScrollBarThickness = 4
+                messageList.ScrollBarImageColor3 = Color3.fromRGB(38, 135, 235)
+                messageList.ScrollingDirection = Enum.ScrollingDirection.Y
+                messageList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+                messageList.CanvasSize = UDim2.new()
+                messageList.Parent = panelFrame
+
+                messageLayout = Instance.new("UIListLayout")
+                messageLayout.Padding = UDim.new(0, 4)
+                messageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+                messageLayout.Parent = messageList
+
+                -- Déplacement du panneau par la barre supérieure.
+                trackChatConnection(header.InputBegan:Connect(function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                        dragging = true
+                        dragInput = input
+                        dragStart = input.Position
+                        dragStartPosition = panelFrame.Position
+                    end
+                end))
+                trackChatConnection(UserInputService.InputChanged:Connect(function(input)
+                    if not dragging or not panelFrame or not panelFrame.Parent then return end
+                    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+                        local delta = input.Position - dragStart
+                        panelFrame.Position = UDim2.new(
+                            dragStartPosition.X.Scale, dragStartPosition.X.Offset + delta.X,
+                            dragStartPosition.Y.Scale, dragStartPosition.Y.Offset + delta.Y
+                        )
+                    end
+                end))
+                trackChatConnection(UserInputService.InputEnded:Connect(function(input)
+                    if input == dragInput or input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                        dragging = false
+                        dragInput = nil
+                    end
+                end))
+
+                -- Aucun raccourci clavier dédié ici : le Chat Dock est contrôlé
+                -- par sa switch ou par le bind configurable de l'onglet BINDS.
+                connectMessageSource()
+            end)
+
+            if not ok then
+                warn("[Chat Dock] Création impossible : " .. tostring(err))
+                for _, connection in ipairs(chatConnections) do pcall(function() connection:Disconnect() end) end
+                table.clear(chatConnections)
+                if panelGui then pcall(function() panelGui:Destroy() end) end
+                panelGui, panelFrame, messageList, messageLayout = nil, nil, nil, nil
+                table.clear(messageRows)
+                return false, err
+            end
+            return true
+        end
+
+        local function stopPanel()
+            dragging = false
+            dragInput, dragStart, dragStartPosition = nil, nil, nil
+            for _, connection in ipairs(chatConnections) do
+                pcall(function() connection:Disconnect() end)
+            end
+            table.clear(chatConnections)
+            if panelGui then pcall(function() panelGui:Destroy() end) end
+            panelGui, panelFrame, messageList, messageLayout = nil, nil, nil, nil
+            table.clear(messageRows)
+        end
+
+        local function setChatEnabled(want)
+            want = want == true
+            if want == enabled then
+                updateSwitch(enabled, true)
+                return
+            end
+            if want then
+                local ok, err = createPanel()
+                if not ok then
+                    enabled = false
+                    updateSwitch(false, true)
+                    warn("[Chat Dock] Activation échouée : " .. tostring(err))
+                    return
+                end
+                enabled = true
+            else
+                enabled = false
+                stopPanel()
+            end
+            updateSwitch(enabled, true)
+        end
+
+        local function toggleChatDock()
+            local now = os.clock()
+            if now - lastToggleAt < 0.18 then return end
+            lastToggleAt = now
+            setChatEnabled(not enabled)
+        end
+
+        -- Exposé au système global des binds. Le bind appelle la même action
+        -- que la switch visuelle, sans simuler un clic GUI.
+        _G.PRISONRP_CHAT_DOCK_TOGGLE = toggleChatDock
+
+        ChatDockCard.Activated:Connect(toggleChatDock)
+        chatSwitch.Activated:Connect(toggleChatDock)
+
+        ChatDockCard.MouseEnter:Connect(function()
+            cardHovered = true
+            refreshCardStroke()
+        end)
+        ChatDockCard.MouseLeave:Connect(function()
+            cardHovered, cardPressed = false, false
+            refreshCardStroke()
+        end)
+        ChatDockCard.MouseButton1Down:Connect(function()
+            cardPressed = true
+            refreshCardStroke()
+        end)
+        ChatDockCard.MouseButton1Up:Connect(function()
+            cardPressed = false
+            refreshCardStroke()
+        end)
+        chatSwitch.MouseEnter:Connect(function()
+            pcall(function()
+                TweenService:Create(switchStroke, TweenInfo.new(0.12), {Transparency = 0.05}):Play()
+            end)
+        end)
+        chatSwitch.MouseLeave:Connect(function()
+            pcall(function()
+                TweenService:Create(switchStroke, TweenInfo.new(0.12), {Transparency = 0.18}):Play()
+            end)
+        end)
+
+        _G.PRISONRP_CHAT_DOCK_CLEANUP = function()
+            enabled = false
+            stopPanel()
+            pcall(function() updateSwitch(false, false) end)
+            _G.PRISONRP_CHAT_DOCK_TOGGLE = nil
+            _G.PRISONRP_CHAT_DOCK_CLEANUP = nil
+        end
+
+        updateSwitch(false, false)
+        refreshCardStroke()
+        print("[Chat Dock] Switch ajouté dans AUTRES ; désactivé par défaut.")
+    end)
+    if not initOk then
+        warn("[Chat Dock] Initialisation impossible : " .. tostring(initErr))
+    end
+end
+
+--==============================================================
+-- FINAL LAYOUT PATCH : AUTRES SCROLLABLE À GAUCHE / GIVE MONEY FIXE À DROITE
+-- Le titre AUTRES reste visible. Seules les cases de gauche défilent ;
+-- Give Money reste fixe dans la colonne droite.
+--==============================================================
+do
+    local layoutOk, layoutErr = pcall(function()
+        local autresPageRef = MainFrame and MainFrame:FindFirstChild("OmegaAutresPage", true)
+        if not autresPageRef then return end
+
+        local previousScroll = autresPageRef:FindFirstChild("PRISONRP_AutresLeftScroll")
+        if previousScroll then previousScroll:Destroy() end
+
+        local leftScroll = Instance.new("ScrollingFrame")
+        leftScroll.Name = "PRISONRP_AutresLeftScroll"
+        leftScroll.Position = UDim2.fromOffset(0, 28)
+        leftScroll.Size = UDim2.new(1, -215, 1, -30)
+        leftScroll.BackgroundTransparency = 1
+        leftScroll.BorderSizePixel = 0
+        leftScroll.ScrollBarThickness = 4
+        leftScroll.ScrollBarImageColor3 = Color3.fromRGB(79, 142, 255)
+        leftScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+        leftScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
+        leftScroll.CanvasSize = UDim2.fromOffset(0, 0)
+        leftScroll.ScrollBarImageTransparency = 0.15
+        leftScroll.ClipsDescendants = true
+        leftScroll.ZIndex = (autresPageRef.ZIndex or 91) + 1
+        leftScroll.Parent = autresPageRef
+
+        -- Ordre de haut en bas pour conserver une seule colonne de cases.
+        -- Les contrôles sont référencés par objet lorsque possible afin de
+        -- préserver leurs callbacks et switches existants.
+        local items = {
+            {obj = AutoPushupBtn, label = "Auto Pushup"},
+            {obj = BlackMarketBtn, label = "Black Market"},
+            {obj = ESPToggleBtn, label = "ESP Black Market"},
+            {obj = StaffAutoLeaveBtn, label = "Auto Leave"},
+            {obj = type(_G.PRISONRP_AUTO_ARM_WRESTLE_STATE) == "table" and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Btn or nil, label = "Auto Arm Wrestle"},
+            {obj = autresPageRef:FindFirstChild("PRISONRP_AutoPurpleToggle"), label = "Auto Purple"},
+            {obj = autresPageRef:FindFirstChild("PRISONRP_InfiniteYieldToggle"), label = "Infinite Yield"},
+            {obj = autresPageRef:FindFirstChild("PRISONRP_Custom_AntiV"), label = "Anti VCB"},
+            {obj = autresPageRef:FindFirstChild("PRISONRP_Custom_Novoline"), label = "Novoline"},
+            {obj = autresPageRef:FindFirstChild("PRISONRP_Custom_M7"), label = "M7"},
+            {obj = autresPageRef:FindFirstChild("PRISONRP_ChatDockToggle"), label = "Chat"},
+        }
+
+        local top = 6
+        local height = 34
+        local gap = 7
+        local step = height + gap
+        local placed = {}
+
+        for _, item in ipairs(items) do
+            local obj = item.obj
+            if obj and obj:IsA("GuiObject") and obj.Parent then
+                obj.Parent = leftScroll
+                obj.Position = UDim2.fromOffset(0, top)
+                obj.Size = UDim2.new(1, -5, 0, height)
+                obj.ZIndex = math.max(obj.ZIndex, leftScroll.ZIndex + 1)
+                placed[#placed + 1] = obj
+                top = top + step
+            end
+        end
+
+        -- Les labels d'état correspondants sont cachés normalement ; les déplacer
+        -- aussi évite qu'ils occupent le parent fixe si une future mise à jour les affiche.
+        for _, statusName in ipairs({"PRISONRP_AutoPurpleStatus", "PRISONRP_InfiniteYieldStatus", "PRISONRP_ChatDockStatus"}) do
+            local status = autresPageRef:FindFirstChild(statusName)
+            if status and status:IsA("GuiObject") then
+                status.Parent = leftScroll
+                status.Visible = false
+            end
+        end
+
+        leftScroll.CanvasSize = UDim2.fromOffset(0, math.max(0, top))
+        leftScroll.CanvasPosition = Vector2.zero
+
+        -- Le panneau Give Money reste fixé à droite et ne défile pas avec les cases.
+        local giveMoneyPanel = autresPageRef:FindFirstChild("GiveMoneyPanel")
+        if giveMoneyPanel then
+            giveMoneyPanel.Parent = autresPageRef
+            giveMoneyPanel.Position = UDim2.new(1, -205, 0, 30)
+            giveMoneyPanel.AnchorPoint = Vector2.new(0, 0)
+        end
+
+        print("[AUTRES] Colonne gauche défilante configurée ; Give Money reste fixe à droite.")
+    end)
+    if not layoutOk then
+        warn("[AUTRES] Mise en page défilante impossible : " .. tostring(layoutErr))
+    end
+end
+
