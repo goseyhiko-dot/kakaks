@@ -1,3 +1,5 @@
+-- V9 : réinitialisation par sauvegarde et choix du chargement automatique.
+-- V8 : compteur FPS activable dans AUTRES avec afficheur en haut à droite.
 -- V7 : ajout du compteur FPS dans les statistiques.
 -- V6 : confirmation des captures par le signal CatchPrompt reçu côté client.
 -- V5 : reprise différée Auto Eat/Drink et en-tête compactés.
@@ -111,6 +113,7 @@ _G.BlackMarketESP = false
 -- Auto Pompes (ajouté, sans modifier le fonctionnement de la pêche)
 _G.AutoPushupEnabled = false
 AutoPushupWorker = nil
+_G.PRISONRP_FPS_COUNTER_ENABLED = false
 
 -- Auto Eat / Drink
 AutoEatDrinkEnabled = false
@@ -354,6 +357,52 @@ ScreenGui.Parent = guiParent
 ScreenGui.Enabled = false
 MainFrame.Visible = true
 
+-- Afficheur FPS indépendant : il reste visible même quand le menu est masqué.
+pcall(function()
+    local previousFPSGui = guiParent:FindFirstChild("PRISONRP_FPSOverlayGui")
+    if previousFPSGui then previousFPSGui:Destroy() end
+end)
+FPSOverlayGui = Instance.new("ScreenGui")
+FPSOverlayGui.Name = "PRISONRP_FPSOverlayGui"
+FPSOverlayGui.ResetOnSpawn = false
+FPSOverlayGui.IgnoreGuiInset = true
+FPSOverlayGui.DisplayOrder = 1000000
+FPSOverlayGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+FPSOverlayGui.Enabled = false
+FPSOverlayGui.Parent = guiParent
+
+FPSCounterFrame = Instance.new("Frame")
+FPSCounterFrame.Name = "FPSCounterFrame"
+FPSCounterFrame.AnchorPoint = Vector2.new(1, 0)
+FPSCounterFrame.Position = UDim2.new(1, -18, 0, 92)
+FPSCounterFrame.Size = UDim2.fromOffset(108, 36)
+FPSCounterFrame.BackgroundColor3 = Color3.fromRGB(24, 28, 35)
+FPSCounterFrame.BackgroundTransparency = 0.08
+FPSCounterFrame.BorderSizePixel = 0
+FPSCounterFrame.ZIndex = 10
+FPSCounterFrame.Parent = FPSOverlayGui
+local FPSCounterCorner = Instance.new("UICorner")
+FPSCounterCorner.CornerRadius = UDim.new(0, 8)
+FPSCounterCorner.Parent = FPSCounterFrame
+local FPSCounterStroke = Instance.new("UIStroke")
+FPSCounterStroke.Color = Color3.fromRGB(75, 95, 115)
+FPSCounterStroke.Transparency = 0.25
+FPSCounterStroke.Thickness = 1
+FPSCounterStroke.Parent = FPSCounterFrame
+
+FPSCounterLabel = Instance.new("TextLabel")
+FPSCounterLabel.Name = "FPSCounterLabel"
+FPSCounterLabel.Size = UDim2.fromScale(1, 1)
+FPSCounterLabel.BackgroundTransparency = 1
+FPSCounterLabel.Text = "FPS : --"
+FPSCounterLabel.TextColor3 = Color3.fromRGB(145, 235, 170)
+FPSCounterLabel.TextSize = 14
+FPSCounterLabel.Font = Enum.Font.GothamBold
+FPSCounterLabel.TextXAlignment = Enum.TextXAlignment.Center
+FPSCounterLabel.TextYAlignment = Enum.TextYAlignment.Center
+FPSCounterLabel.ZIndex = 11
+FPSCounterLabel.Parent = FPSCounterFrame
+
 -- Marqueur de démarrage : doit être visible même si une partie du script échoue plus loin.
 -- Petit garde-fou : le menu de base doit être visible immédiatement.
 pcall(function()
@@ -444,9 +493,9 @@ UnloadBtnCorner.Parent = UnloadBtn
 -- Placé dans la zone libre à droite des icônes Roblox, comme indiqué sur la capture.
 MinimizedHubButton = Instance.new("TextButton")
 MinimizedHubButton.Name = "MinimizedHubButton"
--- Par défaut, à droite des icônes Roblox, comme sur la capture fournie.
+-- Position de départ choisie sur la capture : en haut à gauche, après les icônes.
 MinimizedHubButton.Size = UDim2.fromOffset(122, 34)
-MinimizedHubButton.Position = UDim2.fromOffset(376, 18)
+MinimizedHubButton.Position = UDim2.fromOffset(426, 18)
 MinimizedHubButton.AnchorPoint = Vector2.new(0, 0)
 MinimizedHubButton.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
 MinimizedHubButton.BorderSizePixel = 0
@@ -621,7 +670,7 @@ StatsLabel = Instance.new("TextLabel")
 StatsLabel.Size = UDim2.new(1, 0, 0, 22)
 StatsLabel.Position = UDim2.new(0, 0, 0, 26)
 StatsLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
-StatsLabel.Text = "Caught: 0 | Perfect: 0 | FPS: 0"
+StatsLabel.Text = "Caught: 0 | Perfect: 0"
 StatsLabel.TextColor3 = Color3.fromRGB(150, 240, 160)
 StatsLabel.TextSize = 11
 StatsLabel.Font = Enum.Font.GothamMedium
@@ -790,6 +839,21 @@ AutoPushupBtn.Parent = Content
 AutoPushupCorner = Instance.new("UICorner")
 AutoPushupCorner.CornerRadius = UDim.new(0, 6)
 AutoPushupCorner.Parent = AutoPushupBtn
+
+-- Case FPS : même carte et même interrupteur que Auto-Pompes.
+FPSCounterBtn = Instance.new("TextButton")
+FPSCounterBtn.Name = "FPSCounterBtn"
+FPSCounterBtn.Size = UDim2.new(1, -215, 0, 32)
+FPSCounterBtn.Position = UDim2.new(0, 0, 0, 93)
+FPSCounterBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+FPSCounterBtn.Text = "📊 COMPTEUR FPS"
+FPSCounterBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+FPSCounterBtn.TextSize = 11
+FPSCounterBtn.Font = Enum.Font.GothamBold
+FPSCounterBtn.Parent = Content
+local FPSCounterBtnCorner = Instance.new("UICorner")
+FPSCounterBtnCorner.CornerRadius = UDim.new(0, 6)
+FPSCounterBtnCorner.Parent = FPSCounterBtn
 
 --==============================================================
 -- AUTO MINE V32 — CHARACTER AIM SANS CONTROLE CAMERA
@@ -2837,7 +2901,7 @@ end
 
 function updateUI()
     StatusLabel.Text = "Status: " .. stats.status
-    StatsLabel.Text = string.format("Caught: %d | Perfect: %d | FPS: %d", stats.totalCaught, stats.perfectCount, stats.fps or 0)
+    StatsLabel.Text = string.format("Caught: %d | Perfect: %d", stats.totalCaught, stats.perfectCount)
     LastFishLabel.Text = "Last Fish: " .. stats.lastFish
     local selectedRarity = RarityList[_G.MinRarityIndex]
     RarityBtn.Text = "Pêcher à partir de : " .. selectedRarity
@@ -2858,8 +2922,8 @@ function updateUI()
     ESPToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 end
 
--- V7 : mesure la cadence rendue sur une fenêtre d'une seconde.
--- L'affichage est actualisé une fois par seconde et s'arrête avec le hub.
+-- V8 : mesure la cadence rendue et actualise uniquement le compteur flottant.
+-- La mesure continue en arrière-plan ; l'afficheur ne paraît que si son switch est actif.
 task.spawn(function()
     local frameCount = 0
     local elapsed = 0
@@ -2873,13 +2937,8 @@ task.spawn(function()
 
         if elapsed >= 1 then
             stats.fps = math.floor((frameCount / elapsed) + 0.5)
-            if StatsLabel and StatsLabel.Parent then
-                StatsLabel.Text = string.format(
-                    "Caught: %d | Perfect: %d | FPS: %d",
-                    stats.totalCaught,
-                    stats.perfectCount,
-                    stats.fps
-                )
+            if _G.PRISONRP_FPS_COUNTER_ENABLED == true and FPSCounterLabel and FPSCounterLabel.Parent then
+                FPSCounterLabel.Text = string.format("FPS : %d", stats.fps)
             end
             frameCount = 0
             elapsed = 0
@@ -4311,6 +4370,7 @@ _G.CombinedHubCleanup = function()
     _G.AutoSellEnabled = false
     AutoEatDrinkEnabled = false
     _G.AutoPushupEnabled = false
+    _G.PRISONRP_FPS_COUNTER_ENABLED = false
     _G.BlackMarketESP = false
 
     pcall(function() if stopAutoPushup then stopAutoPushup() end end)
@@ -4387,6 +4447,13 @@ _G.CombinedHubCleanup = function()
         if UnloadConfirmOverlay then UnloadConfirmOverlay.Visible = false end
     end)
 
+    pcall(function()
+        _G.PRISONRP_FPS_COUNTER_ENABLED = false
+        if FPSOverlayGui then
+            FPSOverlayGui:Destroy()
+            FPSOverlayGui = nil
+        end
+    end)
     pcall(function()
         local player = game:GetService("Players").LocalPlayer
         local pg = player and player:FindFirstChildOfClass("PlayerGui")
@@ -6598,8 +6665,9 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     AutoMineStatus.Parent = Content; AutoMineStatus.Position = UDim2.new(0,0,0,380); AutoMineStatus.Size=UDim2.new(1,0,0,22); AutoMineStatus.ZIndex=21
     AutoMineStatus.BackgroundTransparency=1; textClean(AutoMineStatus,9,C.muted)
 
-    -- Auto-Pompes est placé dans AUTRES.
+    -- Auto-Pompes et le compteur FPS sont placés dans AUTRES.
     AutoPushupBtn.Parent = autresPage
+    FPSCounterBtn.Parent = autresPage
 
     --==============================================================
     -- AUTO BRAS DE FER
@@ -7267,6 +7335,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
                 or btn == tpSpecButton
                 or btn == tpButton
                 or btn == AutoPushupBtn
+                or btn == FPSCounterBtn
                 or btn == BlackMarketBtn
                 or btn == ESPToggleBtn
                 or btn == StaffAutoLeaveBtn
@@ -8254,6 +8323,21 @@ end)
                 stopAutoPushup()
             else
                 startAutoPushup()
+            end
+        end
+    )
+
+    gdpCheckbox(FPSCounterBtn,
+        function() return _G.PRISONRP_FPS_COUNTER_ENABLED == true end,
+        function()
+            _G.PRISONRP_FPS_COUNTER_ENABLED = not (_G.PRISONRP_FPS_COUNTER_ENABLED == true)
+            if FPSOverlayGui then
+                FPSOverlayGui.Enabled = _G.PRISONRP_FPS_COUNTER_ENABLED
+            end
+            if FPSCounterLabel then
+                FPSCounterLabel.Text = stats.fps and stats.fps > 0
+                    and string.format("FPS : %d", stats.fps)
+                    or "FPS : --"
             end
         end
     )
@@ -11470,6 +11554,7 @@ end)
             tpSpecButton,
             tpButton,
             AutoPushupBtn,
+            FPSCounterBtn,
             BlackMarketBtn,
             ESPToggleBtn,
             StaffAutoLeaveBtn,
@@ -12647,24 +12732,8 @@ do
         titlePad.Parent = title
         makeCorner(title, 8)
 
-        -- Les deux anciens panneaux d'information/état sont volontairement retirés.
-        -- On garde uniquement le titre, la réinitialisation et les 5 slots de sauvegarde.
-        local resetDefaultsButton = Instance.new("TextButton")
-        resetDefaultsButton.LayoutOrder = 2
-        resetDefaultsButton.Size = UDim2.new(1, -4, 0, 46)
-        resetDefaultsButton.BackgroundColor3 = Color3.fromRGB(145, 72, 48)
-        resetDefaultsButton.BorderSizePixel = 0
-        resetDefaultsButton.AutoButtonColor = true
-        resetDefaultsButton.Text = "↺ RÉINITIALISER PAR DÉFAUT"
-        resetDefaultsButton.TextColor3 = Color3.fromRGB(255,255,255)
-        resetDefaultsButton.TextSize = 13
-        resetDefaultsButton.Font = Enum.Font.GothamBold
-        resetDefaultsButton.ZIndex = 93
-        resetDefaultsButton.Parent = settingsPage
-        makeCorner(resetDefaultsButton, 8)
-
         local slotsTitle = Instance.new("TextLabel")
-        slotsTitle.LayoutOrder = 3
+        slotsTitle.LayoutOrder = 2
         slotsTitle.Size = UDim2.new(1, -4, 0, 26)
         slotsTitle.BackgroundTransparency = 1
         slotsTitle.Text = "SAUVEGARDES"
@@ -12680,7 +12749,7 @@ do
         slotsTitlePad.Parent = slotsTitle
 
         local status = Instance.new("TextLabel")
-        status.LayoutOrder = 9
+        status.LayoutOrder = 8
         status.Size = UDim2.new(1, -4, 0, 34)
         status.BackgroundTransparency = 1
         status.Text = ""
@@ -12702,6 +12771,22 @@ do
             "PRISON_RP_Settings_Slot5.json",
         }
         local HttpService = game:GetService("HttpService")
+
+        -- Le numéro choisi est stocké à part : il reste valide après redémarrage
+        -- et ne modifie pas le contenu des cinq fichiers de sauvegarde.
+        local defaultSlotFile = "PRISON_RP_Settings_DefaultSlot.txt"
+        local defaultSlotIndex = 1
+        if type(isfile) == "function" and type(readfile) == "function" then
+            local exists = false
+            pcall(function() exists = isfile(defaultSlotFile) end)
+            if exists then
+                local okRead, raw = pcall(function() return readfile(defaultSlotFile) end)
+                local savedIndex = okRead and tonumber(raw) or nil
+                if savedIndex and savedIndex % 1 == 0 and savedIndex >= 1 and savedIndex <= 5 then
+                    defaultSlotIndex = savedIndex
+                end
+            end
+        end
 
         -- V215 : les noms sont stockés séparément des réglages pour rester
         -- compatibles avec les fichiers de sauvegarde déjà existants.
@@ -13088,6 +13173,7 @@ do
                     AutoFishing=_G.AutoFishingEnabled==true,
                     AutoSell=_G.AutoSellEnabled==true,
                     AutoEatDrink=AutoEatDrinkEnabled==true,
+                    FPSCounter=_G.PRISONRP_FPS_COUNTER_ENABLED==true,
                     AutoPushup=_G.AutoPushupEnabled==true,
                     AutoMine=AutoMineRunning==true,
                     SpeedHack=MovementWalkSpeedEnabled==true,
@@ -13198,6 +13284,20 @@ do
             _G.AutoSellEnabled = t.AutoSell == true
             AutoEatDrinkEnabled = t.AutoEatDrink == true
             _G.AutoEatDrinkEnabled = AutoEatDrinkEnabled
+
+            -- COMPTEUR FPS : restaurer l'état et l'affichage dans AUTRES.
+            restoreBool(
+                function() return _G.PRISONRP_FPS_COUNTER_ENABLED == true end,
+                function()
+                    _G.PRISONRP_FPS_COUNTER_ENABLED = true
+                    if FPSOverlayGui then FPSOverlayGui.Enabled = true end
+                end,
+                function()
+                    _G.PRISONRP_FPS_COUNTER_ENABLED = false
+                    if FPSOverlayGui then FPSOverlayGui.Enabled = false end
+                end,
+                t.FPSCounter
+            )
 
             -- AUTO-POMPES
             restoreBool(
@@ -13339,6 +13439,7 @@ do
                 syncSwitchVisual(AutoSellBtn, _G.AutoSellEnabled == true)
                 syncSwitchVisual(AutoEatDrinkBtn, AutoEatDrinkEnabled == true)
                 syncSwitchVisual(AutoPushupBtn, _G.AutoPushupEnabled == true)
+                syncSwitchVisual(FPSCounterBtn, _G.PRISONRP_FPS_COUNTER_ENABLED == true)
                 syncSwitchVisual(AutoMineBtn, AutoMineRunning == true)
                 syncSwitchVisual(speedBtn, MovementWalkSpeedEnabled == true)
                 syncSwitchVisual(flyBtn, MovementFlyEnabled == true)
@@ -13417,14 +13518,14 @@ do
             end
         end
 
-        local function writeSettingsFile(path)
+        local function writeSettingsData(path, data)
             if type(writefile) ~= "function" then
                 status.Text = "⚠ writefile n'est pas disponible dans cet executor."
                 status.TextColor3 = Color3.fromRGB(255,170,90)
                 return false
             end
             local okEncode, encoded = pcall(function()
-                return HttpService:JSONEncode(currentSettings())
+                return HttpService:JSONEncode(data)
             end)
             if not okEncode then
                 status.Text = "⚠ Impossible d'encoder les paramètres."
@@ -13434,18 +13535,32 @@ do
             local okWrite = pcall(function()
                 writefile(path, encoded)
             end)
-            if okWrite then
-                return true
+            if not okWrite then
+                status.Text = "⚠ Impossible d'écrire la sauvegarde."
+                status.TextColor3 = Color3.fromRGB(255,110,110)
+                return false
             end
-            status.Text = "⚠ Impossible d'écrire la sauvegarde."
-            status.TextColor3 = Color3.fromRGB(255,110,110)
-            return false
+            if type(readfile) == "function" then
+                local okVerify, written = pcall(function() return readfile(path) end)
+                if not okVerify or written ~= encoded then
+                    status.Text = "⚠ La sauvegarde n'a pas pu être vérifiée après écriture."
+                    status.TextColor3 = Color3.fromRGB(255,110,110)
+                    return false
+                end
+            end
+            return true
+        end
+
+        local function writeSettingsFile(path)
+            return writeSettingsData(path, currentSettings())
         end
 
         local function readSettingsFile(path)
-            if type(readfile) ~= "function" or type(isfile) ~= "function" or not isfile(path) then
+            if type(readfile) ~= "function" or type(isfile) ~= "function" then
                 return nil
             end
+            local okExists, exists = pcall(function() return isfile(path) end)
+            if not okExists or not exists then return nil end
             local okRead, raw = pcall(function() return readfile(path) end)
             if not okRead or type(raw) ~= "string" then return nil end
             local okDecode, data = pcall(function() return HttpService:JSONDecode(raw) end)
@@ -13453,20 +13568,28 @@ do
             return data
         end
 
-        local function resetToDefaults()
-            local ok = pcall(function()
-                applyLoadedSettings(defaultSettings)
-            end)
-            if ok then
-                status.Text = "✓ Paramètres réinitialisés par défaut."
-                status.TextColor3 = Color3.fromRGB(125,230,155)
-            else
-                status.Text = "⚠ Échec de la réinitialisation."
-                status.TextColor3 = Color3.fromRGB(255,110,110)
+        local function writeDefaultSlotChoice(index)
+            if type(writefile) ~= "function" or type(readfile) ~= "function" then
+                status.Text = "⚠ Lecture/écriture de fichiers indisponible dans cet executor."
+                status.TextColor3 = Color3.fromRGB(255,170,90)
+                return false
             end
+            local okWrite = pcall(function()
+                writefile(defaultSlotFile, tostring(index))
+            end)
+            if not okWrite then
+                status.Text = "⚠ Impossible d'enregistrer la sauvegarde par défaut."
+                status.TextColor3 = Color3.fromRGB(255,110,110)
+                return false
+            end
+            local okRead, savedValue = pcall(function() return readfile(defaultSlotFile) end)
+            if not okRead or tonumber(savedValue) ~= index then
+                status.Text = "⚠ Le choix par défaut n'a pas été conservé sur le disque."
+                status.TextColor3 = Color3.fromRGB(255,110,110)
+                return false
+            end
+            return true
         end
-
-        resetDefaultsButton.MouseButton1Click:Connect(resetToDefaults)
 
         -- Petite fenêtre de renommage, créée uniquement à la demande.
         local renameOverlay = nil
@@ -13596,10 +13719,133 @@ do
             end)
         end
 
+        -- Confirmation obligatoire avant d'écraser ou de réinitialiser un slot.
+        local slotConfirmOverlay = nil
+        local function closeSlotConfirmModal()
+            if slotConfirmOverlay then
+                pcall(function() slotConfirmOverlay:Destroy() end)
+                slotConfirmOverlay = nil
+            end
+        end
+
+        local function confirmSlotAction(slotIndex, action, callback)
+            closeSlotConfirmModal()
+            local isReset = action == "reset"
+            local overlay = Instance.new("Frame")
+            overlay.Name = "SettingsSlotConfirmOverlay"
+            overlay.Size = UDim2.fromScale(1, 1)
+            overlay.Position = UDim2.fromScale(0, 0)
+            overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            overlay.BackgroundTransparency = 0.38
+            overlay.BorderSizePixel = 0
+            overlay.Active = true
+            overlay.ZIndex = 210
+            overlay.Parent = MainFrame
+            slotConfirmOverlay = overlay
+
+            local panel = Instance.new("Frame")
+            panel.Name = "SlotConfirmPanel"
+            panel.AnchorPoint = Vector2.new(0.5, 0.5)
+            panel.Position = UDim2.fromScale(0.5, 0.5)
+            panel.Size = UDim2.new(1, -28, 0, 172)
+            panel.BackgroundColor3 = Color3.fromRGB(24, 29, 38)
+            panel.BorderSizePixel = 0
+            panel.ZIndex = 211
+            panel.Parent = overlay
+            makeCorner(panel, 10)
+            local outline = Instance.new("UIStroke")
+            outline.Color = isReset and Color3.fromRGB(180, 90, 70) or Color3.fromRGB(72, 112, 175)
+            outline.Transparency = 0.2
+            outline.Thickness = 1
+            outline.Parent = panel
+
+            local heading = Instance.new("TextLabel")
+            heading.Size = UDim2.new(1, -20, 0, 30)
+            heading.Position = UDim2.fromOffset(10, 9)
+            heading.BackgroundTransparency = 1
+            heading.Text = isReset and "CONFIRMER LA RÉINITIALISATION ?" or "CONFIRMER LA SAUVEGARDE ?"
+            heading.TextColor3 = Color3.fromRGB(240, 244, 250)
+            heading.TextSize = 11
+            heading.Font = Enum.Font.GothamBold
+            heading.TextXAlignment = Enum.TextXAlignment.Left
+            heading.ZIndex = 212
+            heading.Parent = panel
+
+            local message = Instance.new("TextLabel")
+            message.Size = UDim2.new(1, -20, 0, 74)
+            message.Position = UDim2.fromOffset(10, 42)
+            message.BackgroundTransparency = 1
+            message.Text = isReset
+                and ("La sauvegarde « " .. slotNames[slotIndex] .. " » sera remplacée par les valeurs par défaut. Continuer ?")
+                or ("La sauvegarde « " .. slotNames[slotIndex] .. " » sera remplacée par les réglages actuels. Continuer ?")
+            message.TextColor3 = Color3.fromRGB(195, 202, 214)
+            message.TextSize = 11
+            message.Font = Enum.Font.GothamMedium
+            message.TextWrapped = true
+            message.TextXAlignment = Enum.TextXAlignment.Left
+            message.TextYAlignment = Enum.TextYAlignment.Center
+            message.ZIndex = 212
+            message.Parent = panel
+
+            local cancelButton = Instance.new("TextButton")
+            cancelButton.Name = "CancelSlotAction"
+            cancelButton.Size = UDim2.new(0.5, -15, 0, 32)
+            cancelButton.Position = UDim2.new(0, 10, 1, -42)
+            cancelButton.BackgroundColor3 = Color3.fromRGB(58, 66, 80)
+            cancelButton.BorderSizePixel = 0
+            cancelButton.AutoButtonColor = true
+            cancelButton.Text = "ANNULER"
+            cancelButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+            cancelButton.TextSize = 11
+            cancelButton.Font = Enum.Font.GothamBold
+            cancelButton.ZIndex = 212
+            cancelButton.Parent = panel
+            makeCorner(cancelButton, 7)
+
+            local confirmButton = Instance.new("TextButton")
+            confirmButton.Name = "ConfirmSlotAction"
+            confirmButton.Size = UDim2.new(0.5, -15, 0, 32)
+            confirmButton.Position = UDim2.new(0.5, 5, 1, -42)
+            confirmButton.BackgroundColor3 = isReset and Color3.fromRGB(155, 66, 52) or Color3.fromRGB(40, 145, 78)
+            confirmButton.BorderSizePixel = 0
+            confirmButton.AutoButtonColor = true
+            confirmButton.Text = isReset and "RÉINITIALISER" or "SAUVEGARDER"
+            confirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+            confirmButton.TextSize = 10
+            confirmButton.Font = Enum.Font.GothamBold
+            confirmButton.ZIndex = 212
+            confirmButton.Parent = panel
+            makeCorner(confirmButton, 7)
+
+            local completed = false
+            cancelButton.MouseButton1Click:Connect(function()
+                if completed then return end
+                completed = true
+                closeSlotConfirmModal()
+            end)
+            confirmButton.MouseButton1Click:Connect(function()
+                if completed then return end
+                completed = true
+                closeSlotConfirmModal()
+                callback()
+            end)
+        end
+
+        local defaultSlotButtons = {}
+        local function refreshDefaultSlotButtons()
+            for index, button in pairs(defaultSlotButtons) do
+                local isDefault = index == defaultSlotIndex
+                button.Text = isDefault and "DÉFAUT ✓" or "PAR DÉFAUT"
+                button.BackgroundColor3 = isDefault
+                    and Color3.fromRGB(40, 130, 75)
+                    or Color3.fromRGB(58, 67, 82)
+            end
+        end
+
         for index = 1, 5 do
             local slotIndex = index
             local row = Instance.new("Frame")
-            row.LayoutOrder = 3 + index
+            row.LayoutOrder = 2 + index
             row.Size = UDim2.new(1, -4, 0, 50)
             row.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
             row.BorderSizePixel = 0
@@ -13609,7 +13855,7 @@ do
 
             local label = Instance.new("TextButton")
             label.Name = "SlotNameButton"
-            label.Size = UDim2.new(1, -142, 1, 0)
+            label.Size = UDim2.new(1, -274, 1, 0)
             label.Position = UDim2.fromOffset(10, 0)
             label.BackgroundTransparency = 1
             label.BorderSizePixel = 0
@@ -13629,22 +13875,22 @@ do
             end)
 
             local saveSlotButton = Instance.new("TextButton")
-            saveSlotButton.Size = UDim2.fromOffset(58, 30)
-            saveSlotButton.Position = UDim2.new(1, -130, 0.5, -15)
+            saveSlotButton.Size = UDim2.fromOffset(54, 30)
+            saveSlotButton.Position = UDim2.new(1, -258, 0.5, -15)
             saveSlotButton.BackgroundColor3 = Color3.fromRGB(40,145,78)
             saveSlotButton.BorderSizePixel = 0
             saveSlotButton.AutoButtonColor = true
             saveSlotButton.Text = "SAUVER"
             saveSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
-            saveSlotButton.TextSize = 9
+            saveSlotButton.TextSize = 8
             saveSlotButton.Font = Enum.Font.GothamBold
             saveSlotButton.ZIndex = 94
             saveSlotButton.Parent = row
             makeCorner(saveSlotButton, 7)
 
             local loadSlotButton = Instance.new("TextButton")
-            loadSlotButton.Size = UDim2.fromOffset(58, 30)
-            loadSlotButton.Position = UDim2.new(1, -66, 0.5, -15)
+            loadSlotButton.Size = UDim2.fromOffset(54, 30)
+            loadSlotButton.Position = UDim2.new(1, -198, 0.5, -15)
             loadSlotButton.BackgroundColor3 = Color3.fromRGB(52,100,165)
             loadSlotButton.BorderSizePixel = 0
             loadSlotButton.AutoButtonColor = true
@@ -13656,9 +13902,63 @@ do
             loadSlotButton.Parent = row
             makeCorner(loadSlotButton, 7)
 
+            local resetSlotButton = Instance.new("TextButton")
+            resetSlotButton.Name = "ResetSlotButton"
+            resetSlotButton.Size = UDim2.fromOffset(54, 30)
+            resetSlotButton.Position = UDim2.new(1, -138, 0.5, -15)
+            resetSlotButton.BackgroundColor3 = Color3.fromRGB(145, 72, 48)
+            resetSlotButton.BorderSizePixel = 0
+            resetSlotButton.AutoButtonColor = true
+            resetSlotButton.Text = "RESET"
+            resetSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
+            resetSlotButton.TextSize = 8
+            resetSlotButton.Font = Enum.Font.GothamBold
+            resetSlotButton.ZIndex = 94
+            resetSlotButton.Parent = row
+            makeCorner(resetSlotButton, 7)
+
+            local defaultSlotButton = Instance.new("TextButton")
+            defaultSlotButton.Name = "DefaultSlotButton"
+            defaultSlotButton.Size = UDim2.fromOffset(74, 30)
+            defaultSlotButton.Position = UDim2.new(1, -78, 0.5, -15)
+            defaultSlotButton.BorderSizePixel = 0
+            defaultSlotButton.AutoButtonColor = true
+            defaultSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
+            defaultSlotButton.TextSize = 7
+            defaultSlotButton.Font = Enum.Font.GothamBold
+            defaultSlotButton.ZIndex = 94
+            defaultSlotButton.Parent = row
+            defaultSlotButtons[slotIndex] = defaultSlotButton
+            makeCorner(defaultSlotButton, 7)
+
             saveSlotButton.MouseButton1Click:Connect(function()
-                if writeSettingsFile(slotFiles[slotIndex]) then
-                    status.Text = "✓ «" .. slotNames[slotIndex] .. "» enregistrée."
+                confirmSlotAction(slotIndex, "save", function()
+                    if writeSettingsFile(slotFiles[slotIndex]) then
+                        status.Text = "✓ «" .. slotNames[slotIndex] .. "» enregistrée."
+                        status.TextColor3 = Color3.fromRGB(125,230,155)
+                    end
+                end)
+            end)
+
+            resetSlotButton.MouseButton1Click:Connect(function()
+                confirmSlotAction(slotIndex, "reset", function()
+                    if writeSettingsData(slotFiles[slotIndex], defaultSettings) then
+                        status.Text = "✓ «" .. slotNames[slotIndex] .. "» réinitialisée par défaut."
+                        status.TextColor3 = Color3.fromRGB(125,230,155)
+                    end
+                end)
+            end)
+
+            defaultSlotButton.MouseButton1Click:Connect(function()
+                if not readSettingsFile(slotFiles[slotIndex]) then
+                    status.Text = "⚠ Enregistre d'abord «" .. slotNames[slotIndex] .. "»."
+                    status.TextColor3 = Color3.fromRGB(255,170,90)
+                    return
+                end
+                if writeDefaultSlotChoice(slotIndex) then
+                    defaultSlotIndex = slotIndex
+                    refreshDefaultSlotButtons()
+                    status.Text = "✓ «" .. slotNames[slotIndex] .. "» sera chargée au prochain lancement."
                     status.TextColor3 = Color3.fromRGB(125,230,155)
                 end
             end)
@@ -13680,6 +13980,7 @@ do
                 end
             end)
         end
+        refreshDefaultSlotButtons()
 
         --==============================================================
         -- ONGLET BINDS
@@ -13907,47 +14208,24 @@ do
         end
 
         local function loadSettings()
-            -- Priorité à la sauvegarde 1 pour conserver le chargement automatique existant.
-            local data = readSettingsFile(slotFiles[1]) or readSettingsFile(settingsFile)
-            if type(data) == "table" then
-                -- Au démarrage, recharger les réglages mais ne pas relancer
-                -- automatiquement les actions actives de la sauvegarde. Certaines
-                -- peuvent téléporter/figer le personnage ou prendre le contrôle caméra
-                -- (Auto Mine, Freecam, TP Spec, Fly, Aimbot, etc.).
-                -- Les chargements manuels par le bouton CHARGER gardent leur comportement.
-                local startupData = {}
-                for key, value in pairs(data) do
-                    startupData[key] = value
-                end
-
-                if type(data.Toggles) == "table" then
-                    local safeToggles = {}
-                    for key, value in pairs(data.Toggles) do
-                        safeToggles[key] = value
-                    end
-                    for _, key in ipairs({
-                        "AutoFishing", "AutoSell", "AutoEatDrink", "AutoPushup",
-                        "AutoMine", "SpeedHack", "Fly", "Noclip", "FreecamArmed",
-                        "FreecamEnabled", "InvisibleEnabled", "StaffESP",
-                        "StaffAutoLeave", "BlackMarketESP", "MoneyView",
-                        "AutoArmWrestle", "TPSpec"
-                    }) do
-                        safeToggles[key] = false
-                    end
-                    startupData.Toggles = safeToggles
-                end
-
-                if type(data.Aimbot) == "table" then
-                    local safeAimbot = {}
-                    for key, value in pairs(data.Aimbot) do
-                        safeAimbot[key] = value
-                    end
-                    safeAimbot.Enabled = false
-                    startupData.Aimbot = safeAimbot
-                end
-
-                pcall(function() applyLoadedSettings(startupData) end)
+            -- Charger d'abord le slot choisi ; garder l'ancien fichier comme secours.
+            local data = readSettingsFile(slotFiles[defaultSlotIndex])
+            local loadedDefaultSlot = data ~= nil
+            local loadedLegacyFile = false
+            if not data then
+                data = readSettingsFile(settingsFile)
+                loadedLegacyFile = data ~= nil
             end
+            if type(data) == "table" then
+                -- Le slot par défaut doit restaurer le profil sauvegardé au complet,
+                -- y compris les cases activées et l'Aimbot.
+                local okApply, applyError = pcall(applyLoadedSettings, data)
+                if not okApply then
+                    warn("[Prison RP] Échec du chargement automatique : " .. tostring(applyError))
+                    return false, false, applyError
+                end
+            end
+            return loadedDefaultSlot, loadedLegacyFile, nil
         end
 
         -- Création unique de l'onglet, juste sous AIMBOT.
@@ -14100,13 +14378,25 @@ do
         task.defer(function()
             task.wait()
             fitSettingsPage()
-            loadSettings()
+            local loadedDefaultSlot, loadedLegacyFile, loadError = loadSettings()
 
             -- Après le chargement, certaines fonctions finissent leur initialisation
             -- un peu plus tard. On resynchronise donc les switches plusieurs fois.
             -- Le restore visuel principal est effectué dans applyLoadedSettings(),
             -- avec des références valides même hors du pcall principal.
-            status.Text = "Choisis une sauvegarde ou réinitialise les paramètres."
+            if loadError then
+                status.Text = "⚠ La sauvegarde n'a pas pu être appliquée : " .. tostring(loadError)
+                status.TextColor3 = Color3.fromRGB(255,110,110)
+            elseif loadedDefaultSlot then
+                status.Text = "Chargement automatique : «" .. slotNames[defaultSlotIndex] .. "»."
+                status.TextColor3 = Color3.fromRGB(125,230,155)
+            elseif loadedLegacyFile then
+                status.Text = "Slot par défaut vide ; ancienne sauvegarde chargée."
+                status.TextColor3 = Color3.fromRGB(255,170,90)
+            else
+                status.Text = "Slot par défaut vide : «" .. slotNames[defaultSlotIndex] .. "». Enregistre-le d'abord."
+                status.TextColor3 = Color3.fromRGB(255,170,90)
+            end
         end)
     end
 end
@@ -16305,6 +16595,7 @@ do
         -- préserver leurs callbacks et switches existants.
         local items = {
             {obj = AutoPushupBtn, label = "Auto Pushup"},
+            {obj = FPSCounterBtn, label = "FPS"},
             {obj = BlackMarketBtn, label = "Black Market"},
             {obj = ESPToggleBtn, label = "ESP Black Market"},
             {obj = StaffAutoLeaveBtn, label = "Auto Leave"},
