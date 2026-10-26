@@ -340,10 +340,10 @@ MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
 
 -- Mise à l'échelle globale de l'interface.
--- La valeur 0.875 réduit MainFrame et tous ses enfants.
+-- Valeur compacte par défaut à 60 % ; réglable et sauvegardée dans Paramètres.
 MainFrameScale = Instance.new("UIScale")
 MainFrameScale.Name = "InterfaceScale"
-MainFrameScale.Scale = 0.875
+MainFrameScale.Scale = 0.60
 MainFrameScale.Parent = MainFrame
 
 -- V100 : interface principale arrondie.
@@ -2507,7 +2507,7 @@ StaffAutoLeaveBtn.Font = Enum.Font.GothamBold
 StaffAutoLeaveBtn.Parent = Content
 
 StaffListTitle = Instance.new("TextLabel")
-StaffListTitle.Text = "🛡 STAFF DÉTECTER"
+StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
 StaffListTitle.TextColor3 = Color3.fromRGB(255, 130, 130)
 StaffListTitle.TextSize = 10
 StaffListTitle.Font = Enum.Font.GothamMedium
@@ -2756,7 +2756,7 @@ function staffRefreshList()
     else
         StaffList.Text = "\n\n\n\nAucun staff détecté"
     end
-    StaffListTitle.Text = "🛡 STAFF DÉTECTER"
+    StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
 end
 
 function staffLeave(player, reason)
@@ -4326,6 +4326,18 @@ _G.CombinedHubCleanup = function()
     end)
     -- Coupe immédiatement les boucles principales du hub.
     running = false
+    pcall(function()
+        if type(_G.PRISONRP_HUB_RESIZE_CLEANUP) == "function" then
+            _G.PRISONRP_HUB_RESIZE_CLEANUP()
+        end
+    end)
+    pcall(function()
+        if _G.PRISONRP_TEXT_READABILITY_CONNECTION then
+            _G.PRISONRP_TEXT_READABILITY_CONNECTION:Disconnect()
+            _G.PRISONRP_TEXT_READABILITY_CONNECTION = nil
+        end
+        _G.PRISONRP_APPLY_TEXT_READABILITY = nil
+    end)
     -- Arrête le Chat Dock intégré et déconnecte ses écouteurs avant UNLOAD.
     pcall(function()
         if type(_G.PRISONRP_CHAT_DOCK_CLEANUP) == "function" then
@@ -7141,7 +7153,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         StaffListTitle.Visible = true
         StaffListTitle.Position = UDim2.fromOffset(8, 7)
         StaffListTitle.Size = UDim2.fromOffset(254, 26)
-        StaffListTitle.Text = "🛡 STAFF DÉTECTER"
+        StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
         StaffListTitle.TextXAlignment = Enum.TextXAlignment.Center
         StaffListTitle.TextYAlignment = Enum.TextYAlignment.Center
         textClean(StaffListTitle,10,C.white)
@@ -9391,6 +9403,18 @@ end)
         local espOptions = panel(0, 400)
         title(espOptions, "👁 PRISON RP — ESP JOUEURS", 5)
 
+        local optionsDescription = Instance.new("TextLabel")
+        optionsDescription.Size = UDim2.new(1, -16, 0, 18)
+        optionsDescription.Position = UDim2.fromOffset(8, 32)
+        optionsDescription.BackgroundTransparency = 1
+        optionsDescription.Text = "Réglages d’affichage des joueurs"
+        optionsDescription.TextColor3 = Color3.fromRGB(165, 175, 190)
+        optionsDescription.TextSize = 10
+        optionsDescription.Font = Enum.Font.Gotham
+        optionsDescription.TextXAlignment = Enum.TextXAlignment.Left
+        optionsDescription.ZIndex = 98
+        optionsDescription.Parent = espOptions
+
         local optionControls = {}
 
         -- TweenService doit être local à ce bloc : les anciens essais
@@ -9442,8 +9466,8 @@ end)
             -- Les anciens TextButton imbriqués provoquaient parfois deux clics
             -- (enfant + carte), ce qui faisait ON -> OFF immédiatement.
             local box = Instance.new("Frame")
-            box.Size = UDim2.fromOffset(18, 18)
-            box.Position = UDim2.fromOffset(6, 15)
+            box.Size = UDim2.fromOffset(16, 16)
+            box.Position = UDim2.fromOffset(7, 16)
             box.BackgroundColor3 = Color3.fromRGB(52, 59, 72)
             box.BorderSizePixel = 0
             box.Active = false
@@ -9466,12 +9490,12 @@ end)
 
             local label = Instance.new("TextLabel")
             label.BackgroundTransparency = 1
-            label.Position = UDim2.fromOffset(28, 8)
-            label.Size = UDim2.fromOffset(68, 32)
+            label.Position = UDim2.fromOffset(27, 5)
+            label.Size = UDim2.fromOffset(68, 38)
             label.Text = text
             label.TextColor3 = Color3.fromRGB(255, 255, 255)
-            label.TextSize = 15
-            label.Font = Enum.Font.GothamBold
+            label.TextSize = 12
+            label.Font = Enum.Font.GothamSemibold
             label.TextStrokeTransparency = 1
             label.TextWrapped = true
             label.TextXAlignment = Enum.TextXAlignment.Center
@@ -9480,8 +9504,8 @@ end)
             label.Parent = b
 
             local sw = Instance.new("Frame")
-            sw.Size = UDim2.fromOffset(34, 18)
-            sw.Position = UDim2.fromOffset(98, 15)
+            sw.Size = UDim2.fromOffset(32, 18)
+            sw.Position = UDim2.fromOffset(100, 15)
             sw.BackgroundColor3 = Color3.fromRGB(70, 76, 88)
             sw.BorderSizePixel = 0
             sw.Active = false
@@ -9601,8 +9625,8 @@ end)
             -- • reste de la carte = comportement du switch
             local checkHit = Instance.new("TextButton")
             checkHit.Name = "CheckHit"
-            checkHit.Size = UDim2.fromOffset(22, 22)
-            checkHit.Position = UDim2.fromOffset(4, 13)
+            checkHit.Size = UDim2.fromOffset(20, 20)
+            checkHit.Position = UDim2.fromOffset(5, 14)
             checkHit.BackgroundTransparency = 1
             checkHit.BorderSizePixel = 0
             checkHit.Text = ""
@@ -9655,11 +9679,11 @@ end)
             function() return ESPConfig.ESPEnabled end,
             function(v) ESPConfig.ESPEnabled = v end)
 
-        makeIntegratedSwitch("🏷 NOMS / RP PSEUDO", 83,
+        makeIntegratedSwitch("🏷 NOM RP", 83,
             function() return ESPConfig.NamesEnabled end,
             function(v) ESPConfig.NamesEnabled = v end)
 
-        makeIntegratedSwitch("🎮 PSEUDO JEU", 127,
+        makeIntegratedSwitch("👤 PSEUDO (@)", 127,
             function() return ESPConfig.GameNameEnabled end,
             function(v) ESPConfig.GameNameEnabled = v end)
 
@@ -9876,7 +9900,7 @@ end)
         if StaffList then
             StaffList.Parent = espOptions
             StaffList.Position = UDim2.fromOffset(300, 38)
-            StaffList.Size = UDim2.new(1, -308, 0, 315)
+            StaffList.Size = UDim2.fromOffset(270, 315)
             StaffList.Visible = true
             StaffList.ZIndex = 98
             StaffList.BackgroundColor3 = Color3.fromRGB(25, 25, 28)
@@ -9890,7 +9914,7 @@ end)
             StaffListTitle.Visible = true
             StaffListTitle.Position = UDim2.fromOffset(8, 6)
             StaffListTitle.Size = UDim2.new(1, -16, 0, 24)
-            StaffListTitle.Text = "🛡 STAFF DÉTECTER"
+            StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
             StaffListTitle.TextXAlignment = Enum.TextXAlignment.Center
             StaffListTitle.TextYAlignment = Enum.TextYAlignment.Center
             StaffListTitle.ZIndex = 99
@@ -10103,6 +10127,9 @@ local function createNameTag(player, character, root)
     bill.Size = UDim2.fromOffset(220, 78)
     bill.StudsOffset = Vector3.new(0, 3.4, 0)
     bill.MaxDistance = ESPConfig.MaxDistance
+    -- Attend updateESP pour apparaître : les TextLabel Roblox affichent
+    -- « Label » par défaut s'ils sont visibles avant leur première mise à jour.
+    bill.Enabled = false
     bill.Parent = root
 
     local frame = Instance.new("Frame")
@@ -10114,8 +10141,10 @@ local function createNameTag(player, character, root)
     name.Name = "Name"
     name.AutoLocalize = false
     name.Size = UDim2.new(1, 0, 0, 20)
-    name.Position = UDim2.fromOffset(0, 4) -- RP légèrement descendu vers le @pseudo
+    name.Position = UDim2.fromOffset(0, 2)
     name.BackgroundTransparency = 1
+    name.Text = getCachedRPName(player)
+    name.Visible = ESPConfig.NamesEnabled
     name.TextSize = 13
     name.Font = Enum.Font.GothamBold
     name.TextStrokeTransparency = 0.25
@@ -10128,6 +10157,8 @@ local function createNameTag(player, character, root)
     gameName.Size = UDim2.new(1, 0, 0, 15)
     gameName.Position = UDim2.fromOffset(0, 22)
     gameName.BackgroundTransparency = 1
+    gameName.Text = "@" .. player.Name
+    gameName.Visible = ESPConfig.GameNameEnabled
     gameName.TextSize = 11
     gameName.Font = Enum.Font.GothamMedium
     gameName.TextColor3 = Color3.fromRGB(220, 225, 235)
@@ -10139,8 +10170,10 @@ local function createNameTag(player, character, root)
     details.Name = "Details"
     details.AutoLocalize = false
     details.Size = UDim2.new(1, 0, 0, 38)
-    details.Position = UDim2.fromOffset(0, 33)
+    details.Position = UDim2.fromOffset(0, 39)
     details.BackgroundTransparency = 1
+    details.Text = ""
+    details.Visible = ESPConfig.DistanceEnabled or ESPConfig.HealthEnabled
     details.TextSize = 10
     details.Font = Enum.Font.GothamMedium
     details.TextColor3 = Color3.fromRGB(235, 235, 240)
@@ -10305,8 +10338,9 @@ local function updateESP(data)
     end
 
     if data.nameLabel then
-        data.nameLabel.Visible = ESPConfig.NamesEnabled
-        data.nameLabel.TextColor3 = color
+        local staffDetected = ESPConfig.StaffDetection and StaffESPObjects[player] ~= nil
+        data.nameLabel.Visible = ESPConfig.NamesEnabled and not staffDetected
+        data.nameLabel.TextColor3 = staffDetected and ESPConfig.StaffColor or color
 
         data.nameLabel.Text = getCachedRPName(player)
     end
@@ -10314,15 +10348,11 @@ local function updateESP(data)
     if data.gameNameLabel then
         data.gameNameLabel.Visible = ESPConfig.GameNameEnabled
         data.gameNameLabel.TextColor3 = color
-        data.gameNameLabel.Text = player.DisplayName or player.Name
+        data.gameNameLabel.Text = "@" .. player.Name
     end
 
     if data.detailLabel then
         local parts = {}
-
-        if ESPConfig.NamesEnabled then
-            table.insert(parts, "@" .. player.Name)
-        end
 
         if ESPConfig.DistanceEnabled then
             table.insert(parts, string.format("%dm", math.floor(distance + 0.5)))
@@ -10333,7 +10363,7 @@ local function updateESP(data)
         end
 
         data.detailLabel.Text = table.concat(parts, "  •  ")
-        data.detailLabel.Visible = ESPConfig.NamesEnabled or ESPConfig.DistanceEnabled or ESPConfig.HealthEnabled
+        data.detailLabel.Visible = ESPConfig.DistanceEnabled or ESPConfig.HealthEnabled
     end
 
     if data.tracer then
@@ -10374,44 +10404,47 @@ local function cachedIsStaff(player, force)
 end
 
 -- Le STAFF ESP ne dépend d'aucun autre bouton.
--- Il possède son propre Highlight + son propre pseudo/distance.
+-- Il garde son propre Highlight et affiche un badge STAFF avec la distance.
 
-local function createStaffTag(player, character, root)
+local function createStaffTag(player, root)
     local bill = Instance.new("BillboardGui")
     bill.Name = "PRISONRP_STAFF_ESP_Name"
     bill.AutoLocalize = false
     bill.Adornee = root
     bill.AlwaysOnTop = true
-    bill.Size = UDim2.fromOffset(220, 48)
-    bill.StudsOffset = Vector3.new(0, 3.7, 0)
+    bill.Size = UDim2.fromOffset(220, 44)
+    bill.StudsOffset = Vector3.new(0, 4.2, 0)
     bill.MaxDistance = ESPConfig.MaxDistance
     bill.Parent = root
 
-    local name = Instance.new("TextLabel")
-    name.Name = "StaffName"
-    name.AutoLocalize = false
-    name.Size = UDim2.new(1, 0, 0, 23)
-    name.BackgroundTransparency = 1
-    name.TextSize = 13
-    name.Font = Enum.Font.GothamBold
-    name.TextColor3 = ESPConfig.StaffColor
-    name.TextStrokeTransparency = 0.2
-    name.TextXAlignment = Enum.TextXAlignment.Center
-    name.Parent = bill
+    local rpName = Instance.new("TextLabel")
+    rpName.Name = "StaffRPName"
+    rpName.AutoLocalize = false
+    rpName.Size = UDim2.new(1, 0, 0, 22)
+    rpName.BackgroundTransparency = 1
+    rpName.Text = getCachedRPName(player)
+    rpName.TextSize = 13
+    rpName.Font = Enum.Font.GothamBold
+    rpName.TextColor3 = ESPConfig.StaffColor
+    rpName.TextStrokeTransparency = 0.2
+    rpName.TextXAlignment = Enum.TextXAlignment.Center
+    rpName.Parent = bill
 
-    local distance = Instance.new("TextLabel")
-    distance.Name = "StaffDistance"
-    distance.Size = UDim2.new(1, 0, 0, 22)
-    distance.Position = UDim2.fromOffset(0, 23)
-    distance.BackgroundTransparency = 1
-    distance.TextSize = 10
-    distance.Font = Enum.Font.GothamMedium
-    distance.TextColor3 = Color3.fromRGB(245, 245, 245)
-    distance.TextStrokeTransparency = 0.3
-    distance.TextXAlignment = Enum.TextXAlignment.Center
-    distance.Parent = bill
+    local status = Instance.new("TextLabel")
+    status.Name = "StaffStatus"
+    status.AutoLocalize = false
+    status.Size = UDim2.new(1, 0, 0, 20)
+    status.Position = UDim2.fromOffset(0, 22)
+    status.BackgroundTransparency = 1
+    status.Text = "🛡 STAFF"
+    status.TextSize = 10
+    status.Font = Enum.Font.GothamMedium
+    status.TextColor3 = Color3.fromRGB(245, 245, 245)
+    status.TextStrokeTransparency = 0.3
+    status.TextXAlignment = Enum.TextXAlignment.Center
+    status.Parent = bill
 
-    return bill, name, distance
+    return bill, rpName, status
 end
 
 local function removeStaffESP(player)
@@ -10449,7 +10482,7 @@ local function setupStaffESP(player)
     highlight.OutlineTransparency = 0
     highlight.Parent = character
 
-    local bill, nameLabel, distanceLabel = createStaffTag(player, character, root)
+    local bill, rpNameLabel, statusLabel = createStaffTag(player, root)
 
     StaffESPObjects[player] = {
         player = player,
@@ -10457,8 +10490,8 @@ local function setupStaffESP(player)
         root = root,
         highlight = highlight,
         billboard = bill,
-        nameLabel = nameLabel,
-        distanceLabel = distanceLabel,
+        rpNameLabel = rpNameLabel,
+        statusLabel = statusLabel,
     }
 end
 
@@ -10503,8 +10536,8 @@ local function updateStaffESP(data)
 
     data.billboard.Enabled = inRange
     data.billboard.MaxDistance = ESPConfig.MaxDistance
-    data.nameLabel.Text = getCachedRPName(player)
-    data.distanceLabel.Text = string.format("🛡 STAFF  •  %dm", math.floor(distance + 0.5))
+    data.rpNameLabel.Text = getCachedRPName(player)
+    data.statusLabel.Text = string.format("🛡 STAFF  •  %dm", math.floor(distance + 0.5))
 end
 
 -- =========================
@@ -10733,12 +10766,82 @@ end
     --==============================================================
     pcall(function()
         if ESPContent then
-            ESPContent.ScrollingEnabled = false
+            -- Barre masquée, mais molette active si la fenêtre est trop petite
+            -- pour afficher tous les contrôles en même temps.
+            ESPContent.ScrollingEnabled = true
             ESPContent.ScrollBarThickness = 0
             ESPContent.ScrollBarImageTransparency = 1
             ESPContent.CanvasPosition = Vector2.zero
         end
     end)
+
+    --==============================================================
+    -- V163 FINAL : ESP RESPONSIVE — PANNEAU STAFF ET OPTIONS ALIGNÉS
+    --==============================================================
+    local function refreshESPLayout()
+        if not (espOptions and espOptions.Parent and ESPContent and ESPContent.Parent) then
+            return
+        end
+
+        -- AbsoluteSize est exprimée en pixels écran, alors que les positions
+        -- de cette interface sont en unités logiques affectées par UIScale.
+        local scale = math.max((MainFrameScale and MainFrameScale.Scale) or 1, 0.01)
+        local panelWidth = espOptions.AbsoluteSize.X / scale
+        if panelWidth <= 0 then return end
+
+        local compact = panelWidth < 590
+        local contentHeight = compact and 658 or 438
+
+        espOptions.Position = UDim2.fromOffset(4, 0)
+        espOptions.Size = UDim2.new(1, -8, 0, contentHeight - 8)
+
+        if StaffList then
+            StaffList.Parent = espOptions
+            StaffList.Visible = true
+            StaffList.ZIndex = 98
+            StaffList.BackgroundTransparency = 0
+            StaffList.BorderSizePixel = 0
+            StaffList.TextColor3 = Color3.fromRGB(225, 230, 238)
+            StaffList.TextSize = 11
+            StaffList.Font = Enum.Font.GothamMedium
+            StaffList.TextXAlignment = Enum.TextXAlignment.Left
+            StaffList.TextYAlignment = Enum.TextYAlignment.Top
+            StaffList.TextWrapped = true
+
+            if compact then
+                -- Sous les réglages, pleine largeur pour rester lisible.
+                StaffList.Position = UDim2.fromOffset(4, 420)
+                StaffList.Size = UDim2.new(1, -8, 0, 212)
+            else
+                -- À droite des réglages : bord gauche stable, largeur adaptative.
+                StaffList.Position = UDim2.fromOffset(300, 44)
+                StaffList.Size = UDim2.fromOffset(math.max(0, panelWidth - 312), 340)
+            end
+        end
+
+        if StaffListTitle and StaffList then
+            StaffListTitle.Parent = StaffList
+            StaffListTitle.Visible = true
+            StaffListTitle.Position = UDim2.fromOffset(8, 6)
+            StaffListTitle.Size = UDim2.new(1, -16, 0, 24)
+            StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
+            StaffListTitle.TextXAlignment = Enum.TextXAlignment.Center
+            StaffListTitle.TextYAlignment = Enum.TextYAlignment.Center
+            StaffListTitle.ZIndex = 99
+        end
+
+        if ESPStatusLabel then
+            ESPStatusLabel.Size = UDim2.fromOffset(math.max(0, math.min(286, panelWidth - 16)), 24)
+        end
+
+        ESPContent.ScrollingEnabled = true
+        ESPContent.ScrollBarThickness = 0
+        ESPContent.ScrollBarImageTransparency = 1
+        ESPContent.CanvasSize = UDim2.fromOffset(0, contentHeight)
+    end
+
+    refreshESPLayout()
+    Connections.ESPLayout = espOptions:GetPropertyChangedSignal("AbsoluteSize"):Connect(refreshESPLayout)
 
 
 end) -- ferme le task.spawn de l'ESP intégré
@@ -10814,11 +10917,12 @@ end)
         local GiveMoneyConnections = {}
         local GiveMoneyRunning = false
         local GiveMoneyRunToken = 0
+        local GIVE_MONEY_INTERVAL_SECONDS = 20
 
         local GiveMoneyRemotes = GiveMoneyRS:FindFirstChild("Remotes")
         local GiveMoneyRemote = GiveMoneyRemotes and GiveMoneyRemotes:FindFirstChild("GiveMoney")
 
-        -- Nettoyage explicite : la tâche de 15 secondes et les écouteurs Players
+        -- Nettoyage explicite : la boucle temporisée et les écouteurs Players
         -- ne doivent pas survivre à UNLOAD ou s'empiler au rechargement du hub.
         _G.PRISONRP_GIVE_MONEY_STOP = function()
             GiveMoneyRunning = false
@@ -10944,7 +11048,7 @@ end)
             GiveMoneyToggle.Position = UDim2.fromOffset(6, 352)
             GiveMoneyToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
             GiveMoneyToggle.BorderSizePixel = 0
-            GiveMoneyToggle.Text = "OFF • 3000 / 15s"
+            GiveMoneyToggle.Text = "OFF • 3000 / " .. tostring(GIVE_MONEY_INTERVAL_SECONDS) .. "s"
             GiveMoneyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
             GiveMoneyToggle.TextSize = 10
             GiveMoneyToggle.Font = Enum.Font.GothamBold
@@ -10961,10 +11065,10 @@ end)
                 if not GiveMoneyToggle or not GiveMoneyToggle.Parent then return end
                 local amount = getGiveMoneyAmount() or 3000
                 if GiveMoneyRunning then
-                    GiveMoneyToggle.Text = "ON  ✓  •  " .. tostring(amount) .. " / 15s"
+                    GiveMoneyToggle.Text = "ON  ✓  •  " .. tostring(amount) .. " / " .. tostring(GIVE_MONEY_INTERVAL_SECONDS) .. "s"
                     GiveMoneyToggle.BackgroundColor3 = Color3.fromRGB(45, 170, 90)
                 else
-                    GiveMoneyToggle.Text = "OFF  •  " .. tostring(amount) .. " / 15s"
+                    GiveMoneyToggle.Text = "OFF  •  " .. tostring(amount) .. " / " .. tostring(GIVE_MONEY_INTERVAL_SECONDS) .. "s"
                     GiveMoneyToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
                 end
             end
@@ -11220,7 +11324,7 @@ end)
                             GiveMoneyRemote:FireServer(currentAmount, target.UserId)
                         end)
 
-                        task.wait(15)
+                        task.wait(GIVE_MONEY_INTERVAL_SECONDS)
                     end
 
                     if thisRunToken == GiveMoneyRunToken then
@@ -12749,7 +12853,7 @@ do
         slotsTitlePad.Parent = slotsTitle
 
         local status = Instance.new("TextLabel")
-        status.LayoutOrder = 8
+        status.LayoutOrder = 9
         status.Size = UDim2.new(1, -4, 0, 34)
         status.BackgroundTransparency = 1
         status.Text = ""
@@ -12761,6 +12865,78 @@ do
         status.TextYAlignment = Enum.TextYAlignment.Center
         status.ZIndex = 92
         status.Parent = settingsPage
+
+        -- Échelle réglable de l'interface principale ; elle est incluse dans chaque profil.
+        local interfaceScaleRow = Instance.new("Frame")
+        interfaceScaleRow.Name = "InterfaceScaleSetting"
+        interfaceScaleRow.LayoutOrder = 8
+        interfaceScaleRow.Size = UDim2.new(1, -4, 0, 52)
+        interfaceScaleRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        interfaceScaleRow.BorderSizePixel = 0
+        interfaceScaleRow.ZIndex = 92
+        interfaceScaleRow.Parent = settingsPage
+        makeCorner(interfaceScaleRow, 8)
+
+        local interfaceScaleTitle = Instance.new("TextLabel")
+        interfaceScaleTitle.Size = UDim2.new(1, -96, 0, 22)
+        interfaceScaleTitle.Position = UDim2.fromOffset(10, 4)
+        interfaceScaleTitle.BackgroundTransparency = 1
+        interfaceScaleTitle.Text = "TAILLE DE L'INTERFACE"
+        interfaceScaleTitle.TextColor3 = Color3.fromRGB(235, 238, 244)
+        interfaceScaleTitle.TextSize = 10
+        interfaceScaleTitle.Font = Enum.Font.GothamBold
+        interfaceScaleTitle.TextXAlignment = Enum.TextXAlignment.Left
+        interfaceScaleTitle.ZIndex = 93
+        interfaceScaleTitle.Parent = interfaceScaleRow
+
+        local interfaceScaleValue = Instance.new("TextLabel")
+        interfaceScaleValue.Size = UDim2.new(1, -96, 0, 18)
+        interfaceScaleValue.Position = UDim2.fromOffset(10, 27)
+        interfaceScaleValue.BackgroundTransparency = 1
+        interfaceScaleValue.TextColor3 = Color3.fromRGB(170, 178, 190)
+        interfaceScaleValue.TextSize = 9
+        interfaceScaleValue.Font = Enum.Font.GothamMedium
+        interfaceScaleValue.TextXAlignment = Enum.TextXAlignment.Left
+        interfaceScaleValue.ZIndex = 93
+        interfaceScaleValue.Parent = interfaceScaleRow
+
+        local INTERFACE_SCALE_MIN = 0.55
+        local INTERFACE_SCALE_MAX = 1.00
+        local function setInterfaceScale(value)
+            local scale = math.clamp(tonumber(value) or 0.60, INTERFACE_SCALE_MIN, INTERFACE_SCALE_MAX)
+            scale = math.floor(scale * 20 + 0.5) / 20
+            if MainFrameScale then MainFrameScale.Scale = scale end
+            interfaceScaleValue.Text = string.format("%d%%  •  glisse le coin ↘  •  sauvegardé", math.floor(scale * 100 + 0.5))
+            if type(_G.PRISONRP_APPLY_TEXT_READABILITY) == "function" then
+                pcall(_G.PRISONRP_APPLY_TEXT_READABILITY, MainFrame)
+            end
+        end
+
+        local function makeScaleButton(name, text, xOffset, delta)
+            local button = Instance.new("TextButton")
+            button.Name = name
+            button.Size = UDim2.fromOffset(32, 30)
+            button.Position = UDim2.new(1, xOffset, 0.5, -15)
+            button.BackgroundColor3 = Color3.fromRGB(58, 67, 82)
+            button.BorderSizePixel = 0
+            button.AutoButtonColor = true
+            button.Text = text
+            button.TextColor3 = Color3.fromRGB(255, 255, 255)
+            button.TextSize = 17
+            button.Font = Enum.Font.GothamBold
+            button.ZIndex = 94
+            button.Parent = interfaceScaleRow
+            makeCorner(button, 7)
+            button.Activated:Connect(function()
+                local current = MainFrameScale and MainFrameScale.Scale or 0.60
+                setInterfaceScale(current + delta)
+            end)
+            return button
+        end
+
+        makeScaleButton("InterfaceScaleDown", "−", -76, -0.05)
+        makeScaleButton("InterfaceScaleUp", "+", -38, 0.05)
+        setInterfaceScale(MainFrameScale and MainFrameScale.Scale or 0.60)
 
         local settingsFile = "PRISON_RP_Settings.json"
         local slotFiles = {
@@ -13152,6 +13328,9 @@ do
                 CurrentPage=getCurrentPageIndex(),
                 WalkSpeed=tonumber(MovementWalkSpeed) or 35,
                 FlySpeed=tonumber(MovementFlySpeed) or 60,
+                InterfaceScale=MainFrameScale and tonumber(MainFrameScale.Scale) or 0.60,
+                WindowWidth=MainFrame and tonumber(MainFrame.Size.X.Offset) or 770,
+                WindowHeight=MainFrame and tonumber(MainFrame.Size.Y.Offset) or 515,
                 WalkSpeedText=MovementSpeedBox and tostring(MovementSpeedBox.Text) or tostring(MovementWalkSpeed),
                 FlySpeedText=MovementFlySpeedBox and tostring(MovementFlySpeedBox.Text) or tostring(MovementFlySpeed),
                 MinRarityIndex=math.clamp(math.floor(tonumber(_G.MinRarityIndex) or 1),1,#RarityList),
@@ -13238,6 +13417,17 @@ do
             end
             MovementWalkSpeed=numberClamp(data.WalkSpeed,1,250,MovementWalkSpeed)
             MovementFlySpeed=numberClamp(data.FlySpeed,10,500,MovementFlySpeed)
+            if data.InterfaceScale ~= nil then
+                setInterfaceScale(numberClamp(data.InterfaceScale, INTERFACE_SCALE_MIN, INTERFACE_SCALE_MAX, MainFrameScale and MainFrameScale.Scale or 0.60))
+            end
+            if MainFrame and (data.WindowWidth ~= nil or data.WindowHeight ~= nil) then
+                local currentSize = MainFrame.Size
+                local width = numberClamp(data.WindowWidth, 520, 1200, currentSize.X.Offset)
+                local height = numberClamp(data.WindowHeight, 380, 900, currentSize.Y.Offset)
+                local restoredSize = UDim2.fromOffset(width, height)
+                HubFullSize = restoredSize
+                if HubExpanded ~= false then MainFrame.Size = restoredSize end
+            end
             if MovementSpeedBox then MovementSpeedBox.Text=tostring(data.WalkSpeedText or MovementWalkSpeed) end
             if MovementFlySpeedBox then MovementFlySpeedBox.Text=tostring(data.FlySpeedText or MovementFlySpeed) end
             _G.MinRarityIndex=math.clamp(math.floor(tonumber(data.MinRarityIndex) or _G.MinRarityIndex),1,#RarityList)
@@ -13835,7 +14025,7 @@ do
         local function refreshDefaultSlotButtons()
             for index, button in pairs(defaultSlotButtons) do
                 local isDefault = index == defaultSlotIndex
-                button.Text = isDefault and "DÉFAUT ✓" or "PAR DÉFAUT"
+                button.Text = isDefault and "DÉFAUT ✓" or "DÉFAUT"
                 button.BackgroundColor3 = isDefault
                     and Color3.fromRGB(40, 130, 75)
                     or Color3.fromRGB(58, 67, 82)
@@ -13894,7 +14084,7 @@ do
             loadSlotButton.BackgroundColor3 = Color3.fromRGB(52,100,165)
             loadSlotButton.BorderSizePixel = 0
             loadSlotButton.AutoButtonColor = true
-            loadSlotButton.Text = "CHARGER"
+            loadSlotButton.Text = "CHARGE"
             loadSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
             loadSlotButton.TextSize = 8
             loadSlotButton.Font = Enum.Font.GothamBold
@@ -16082,6 +16272,7 @@ end
 -- permet de déplacer le panneau par sa barre ; son raccourci est configurable dans BINDS.
 --==============================================================
 do
+    local CHAT_PANEL_OPACITY = 0.75
     local initOk, initErr = pcall(function()
         local autresPageRef = MainFrame and MainFrame:FindFirstChild("OmegaAutresPage", true)
         if not autresPageRef then
@@ -16353,6 +16544,7 @@ do
                 panelFrame.Size = UDim2.fromOffset(476, 194)
                 panelFrame.Position = UDim2.fromOffset(8, 120)
                 panelFrame.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
+                panelFrame.BackgroundTransparency = 1 - CHAT_PANEL_OPACITY
                 panelFrame.BorderSizePixel = 0
                 panelFrame.Active = true
                 panelFrame.Parent = panelGui
@@ -16368,6 +16560,7 @@ do
                 header.Name = "Header"
                 header.Size = UDim2.new(1, 0, 0, 30)
                 header.BackgroundColor3 = Color3.fromRGB(22, 27, 35)
+                header.BackgroundTransparency = 1 - CHAT_PANEL_OPACITY
                 header.BorderSizePixel = 0
                 header.Active = true
                 header.Parent = panelFrame
@@ -16377,6 +16570,7 @@ do
                 headerFill.Size = UDim2.new(1, 0, 0, 9)
                 headerFill.Position = UDim2.new(0, 0, 1, -9)
                 headerFill.BackgroundColor3 = header.BackgroundColor3
+                headerFill.BackgroundTransparency = 1 - CHAT_PANEL_OPACITY
                 headerFill.BorderSizePixel = 0
                 headerFill.Parent = header
 
@@ -16388,7 +16582,7 @@ do
                 headerText.TextSize = 14
                 headerText.TextXAlignment = Enum.TextXAlignment.Left
                 headerText.TextColor3 = Color3.fromRGB(255, 255, 255)
-                headerText.Text = "PRISON CHAT"
+                headerText.Text = "CHAT"
                 headerText.Parent = header
 
                 local closeButton = Instance.new("TextButton")
@@ -16396,6 +16590,7 @@ do
                 closeButton.Size = UDim2.fromOffset(21, 21)
                 closeButton.Position = UDim2.new(1, -27, 0, 4)
                 closeButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                closeButton.BackgroundTransparency = 1 - CHAT_PANEL_OPACITY
                 closeButton.BorderSizePixel = 0
                 closeButton.AutoButtonColor = false
                 closeButton.Font = Enum.Font.GothamBold
@@ -16651,6 +16846,240 @@ do
     end)
     if not layoutOk then
         warn("[AUTRES] Mise en page défilante impossible : " .. tostring(layoutErr))
+    end
+end
+
+-- Redimensionnement direct du hub depuis son coin inférieur droit.
+-- Les dimensions sont également incluses dans chaque sauvegarde de paramètres.
+do
+    pcall(function()
+        if type(_G.PRISONRP_HUB_RESIZE_CLEANUP) == "function" then
+            _G.PRISONRP_HUB_RESIZE_CLEANUP()
+        end
+    end)
+
+    if MainFrame and MainFrame.Parent and ScreenGui then
+        local previousHandle = MainFrame:FindFirstChild("HubResizeHandle")
+        if previousHandle then previousHandle:Destroy() end
+
+        local handle = Instance.new("TextButton")
+        handle.Name = "HubResizeHandle"
+        handle.Size = UDim2.fromOffset(24, 24)
+        handle.AnchorPoint = Vector2.new(1, 1)
+        handle.Position = UDim2.new(1, -2, 1, -2)
+        handle.BackgroundColor3 = Color3.fromRGB(43, 51, 63)
+        handle.BackgroundTransparency = 0.18
+        handle.BorderSizePixel = 0
+        handle.AutoButtonColor = true
+        handle.Active = true
+        handle.Selectable = true
+        handle.Text = "◢"
+        handle.TextColor3 = Color3.fromRGB(205, 215, 230)
+        handle.TextSize = 13
+        handle.Font = Enum.Font.GothamBold
+        handle.ZIndex = 250
+        handle.Parent = MainFrame
+        local handleCorner = Instance.new("UICorner")
+        handleCorner.CornerRadius = UDim.new(0, 5)
+        handleCorner.Parent = handle
+
+        local userInputService = game:GetService("UserInputService")
+        local resizing = false
+        local activeTouch = nil
+        local startPointer = nil
+        local startWidth = nil
+        local startHeight = nil
+        local startTopLeft = nil
+        local changedConnection = nil
+        local endedConnection = nil
+        local destroyingConnection = nil
+
+        local function stopResize()
+            resizing = false
+            if MainFrame and MainFrame.Parent then MainFrame.Draggable = true end
+            activeTouch = nil
+            startPointer = nil
+            startWidth = nil
+            startHeight = nil
+            startTopLeft = nil
+            if changedConnection then
+                pcall(function() changedConnection:Disconnect() end)
+                changedConnection = nil
+            end
+            if endedConnection then
+                pcall(function() endedConnection:Disconnect() end)
+                endedConnection = nil
+            end
+            if destroyingConnection then
+                pcall(function() destroyingConnection:Disconnect() end)
+                destroyingConnection = nil
+            end
+            if handle and handle.Parent then
+                pcall(function() handle:Destroy() end)
+            end
+            _G.PRISONRP_HUB_RESIZE_CLEANUP = nil
+        end
+
+        _G.PRISONRP_HUB_RESIZE_CLEANUP = stopResize
+
+        handle.InputBegan:Connect(function(input)
+            if not MainFrame or not MainFrame.Visible or HubExpanded == false then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then
+                return
+            end
+
+            resizing = true
+            MainFrame.Draggable = false
+            activeTouch = input.UserInputType == Enum.UserInputType.Touch and input or nil
+            startPointer = Vector2.new(input.Position.X, input.Position.Y)
+            startWidth = math.max(520, MainFrame.Size.X.Offset)
+            startHeight = math.max(380, MainFrame.Size.Y.Offset)
+
+            -- Fixe le coin supérieur gauche pendant le redimensionnement.
+            local absolutePosition = MainFrame.AbsolutePosition
+            MainFrame.AnchorPoint = Vector2.zero
+            MainFrame.Position = UDim2.fromOffset(absolutePosition.X, absolutePosition.Y)
+            startTopLeft = Vector2.new(absolutePosition.X, absolutePosition.Y)
+            HubExpandedPosition = MainFrame.Position
+        end)
+
+        changedConnection = userInputService.InputChanged:Connect(function(input)
+            if not resizing or not startPointer or not startTopLeft then return end
+            if activeTouch then
+                if input ~= activeTouch then return end
+            elseif input.UserInputType ~= Enum.UserInputType.MouseMovement then
+                return
+            end
+
+            local pointer = Vector2.new(input.Position.X, input.Position.Y)
+            local delta = pointer - startPointer
+            local scale = math.max((MainFrameScale and MainFrameScale.Scale) or 1, 0.01)
+            local viewport = ScreenGui.AbsoluteSize
+            local maxWidthByViewport = (viewport.X - startTopLeft.X - 8) / scale
+            local maxHeightByViewport = (viewport.Y - startTopLeft.Y - 8) / scale
+            local maxWidth = math.max(520, math.min(1200, maxWidthByViewport))
+            local maxHeight = math.max(380, math.min(900, maxHeightByViewport))
+            local width = math.clamp(startWidth + delta.X / scale, 520, maxWidth)
+            local height = math.clamp(startHeight + delta.Y / scale, 380, maxHeight)
+            width = math.floor(width + 0.5)
+            height = math.floor(height + 0.5)
+
+            MainFrame.Size = UDim2.fromOffset(width, height)
+            MainFrame.Position = UDim2.fromOffset(startTopLeft.X, startTopLeft.Y)
+            HubFullSize = MainFrame.Size
+            HubExpandedPosition = MainFrame.Position
+        end)
+
+        endedConnection = userInputService.InputEnded:Connect(function(input)
+            local finished = (activeTouch and input == activeTouch)
+                or (not activeTouch and input.UserInputType == Enum.UserInputType.MouseButton1)
+            if finished then
+                resizing = false
+                if MainFrame and MainFrame.Parent then MainFrame.Draggable = true end
+                activeTouch = nil
+                startPointer = nil
+                startWidth = nil
+                startHeight = nil
+                startTopLeft = nil
+            end
+        end)
+
+        destroyingConnection = ScreenGui.Destroying:Connect(stopResize)
+    end
+end
+
+-- Police harmonisée et taille de texte compensée pour rester lisible quand le hub est réduit.
+do
+    if ScreenGui and ScreenGui.Parent then
+        local function applyReadableText(obj)
+            if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then
+                return
+            end
+
+            local baseSize = obj:GetAttribute("PRISONRP_ReadabilityBaseTextSize")
+            if type(baseSize) ~= "number" then
+                baseSize = tonumber(obj.TextSize) or 11
+                obj:SetAttribute("PRISONRP_ReadabilityBaseTextSize", baseSize)
+            end
+
+            local baseFont = obj:GetAttribute("PRISONRP_ReadabilityBaseFont")
+            if type(baseFont) ~= "string" then
+                local fontName = "GothamMedium"
+                pcall(function() fontName = obj.Font.Name end)
+                local isBold = string.find(fontName, "Bold", 1, true)
+                    or string.find(fontName, "Black", 1, true)
+                    or string.find(fontName, "Heavy", 1, true)
+                baseFont = isBold and "bold" or "medium"
+                obj:SetAttribute("PRISONRP_ReadabilityBaseFont", baseFont)
+            end
+
+            local scaledByHub = false
+            local scaleAncestor = obj
+            while scaleAncestor and scaleAncestor ~= ScreenGui do
+                if scaleAncestor == MainFrame then
+                    scaledByHub = true
+                    break
+                end
+                scaleAncestor = scaleAncestor.Parent
+            end
+            local scale = scaledByHub
+                and math.max((MainFrameScale and MainFrameScale.Scale) or 1, 0.01)
+                or 1
+            local compensation = math.min(1.2, math.max(1, 0.82 / scale))
+            obj.TextSize = math.clamp(math.floor(math.max(baseSize, 11) * compensation + 0.5), 11, 36)
+
+            if obj:IsA("TextButton") or baseFont == "bold" then
+                obj.Font = Enum.Font.GothamBold
+            else
+                obj.Font = Enum.Font.GothamMedium
+            end
+
+            local darkSurface = false
+            local ancestor = obj
+            while ancestor and ancestor ~= ScreenGui do
+                if ancestor:IsA("GuiObject") and ancestor.BackgroundTransparency < 0.92 then
+                    local background = ancestor.BackgroundColor3
+                    local backgroundLuminance = background.R * 0.2126 + background.G * 0.7152 + background.B * 0.0722
+                    darkSurface = backgroundLuminance < 0.34
+                    break
+                end
+                ancestor = ancestor.Parent
+            end
+
+            local color = obj.TextColor3
+            local luminance = color.R * 0.2126 + color.G * 0.7152 + color.B * 0.0722
+            if darkSurface and luminance < 0.42 then
+                obj.TextColor3 = Color3.fromRGB(184, 194, 210)
+            end
+
+            if darkSurface and obj:IsA("TextBox") then
+                local placeholder = obj.PlaceholderColor3
+                local placeholderLuminance = placeholder.R * 0.2126 + placeholder.G * 0.7152 + placeholder.B * 0.0722
+                if placeholderLuminance < 0.42 then
+                    obj.PlaceholderColor3 = Color3.fromRGB(156, 168, 186)
+                end
+            end
+        end
+
+        local function applyReadableTextTree(root)
+            if not root then return end
+            applyReadableText(root)
+            for _, obj in ipairs(root:GetDescendants()) do
+                applyReadableText(obj)
+            end
+        end
+
+        _G.PRISONRP_APPLY_TEXT_READABILITY = applyReadableTextTree
+
+        if _G.PRISONRP_TEXT_READABILITY_CONNECTION then
+            pcall(function() _G.PRISONRP_TEXT_READABILITY_CONNECTION:Disconnect() end)
+        end
+        _G.PRISONRP_TEXT_READABILITY_CONNECTION = ScreenGui.DescendantAdded:Connect(function(obj)
+            task.defer(applyReadableText, obj)
+        end)
+
+        applyReadableTextTree(ScreenGui)
     end
 end
 
