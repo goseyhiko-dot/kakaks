@@ -1,3 +1,11 @@
+-- V230 : correction de tpSpecUpdateInfo manquante dans TP/SPEC.
+-- V229 : icônes uniques entre les onglets et les contrôles.
+-- V227 : notifications discrètes à l'arrivée d'un membre du staff.
+-- V226 : page simplifiée, sauvegardes en tête et suppression des favoris/outils supplémentaires.
+-- V225 : aperçus de profils et métadonnées des sauvegardes.
+-- V224 : recherche dans les réglages et profils import/export.
+-- V223 : correction de la limite de registres locaux dans l'onglet Binds.
+-- V222 : échelle adaptative, options accessibilité et statistiques de session.
 -- V9 : réinitialisation par sauvegarde et choix du chargement automatique.
 -- V8 : compteur FPS activable dans AUTRES avec afficheur en haut à droite.
 -- V7 : ajout du compteur FPS dans les statistiques.
@@ -310,8 +318,52 @@ function returnToSavedTeleportPosition(expectedMode)
     return ok
 end
 stats = {totalCaught = 0, perfectCount = 0, lastFish = "None", status = "Idle", fps = 0}
+SessionStartedAt = os.clock()
+_G.PRISONRP_TEXT_SCALE = 1.0
+_G.PRISONRP_HIGH_CONTRAST = false
+_G.PRISONRP_REDUCED_MOTION = false
+_G.PRISONRP_TOUCH_MODE = false
+function PRISONRP_AdjustUITweenInfo(info)
+    if typeof(info) ~= "TweenInfo" or _G.PRISONRP_REDUCED_MOTION ~= true then
+        return info
+    end
+    return TweenInfo.new(
+        math.min(info.Time, 0.05),
+        info.EasingStyle,
+        info.EasingDirection,
+        info.RepeatCount,
+        info.Reverses,
+        info.DelayTime
+    )
+end
+-- Construit les infos des transitions d’interface avec respect du mode réduit.
+function PRISONRP_UITweenInfo(duration, easingStyle, easingDirection, repeatCount, reverses, delayTime)
+    local safeDuration = math.max(0, tonumber(duration) or 0.1)
+    if _G.PRISONRP_REDUCED_MOTION == true then
+        safeDuration = math.min(safeDuration, 0.05)
+    end
+
+    if easingStyle == nil then
+        return TweenInfo.new(safeDuration)
+    elseif easingDirection == nil then
+        return TweenInfo.new(safeDuration, easingStyle)
+    end
+
+    return TweenInfo.new(
+        safeDuration,
+        easingStyle,
+        easingDirection,
+        repeatCount or 0,
+        reverses or false,
+        delayTime or 0
+    )
+end
 
 pcall(function()
+    if type(_G.PRISONRP_STAFF_GLOBAL_CLEANUP) == "function" then
+        pcall(_G.PRISONRP_STAFF_GLOBAL_CLEANUP)
+        _G.PRISONRP_STAFF_GLOBAL_CLEANUP = nil
+    end
     local old = guiParent:FindFirstChild("CombinedHubUI")
     if old then old:Destroy() end
 end)
@@ -340,10 +392,10 @@ MainFrame.Draggable = true
 MainFrame.Parent = ScreenGui
 
 -- Mise à l'échelle globale de l'interface.
--- Valeur compacte par défaut à 60 % ; réglable et sauvegardée dans Paramètres.
+-- Échelle par défaut plus lisible à 70 % ; réglable et sauvegardée dans Paramètres.
 MainFrameScale = Instance.new("UIScale")
 MainFrameScale.Name = "InterfaceScale"
-MainFrameScale.Scale = 0.60
+MainFrameScale.Scale = 0.70
 MainFrameScale.Parent = MainFrame
 
 -- V100 : interface principale arrondie.
@@ -434,7 +486,7 @@ TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(0, 180, 1, 0)
 TitleLabel.Position = UDim2.new(0, 14, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "⛏ Hub : PRISON RP"
+TitleLabel.Text = "🏛️ Hub : PRISON RP"
 TitleLabel.TextColor3 = Color3.fromRGB(240, 245, 255)
 TitleLabel.TextSize = 14
 TitleLabel.Font = Enum.Font.GothamBold
@@ -660,9 +712,10 @@ StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, 0, 0, 22)
 StatusLabel.Position = UDim2.new(0, 0, 0, 0)
 StatusLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
-StatusLabel.Text = "Status: Idle"
+StatusLabel.Text = "Statut : en attente"
 StatusLabel.TextColor3 = Color3.fromRGB(130, 200, 255)
 StatusLabel.TextSize = 11
+StatusLabel.TextTruncate = Enum.TextTruncate.AtEnd
 StatusLabel.Font = Enum.Font.GothamMedium
 StatusLabel.Parent = Content
 
@@ -670,9 +723,10 @@ StatsLabel = Instance.new("TextLabel")
 StatsLabel.Size = UDim2.new(1, 0, 0, 22)
 StatsLabel.Position = UDim2.new(0, 0, 0, 26)
 StatsLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
-StatsLabel.Text = "Caught: 0 | Perfect: 0"
+StatsLabel.Text = "Prises 0  •  Parfaites 0"
 StatsLabel.TextColor3 = Color3.fromRGB(150, 240, 160)
 StatsLabel.TextSize = 11
+StatsLabel.TextTruncate = Enum.TextTruncate.AtEnd
 StatsLabel.Font = Enum.Font.GothamMedium
 StatsLabel.Parent = Content
 
@@ -680,9 +734,10 @@ LastFishLabel = Instance.new("TextLabel")
 LastFishLabel.Size = UDim2.new(1, 0, 0, 22)
 LastFishLabel.Position = UDim2.new(0, 0, 0, 52)
 LastFishLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
-LastFishLabel.Text = "Last Fish: None"
+LastFishLabel.Text = "Poisson : aucun"
 LastFishLabel.TextColor3 = Color3.fromRGB(255, 215, 100)
 LastFishLabel.TextSize = 11
+LastFishLabel.TextTruncate = Enum.TextTruncate.AtEnd
 LastFishLabel.Font = Enum.Font.GothamMedium
 LastFishLabel.Parent = Content
 
@@ -710,7 +765,7 @@ TeleportBtn = Instance.new("TextButton")
 TeleportBtn.Size = UDim2.new(0.49, 0, 0, 30)
 TeleportBtn.Position = UDim2.new(0, 0, 0, 148)
 TeleportBtn.BackgroundColor3 = Color3.fromRGB(30, 95, 185)
-TeleportBtn.Text = "🏃 SHORE"
+TeleportBtn.Text = "🏖️ SHORE"
 TeleportBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 TeleportBtn.TextSize = 11
 TeleportBtn.Font = Enum.Font.GothamMedium
@@ -720,7 +775,7 @@ AutoSellBtn = Instance.new("TextButton")
 AutoSellBtn.Size = UDim2.new(0.49, 0, 0, 30)
 AutoSellBtn.Position = UDim2.new(0.51, 0, 0, 148)
 AutoSellBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
-AutoSellBtn.Text = "💰 AUTO-SELL"
+AutoSellBtn.Text = "🪙 AUTO-SELL"
 AutoSellBtn.Font = Enum.Font.GothamMedium
 AutoSellBtn.Parent = Content
 
@@ -728,7 +783,7 @@ SellNowBtn = Instance.new("TextButton")
 SellNowBtn.Size = UDim2.new(1, 0, 0, 26)
 SellNowBtn.Position = UDim2.new(0, 0, 0, 184)
 SellNowBtn.BackgroundColor3 = Color3.fromRGB(150, 90, 30)
-SellNowBtn.Text = "💰 Vendre Tout Maintenant"
+SellNowBtn.Text = "🐟 Vendre Tout Maintenant"
 SellNowBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 SellNowBtn.TextSize = 11
 SellNowBtn.Font = Enum.Font.GothamMedium
@@ -798,7 +853,7 @@ BlackMarketBtn = Instance.new("TextButton")
 BlackMarketBtn.Size = UDim2.new(1, -215, 0, 32)
 BlackMarketBtn.Position = UDim2.new(0, 0, 0, 93)
 BlackMarketBtn.BackgroundColor3 = Color3.fromRGB(140, 35, 170)
-BlackMarketBtn.Text = "🏃 BLACK MARKET"
+BlackMarketBtn.Text = "🏪 BLACK MARKET"
 BlackMarketBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 BlackMarketBtn.TextSize = 11
 BlackMarketBtn.Font = Enum.Font.GothamBold
@@ -812,7 +867,7 @@ ESPToggleBtn = Instance.new("TextButton")
 ESPToggleBtn.Size = UDim2.new(1, -215, 0, 32)
 ESPToggleBtn.Position = UDim2.new(0, 0, 0, 131)
 ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
-ESPToggleBtn.Text = "👁️ ESP Black Market"
+ESPToggleBtn.Text = "🕵️ ESP Black Market"
 ESPToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ESPToggleBtn.TextSize = 11
 ESPToggleBtn.Font = Enum.Font.GothamMedium
@@ -970,7 +1025,7 @@ AutoMineSellerBtn = Instance.new("TextButton")
 AutoMineSellerBtn.Size = UDim2.new(0.49, 0, 0, 32)
 AutoMineSellerBtn.Position = UDim2.new(0.51, 0, 0, 411)
 AutoMineSellerBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
-AutoMineSellerBtn.Text = "📍 TP VENDEUR"
+AutoMineSellerBtn.Text = "🛍️ TP VENDEUR"
 AutoMineSellerBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 AutoMineSellerBtn.TextSize = 11
 AutoMineSellerBtn.Font = Enum.Font.GothamBold
@@ -984,7 +1039,7 @@ AutoMineTpMineBtn = Instance.new("TextButton")
 AutoMineTpMineBtn.Size = UDim2.new(0.49, 0, 0, 32)
 AutoMineTpMineBtn.Position = UDim2.new(0, 0, 0, 449)
 AutoMineTpMineBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
-AutoMineTpMineBtn.Text = "📍 TP MINE"
+AutoMineTpMineBtn.Text = "🪨 TP MINE"
 AutoMineTpMineBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 AutoMineTpMineBtn.TextSize = 11
 AutoMineTpMineBtn.Font = Enum.Font.GothamBold
@@ -1510,7 +1565,7 @@ function autoMineTpSeller()
         r.CFrame = CFrame.lookAt(frontPos, buyerRoot.Position + Vector3.new(0, 1, 0))
     end)
 
-    autoMineStatus("📍 TP vendeur effectué")
+    autoMineStatus("✓ TP vendeur effectué")
 end
 
 function autoMineStop()
@@ -1863,7 +1918,7 @@ MovementTitle = Instance.new("TextLabel")
 MovementTitle.Size = UDim2.new(1, 0, 0, 24)
 MovementTitle.Position = UDim2.new(0, 0, 0, 565)
 MovementTitle.BackgroundColor3 = Color3.fromRGB(28, 38, 45)
-MovementTitle.Text = "⚡ DÉPLACEMENT"
+MovementTitle.Text = "DÉPLACEMENT"
 MovementTitle.TextColor3 = Color3.fromRGB(100, 210, 255)
 MovementTitle.TextSize = 12
 MovementTitle.Font = Enum.Font.GothamBold
@@ -2423,8 +2478,8 @@ MovementCharacterConnection = LocalPlayer.CharacterAdded:Connect(function(char)
     TeleportSavedCharacter = nil
     TeleportAtTarget = false
     TeleportReturnMode = nil
-    if TeleportBtn then TeleportBtn.Text = "📍 TP Shore" end
-    if BlackMarketBtn then BlackMarketBtn.Text = "🛒 TP BLACK MARKET" end
+    if TeleportBtn then TeleportBtn.Text = "🏝️ TP Shore" end
+    if BlackMarketBtn then BlackMarketBtn.Text = "🏪 TP BLACK MARKET" end
 
     task.wait(0.5)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -2451,6 +2506,12 @@ StaffDetectedData = {}
 StaffConnections = {}
 StaffGlobalConnections = {}
 StaffLeaving = false
+StaffJoinNotificationEnabled = true
+StaffJoinCandidates = {}
+StaffJoinToastSequence = 0
+StaffJoinNotificationBtn = nil
+StaffJoinToastHost = nil
+StaffJoinNotificationSound = nil
 
 StaffGroupId = 304256484
 StaffMinGroupRank = 200
@@ -2475,12 +2536,201 @@ StaffUserIds = {
     -- [123456789] = true,
 }
 
+-- Notifications de détection : les joueurs déjà présents au lancement ne sont
+-- pas considérés comme des arrivées récentes.
+if _G.PRISONRP_STAFF_JOIN_NOTIFICATION_SOUND then
+    pcall(function() _G.PRISONRP_STAFF_JOIN_NOTIFICATION_SOUND:Destroy() end)
+end
+if _G.PRISONRP_STAFF_NOTIFICATION_GUI then
+    pcall(function() _G.PRISONRP_STAFF_NOTIFICATION_GUI:Destroy() end)
+end
+StaffJoinNotificationGui = Instance.new("ScreenGui")
+StaffJoinNotificationGui.Name = "PRISONRP_StaffNotificationUI"
+StaffJoinNotificationGui.ResetOnSpawn = false
+StaffJoinNotificationGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+StaffJoinNotificationGui.DisplayOrder = 1000001
+StaffJoinNotificationGui.IgnoreGuiInset = true
+StaffJoinNotificationGui.Enabled = true
+StaffJoinNotificationGui.Archivable = false
+StaffJoinNotificationGui.Parent = guiParent
+_G.PRISONRP_STAFF_NOTIFICATION_GUI = StaffJoinNotificationGui
+
+StaffJoinToastHost = Instance.new("Frame")
+StaffJoinToastHost.Name = "PRISONRP_StaffJoinToastHost"
+StaffJoinToastHost.AnchorPoint = Vector2.new(1, 1)
+StaffJoinToastHost.Position = UDim2.new(1, -18, 1, -18)
+StaffJoinToastHost.Size = UDim2.fromOffset(320, 290)
+StaffJoinToastHost.BackgroundTransparency = 1
+StaffJoinToastHost.BorderSizePixel = 0
+StaffJoinToastHost.ZIndex = 300
+StaffJoinToastHost.Parent = StaffJoinNotificationGui
+
+StaffJoinToastLayout = Instance.new("UIListLayout")
+StaffJoinToastLayout.FillDirection = Enum.FillDirection.Vertical
+StaffJoinToastLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+StaffJoinToastLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
+StaffJoinToastLayout.SortOrder = Enum.SortOrder.LayoutOrder
+StaffJoinToastLayout.Padding = UDim.new(0, 7)
+StaffJoinToastLayout.Parent = StaffJoinToastHost
+
+StaffJoinNotificationSound = Instance.new("Sound")
+StaffJoinNotificationSound.Name = "PRISONRP_StaffJoinNotificationSound"
+StaffJoinNotificationSound.SoundId = "rbxassetid://4110925712"
+StaffJoinNotificationSound.Volume = 0.08
+StaffJoinNotificationSound.PlaybackSpeed = 1.1
+StaffJoinNotificationSound.Parent = game:GetService("SoundService")
+_G.PRISONRP_STAFF_JOIN_NOTIFICATION_SOUND = StaffJoinNotificationSound
+
+local function staffGetRPName(player)
+    if not player then return "Inconnu" end
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.DisplayName and humanoid.DisplayName ~= ""
+        and humanoid.DisplayName ~= player.Name and humanoid.DisplayName ~= player.DisplayName then
+        return humanoid.DisplayName
+    end
+
+    local keys = {"RPName", "RP_Name", "RoleplayName", "CharacterName", "CharName", "PseudoRP", "Pseudo_RP", "NomRP", "Nom_RP"}
+    for _, container in ipairs({player, character}) do
+        if container then
+            for _, key in ipairs(keys) do
+                local ok, value = pcall(function() return container:GetAttribute(key) end)
+                if ok and typeof(value) == "string" and value ~= ""
+                    and value ~= player.Name and value ~= player.DisplayName then
+                    return value
+                end
+            end
+            for _, obj in ipairs(container:GetChildren()) do
+                if obj:IsA("StringValue") then
+                    local objectName = string.lower(obj.Name)
+                    if string.find(objectName, "rp", 1, true)
+                        or string.find(objectName, "roleplay", 1, true)
+                        or string.find(objectName, "charactername", 1, true)
+                        or string.find(objectName, "charname", 1, true)
+                        or string.find(objectName, "pseudorp", 1, true)
+                        or string.find(objectName, "nomrp", 1, true) then
+                        local value = tostring(obj.Value or "")
+                        if value ~= "" and value ~= player.Name and value ~= player.DisplayName then
+                            return value
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return player.DisplayName or player.Name
+end
+
+local function staffShowJoinNotification(player)
+    if not StaffJoinNotificationEnabled or not player then return end
+    task.delay(0.05, function()
+        if not StaffJoinNotificationEnabled or not running
+            or not (player and player.Parent and StaffJoinToastHost and StaffJoinToastHost.Parent
+                and StaffJoinNotificationGui and StaffJoinNotificationGui.Parent
+                and StaffDetectedData[player]) then
+            return
+        end
+
+        StaffJoinToastSequence += 1
+        local toast = Instance.new("Frame")
+        toast.Name = "StaffJoinToast"
+        toast.LayoutOrder = StaffJoinToastSequence
+        toast.Size = UDim2.new(1, 0, 0, 70)
+        toast.BackgroundColor3 = Color3.fromRGB(25, 29, 36)
+        toast.BackgroundTransparency = 0.08
+        toast.BorderSizePixel = 0
+        toast.ZIndex = 301
+        toast.Parent = StaffJoinToastHost
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 9)
+        corner.Parent = toast
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(196, 145, 75)
+        stroke.Transparency = 0.48
+        stroke.Thickness = 1
+        stroke.Parent = toast
+
+        local accent = Instance.new("Frame")
+        accent.Name = "Accent"
+        accent.Position = UDim2.fromOffset(0, 9)
+        accent.Size = UDim2.new(0, 3, 1, -18)
+        accent.BackgroundColor3 = Color3.fromRGB(206, 156, 83)
+        accent.BorderSizePixel = 0
+        accent.ZIndex = 302
+        accent.Parent = toast
+        local accentCorner = Instance.new("UICorner")
+        accentCorner.CornerRadius = UDim.new(1, 0)
+        accentCorner.Parent = accent
+
+        local heading = Instance.new("TextLabel")
+        heading.Name = "Heading"
+        heading.Position = UDim2.fromOffset(14, 7)
+        heading.Size = UDim2.new(1, -24, 0, 14)
+        heading.BackgroundTransparency = 1
+        heading.Text = "STAFF REJOINT LE SERVEUR"
+        heading.TextColor3 = Color3.fromRGB(218, 177, 112)
+        heading.TextSize = 9
+        heading.Font = Enum.Font.GothamBold
+        heading.TextXAlignment = Enum.TextXAlignment.Left
+        heading.ZIndex = 302
+        heading.Parent = toast
+
+        local rpName = Instance.new("TextLabel")
+        rpName.Name = "RPName"
+        rpName.Position = UDim2.fromOffset(14, 23)
+        rpName.Size = UDim2.new(1, -24, 0, 21)
+        rpName.BackgroundTransparency = 1
+        rpName.Text = tostring(staffGetRPName(player))
+        rpName.TextColor3 = Color3.fromRGB(242, 244, 248)
+        rpName.TextSize = 13
+        rpName.Font = Enum.Font.GothamBold
+        rpName.TextTruncate = Enum.TextTruncate.AtEnd
+        rpName.TextXAlignment = Enum.TextXAlignment.Left
+        rpName.ZIndex = 302
+        rpName.Parent = toast
+
+        local username = Instance.new("TextLabel")
+        username.Name = "Username"
+        username.Position = UDim2.fromOffset(14, 45)
+        username.Size = UDim2.new(1, -24, 0, 16)
+        username.BackgroundTransparency = 1
+        username.Text = "@" .. tostring(player.Name)
+        username.TextColor3 = Color3.fromRGB(157, 166, 180)
+        username.TextSize = 10
+        username.Font = Enum.Font.GothamMedium
+        username.TextXAlignment = Enum.TextXAlignment.Left
+        username.ZIndex = 302
+        username.Parent = toast
+
+        pcall(function()
+            local soundService = game:GetService("SoundService")
+            if StaffJoinNotificationSound and StaffJoinNotificationSound.Parent then
+                soundService:PlayLocalSound(StaffJoinNotificationSound)
+            end
+        end)
+
+        task.delay(5.2, function()
+            if not (toast and toast.Parent) then return end
+            local tweenService = game:GetService("TweenService")
+            local fadeInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+            pcall(function() tweenService:Create(toast, fadeInfo, {BackgroundTransparency = 1}):Play() end)
+            pcall(function() tweenService:Create(stroke, fadeInfo, {Transparency = 1}):Play() end)
+            for _, label in ipairs({heading, rpName, username}) do
+                pcall(function() tweenService:Create(label, fadeInfo, {TextTransparency = 1}):Play() end)
+            end
+            task.wait(0.27)
+            if toast and toast.Parent then toast:Destroy() end
+        end)
+    end)
+end
+
 StaffTitle = Instance.new("TextLabel")
 StaffTitle.Visible = false
 StaffTitle.Size = UDim2.new(1, 0, 0, 24)
 StaffTitle.Position = UDim2.new(0, 0, 0, 725)
 StaffTitle.BackgroundColor3 = Color3.fromRGB(35, 28, 38)
-StaffTitle.Text = "🛡 STAFF ESP"
+StaffTitle.Text = "🕶️ STAFF ESP"
 StaffTitle.TextColor3 = Color3.fromRGB(255, 100, 100)
 StaffTitle.TextSize = 12
 StaffTitle.Font = Enum.Font.GothamBold
@@ -2507,7 +2757,7 @@ StaffAutoLeaveBtn.Font = Enum.Font.GothamBold
 StaffAutoLeaveBtn.Parent = Content
 
 StaffListTitle = Instance.new("TextLabel")
-StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
+StaffListTitle.Text = "👥 STAFF DÉTECTÉS"
 StaffListTitle.TextColor3 = Color3.fromRGB(255, 130, 130)
 StaffListTitle.TextSize = 10
 StaffListTitle.Font = Enum.Font.GothamMedium
@@ -2696,7 +2946,7 @@ function createStaffESP(player, reason)
     label.TextColor3 = StaffESPColor
     label.TextStrokeTransparency = 0
     label.TextStrokeColor3 = Color3.new(0, 0, 0)
-    label.Text = "🛡 STAFF\n" .. player.DisplayName .. "  @" .. player.Name .. "\n" .. staffStr(reason)
+    label.Text = "🪪 STAFF\n" .. player.DisplayName .. "  @" .. player.Name .. "\n" .. staffStr(reason)
     label.Parent = billboard
 
     StaffESPData[player] = {Highlight = highlight, Billboard = billboard, Reason = reason}
@@ -2747,7 +2997,7 @@ function staffRefreshList()
         local player = entry.player
         local data = StaffDetectedData[player]
         if player and player.Parent and data then
-            table.insert(rows, "🛡 @" .. player.Name .. " — " .. staffStr(data.Reason))
+            table.insert(rows, "@" .. player.Name .. " — " .. staffStr(data.Reason))
         end
     end
 
@@ -2756,7 +3006,7 @@ function staffRefreshList()
     else
         StaffList.Text = "\n\n\n\nAucun staff détecté"
     end
-    StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
+    StaffListTitle.Text = "👥 STAFF DÉTECTÉS"
 end
 
 function staffLeave(player, reason)
@@ -2774,8 +3024,20 @@ function staffUpdate(player)
     if player == LocalPlayer then return end
 
     local staff, reason = detectStaffIntegrated(player)
+    local wasDetected = StaffDetectedData[player] ~= nil
+    local joinedAt = StaffJoinCandidates[player]
+    if joinedAt and os.clock() - joinedAt > 30 then
+        StaffJoinCandidates[player] = nil
+        joinedAt = nil
+    end
 
     if staff then
+        if not wasDetected and joinedAt then
+            StaffJoinCandidates[player] = nil
+            if StaffJoinNotificationEnabled then
+                staffShowJoinNotification(player)
+            end
+        end
         StaffDetectedData[player] = {Reason = reason}
 
         -- Affichage Staff géré par le moteur ESP intégré.
@@ -2813,6 +3075,7 @@ function staffUnhook(player)
     end
     destroyStaffESP(player)
     StaffDetectedData[player] = nil
+    StaffJoinCandidates[player] = nil
     for i = #StaffDisplayOrder, 1, -1 do
         if StaffDisplayOrder[i].player == player then
             table.remove(StaffDisplayOrder, i)
@@ -2837,7 +3100,13 @@ _G.PRISONRP_STAFF_ESP_STOP = stopStaffESP
 
 for _, player in ipairs(Players:GetPlayers()) do staffHook(player) end
 StaffGlobalConnections = {
-    Players.PlayerAdded:Connect(staffHook),
+    Players.PlayerAdded:Connect(function(player)
+        if player ~= LocalPlayer then StaffJoinCandidates[player] = os.clock() end
+        staffHook(player)
+        task.defer(function()
+            if player and player.Parent and running then staffUpdate(player) end
+        end)
+    end),
     Players.PlayerRemoving:Connect(staffUnhook),
 }
 _G.PRISONRP_STAFF_GLOBAL_CLEANUP = function()
@@ -2853,6 +3122,17 @@ _G.PRISONRP_STAFF_GLOBAL_CLEANUP = function()
     end
     StaffDetectedData = {}
     StaffDisplayOrder = {}
+    StaffJoinCandidates = {}
+    if StaffJoinNotificationGui then
+        pcall(function() StaffJoinNotificationGui:Destroy() end)
+        StaffJoinNotificationGui = nil
+    end
+    if StaffJoinNotificationSound then
+        pcall(function() StaffJoinNotificationSound:Destroy() end)
+        StaffJoinNotificationSound = nil
+    end
+    _G.PRISONRP_STAFF_NOTIFICATION_GUI = nil
+    _G.PRISONRP_STAFF_JOIN_NOTIFICATION_SOUND = nil
 end
 
 StaffAutoLeaveBtn.MouseButton1Click:Connect(function()
@@ -2900,9 +3180,56 @@ local function getRarityButtonColor(rarity)
 end
 
 function updateUI()
-    StatusLabel.Text = "Status: " .. stats.status
-    StatsLabel.Text = string.format("Caught: %d | Perfect: %d", stats.totalCaught, stats.perfectCount)
-    LastFishLabel.Text = "Last Fish: " .. stats.lastFish
+    local rawStatus = tostring(stats.status or "Idle")
+    local translatedStatus = ({
+        ["Idle"] = "En attente",
+        ["Running..."] = "En cours...",
+        ["Stopped"] = "Arrêté",
+        ["Equipping Rod..."] = "Préparation de la canne...",
+        ["No Rod Found!"] = "Canne introuvable !",
+        ["Finding Scripts..."] = "Recherche en cours...",
+        ["Casting Rod..."] = "Lancer la ligne...",
+        ["Luring Fish..."] = "Poisson en approche...",
+        ["Reeling..."] = "Récupération du poisson...",
+        ["Fish Caught!"] = "Poisson attrapé !",
+        ["Sold All Fish!"] = "Poissons vendus !",
+    })[rawStatus] or rawStatus
+    StatusLabel.Text = "Statut : " .. translatedStatus
+
+    local statusLower = string.lower(rawStatus)
+    if string.find(rawStatus, "⚠", 1, true)
+        or rawStatus == "No Rod Found!"
+        or string.find(statusLower, "impossible", 1, true) then
+        StatusLabel.TextColor3 = Color3.fromRGB(255, 177, 100)
+    elseif rawStatus == "Running..."
+        or rawStatus == "Equipping Rod..."
+        or rawStatus == "Casting Rod..."
+        or rawStatus == "Luring Fish..."
+        or rawStatus == "Reeling..."
+        or rawStatus == "Fish Caught!"
+        or rawStatus == "Sold All Fish!"
+        or rawStatus == "Auto Eat / Drink : ON (seuil 50)"
+        or string.find(statusLower, "envoi de la demande", 1, true) then
+        StatusLabel.TextColor3 = Color3.fromRGB(145, 225, 165)
+    else
+        StatusLabel.TextColor3 = Color3.fromRGB(130, 200, 255)
+    end
+    StatsLabel.Text = string.format("Prises %d  •  Parfaites %d", stats.totalCaught, stats.perfectCount)
+    local displayedFish = tostring(stats.lastFish or "")
+    if displayedFish == "None" then displayedFish = "aucun" end
+    if displayedFish == "Unknown" then displayedFish = "inconnu" end
+    LastFishLabel.Text = "Poisson : " .. displayedFish
+    if SessionStatsLabel and SessionStatsLabel.Parent then
+        local elapsed = math.max(0, math.floor(os.clock() - (SessionStartedAt or os.clock())))
+        local perfectRate = 0
+        if (tonumber(stats.totalCaught) or 0) > 0 then
+            perfectRate = math.floor((stats.perfectCount / stats.totalCaught) * 100 + 0.5)
+        end
+        SessionStatsLabel.Text = string.format(
+            "Session %02d:%02d  •  Réussites parfaites %d%%",
+            math.floor(elapsed / 60), elapsed % 60, perfectRate
+        )
+    end
     local selectedRarity = RarityList[_G.MinRarityIndex]
     RarityBtn.Text = "Pêcher à partir de : " .. selectedRarity
     RarityBtn.BackgroundColor3 = getRarityButtonColor(selectedRarity)
@@ -2913,11 +3240,11 @@ function updateUI()
     ToggleFishBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
     ToggleFishBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 
-    AutoSellBtn.Text = "💰 AUTO-SELL"
+    AutoSellBtn.Text = "🪙 AUTO-SELL"
     AutoSellBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
     AutoSellBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 
-    ESPToggleBtn.Text = "👁️ ESP BLACK MARKET"
+    ESPToggleBtn.Text = "🕵️ ESP BLACK MARKET"
     ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
     ESPToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 end
@@ -3039,7 +3366,7 @@ function applyESP(targetModel)
                 local lbl = Instance.new("TextLabel")
                 lbl.Size = UDim2.new(1, 0, 1, 0)
                 lbl.BackgroundTransparency = 1
-                lbl.Text = "🛒 BLACK MARKET"
+                lbl.Text = "🏬 BLACK MARKET"
                 lbl.TextColor3 = Color3.fromRGB(220, 130, 255)
                 lbl.TextStrokeTransparency = 0
                 lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -3631,7 +3958,7 @@ BlackMarketBtn.MouseButton1Click:Connect(function()
     local target = CFrame.lookAt(frontPos, bmPart.Position + Vector3.new(0, 1, 0))
 
     if directTeleportTo(target) then
-        BlackMarketBtn.Text = "🏃 BLACK MARKET"
+        BlackMarketBtn.Text = "🏪 BLACK MARKET"
     end
 end)
 
@@ -3907,7 +4234,7 @@ end)
 
 TeleportBtn.MouseButton1Click:Connect(function()
     if directTeleportTo(POND_GROUND_CFRAME, 60) then
-        TeleportBtn.Text = "🏃 SHORE"
+        TeleportBtn.Text = "🏖️ SHORE"
     end
 end)
 
@@ -3956,7 +4283,7 @@ task.spawn(function()
             if lastValue == nil or math.abs(numericValue - lastValue) > 0.001 then
                 local tween = TweenService:Create(
                     fill,
-                    TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    PRISONRP_UITweenInfo(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
                     {Size = UDim2.new(ratio, 0, 1, 0)}
                 )
                 tween:Play()
@@ -4956,6 +5283,23 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     autresPage.ZIndex = 11
     autresPage.Parent = MainFrame
 
+    StaffJoinNotificationBtn = Instance.new("TextButton")
+    StaffJoinNotificationBtn.Name = "StaffJoinNotificationBtn"
+    StaffJoinNotificationBtn.Size = UDim2.new(1, -8, 0, 34)
+    StaffJoinNotificationBtn.Position = UDim2.fromOffset(0, 300)
+    StaffJoinNotificationBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+    StaffJoinNotificationBtn.BorderSizePixel = 0
+    StaffJoinNotificationBtn.AutoButtonColor = true
+    StaffJoinNotificationBtn.Text = "🔔 NOTIF STAFF"
+    StaffJoinNotificationBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StaffJoinNotificationBtn.TextSize = 15
+    StaffJoinNotificationBtn.Font = Enum.Font.GothamBold
+    StaffJoinNotificationBtn.ZIndex = 20
+    StaffJoinNotificationBtn.Parent = autresPage
+    local staffJoinNotifCorner = Instance.new("UICorner")
+    staffJoinNotifCorner.CornerRadius = UDim.new(0, 8)
+    staffJoinNotifCorner.Parent = StaffJoinNotificationBtn
+
     --==============================================================
     -- TP JOUEUR + SPEC — éléments conservés en interne
     -- Compact : liste défilante avec NOM RP + @USERNAME.
@@ -5115,7 +5459,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpTitle.Size = UDim2.new(1, -12, 0, 20)
     tpTitle.Position = UDim2.fromOffset(6, 4)
     tpTitle.BackgroundTransparency = 1
-    tpTitle.Text = "👁 TP / SPEC — Joueurs"
+    tpTitle.Text = "🎭 TP / SPEC — Joueurs"
     tpTitle.TextColor3 = Color3.fromRGB(235, 235, 235)
     tpTitle.TextSize = 11
     tpTitle.Font = Enum.Font.GothamBold
@@ -5217,7 +5561,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpSpecButton.AutoButtonColor = false
     tpSpecButton.Active = false
     tpSpecButton.Selectable = false
-    tpSpecButton.Text = "🎥 SPEC"
+    tpSpecButton.Text = "🔭 SPEC"
     tpSpecButton.TextColor3 = Color3.fromRGB(235, 235, 235)
     tpSpecButton.TextSize = 9
     tpSpecButton.Font = Enum.Font.GothamBold
@@ -5241,15 +5585,15 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     local tpSpecKnob = nil
     local tpSpecSwitch = nil
     local TweenService = game:GetService("TweenService")
-    local tpSpecSwitchTween = TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+    local tpSpecSwitchTween = PRISONRP_UITweenInfo(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
     local function updateTpSpecSwitch(animated)
         if not tpSpecSwitch or not tpSpecKnob or not tpSpecKnob.Parent then return end
         local target = TPSpecEnabled and UDim2.new(1, -19, 0, 3) or UDim2.fromOffset(3, 3)
         local targetColor = TPSpecEnabled and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(70, 80, 94)
         if animated then
-            TweenService:Create(tpSpecKnob, tpSpecSwitchTween, {Position = target}):Play()
-            TweenService:Create(tpSpecSwitch, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor}):Play()
+            TweenService:Create(tpSpecKnob, PRISONRP_AdjustUITweenInfo(tpSpecSwitchTween), {Position = target}):Play()
+            TweenService:Create(tpSpecSwitch, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor}):Play()
         else
             tpSpecKnob.Position = target
             tpSpecSwitch.BackgroundColor3 = targetColor
@@ -5481,6 +5825,25 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         TPSpecVoiceMuteGroup = nil
     end
 
+    local function tpSpecUpdateInfo()
+        if not tpSelected or not tpSelected.Parent then return end
+
+        local player = TPSpecSelectedPlayer
+        if not player or not player.Parent then
+            if tpSelected.Text ~= "Sélection : aucune" then
+                tpSelected.Text = "Sélection : aucune"
+            end
+            return
+        end
+
+        local rpPseudo = tpSpecGetRPPseudo(player)
+        local prefix = TPSpecEnabled and "Observation : " or "Sélection : "
+        local infoText = prefix .. tostring(rpPseudo or player.DisplayName or player.Name)
+            .. "  @" .. tostring(player.Name)
+        if tpSelected.Text ~= infoText then
+            tpSelected.Text = infoText
+        end
+    end
     local function tpSpecStop()
         TPSpecEnabled = false
         TPSpecRotating = false
@@ -5497,7 +5860,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             local humanoid = character and character:FindFirstChildOfClass("Humanoid")
             camera.CameraSubject = TPSpecSavedCameraSubject or humanoid
         end
-        tpSpecButton.Text = "🎥 SPEC"
+        tpSpecButton.Text = "🔭 SPEC"
         updateTpSpecSwitch(true)
         tpSpecUpdateInfo()
     end
@@ -5557,7 +5920,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             tpSpecUpdateInfo()
         end)
 
-        tpSpecButton.Text = "🎥 SPEC"
+        tpSpecButton.Text = "🔭 SPEC"
         updateTpSpecSwitch(true)
         tpSpecUpdateInfo()
     end
@@ -5793,7 +6156,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     MoneyViewBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
     MoneyViewBtn.TextSize = 11
     MoneyViewBtn.Font = Enum.Font.GothamBold
-    MoneyViewBtn.Text = "💰 MONEY VIEW : OFF"
+    MoneyViewBtn.Text = "💵 MONEY VIEW : OFF"
     MoneyViewBtn.Parent = espPage
 
     local MoneyViewCorner = Instance.new("UICorner")
@@ -6059,7 +6422,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     local function moneyViewSetEnabled(state)
         MoneyViewEnabled = state and true or false
         _G.MoneyViewEnabledValue = MoneyViewEnabled
-        MoneyViewBtn.Text = MoneyViewEnabled and "💰 MONEY VIEW : ON" or "💰 MONEY VIEW : OFF"
+        MoneyViewBtn.Text = MoneyViewEnabled and "💵 MONEY VIEW : ON" or "💵 MONEY VIEW : OFF"
         MoneyViewBtn.BackgroundColor3 = MoneyViewEnabled and Color3.fromRGB(45, 110, 65) or Color3.fromRGB(45, 48, 62)
 
         if not MoneyViewEnabled then
@@ -6157,7 +6520,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     movementTitle.Size = UDim2.new(1, 0, 0, 30)
     movementTitle.Position = UDim2.fromOffset(0, 224)
     movementTitle.BackgroundColor3 = Color3.fromRGB(28, 38, 45)
-    movementTitle.Text = "⚡ DÉPLACEMENT"
+    movementTitle.Text = "DÉPLACEMENT"
     movementTitle.TextColor3 = Color3.fromRGB(100, 210, 255)
     movementTitle.TextSize = 13
     movementTitle.Font = Enum.Font.GothamBold
@@ -6314,6 +6677,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         -- C local de la nouvelle interface. Cela évite l'erreur au clic qui
         -- empêchait les onglets 2/3/4 de mettre à jour leur couleur.
     end
+    _G.PRISONRP_SELECT_PAGE = selectPage
 
     farmTab.MouseButton1Click:Connect(function()
         selectPage(1)
@@ -6574,6 +6938,22 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     StatusLabel.TextXAlignment = Enum.TextXAlignment.Center
     StatsLabel.TextXAlignment = Enum.TextXAlignment.Center
     LastFishLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+    -- Résumé local de la session en cours ; il ne modifie aucun réglage de jeu.
+    SessionStatsLabel = Instance.new("TextLabel")
+    SessionStatsLabel.Name = "SessionStatsLabel"
+    SessionStatsLabel.Position = UDim2.new(0.01, 0, 0, 63)
+    SessionStatsLabel.Size = UDim2.new(0.98, 0, 0, 11)
+    SessionStatsLabel.BackgroundTransparency = 1
+    SessionStatsLabel.Text = "Session 00:00  •  Réussites parfaites 0%"
+    SessionStatsLabel.TextColor3 = Color3.fromRGB(165, 174, 190)
+    SessionStatsLabel.TextSize = 9
+    SessionStatsLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    SessionStatsLabel.Font = Enum.Font.GothamMedium
+    SessionStatsLabel.TextXAlignment = Enum.TextXAlignment.Center
+    SessionStatsLabel.ZIndex = 21
+    SessionStatsLabel.Parent = Content
+    if type(updateUI) == "function" then pcall(updateUI) end
 
     prep(ToggleFishBtn, 0, 76, 271, 38, Content)
     prep(RarityBtn, 280, 76, 271, 38, Content)
@@ -6864,7 +7244,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     AutoArmWrestleState.Btn.Name = "AutoArmWrestleBtn"
     AutoArmWrestleState.Btn.Parent = autresPage
     -- Maintenir E après activation de la switch pour lancer la macro.
-    AutoArmWrestleState.Btn.Text = "💪 AUTO BRAS DE FER"
+    AutoArmWrestleState.Btn.Text = "🤼 AUTO BRAS DE FER"
     AutoArmWrestleState.Btn.AutoButtonColor = false
     AutoArmWrestleState.Btn.BackgroundColor3 = C.card
     AutoArmWrestleState.Btn.TextColor3 = C.white
@@ -6894,8 +7274,8 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         knob.Name='Knob'; knob.Size=UDim2.fromOffset(16,16); knob.Position=UDim2.fromOffset(3,3)
         knob.BorderSizePixel=0; knob.ZIndex=track.ZIndex+1; knob.Parent=track; round(knob,8)
         local TweenService = game:GetService('TweenService')
-        local moveInfo = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-        local colorInfo = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local moveInfo = PRISONRP_UITweenInfo(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local colorInfo = PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         local animating = false
         local function refresh(animated)
             local on = getOn and getOn() or (string.find(string.upper(btn.Text),'ON',1,true) ~= nil)
@@ -6904,8 +7284,8 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             if animated then
                 if animating then return end
                 animating = true
-                local move = TweenService:Create(knob, moveInfo, {Position = targetPos})
-                local color = TweenService:Create(track, colorInfo, {BackgroundColor3 = targetColor})
+                local move = TweenService:Create(knob, PRISONRP_AdjustUITweenInfo(moveInfo), {Position = targetPos})
+                local color = TweenService:Create(track, PRISONRP_AdjustUITweenInfo(colorInfo), {BackgroundColor3 = targetColor})
                 move:Play(); color:Play()
                 move.Completed:Connect(function() animating = false end)
             else
@@ -6952,7 +7332,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         movementTitle.Visible=true
         movementTitle.Position=UDim2.fromOffset(0,224)
         movementTitle.Size=UDim2.new(1,0,0,30)
-        movementTitle.Text='⚡ DÉPLACEMENT'
+        movementTitle.Text='DÉPLACEMENT'
     end
 
     if speedSlider then
@@ -7153,7 +7533,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         StaffListTitle.Visible = true
         StaffListTitle.Position = UDim2.fromOffset(8, 7)
         StaffListTitle.Size = UDim2.fromOffset(254, 26)
-        StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
+        StaffListTitle.Text = "👥 STAFF DÉTECTÉS"
         StaffListTitle.TextXAlignment = Enum.TextXAlignment.Center
         StaffListTitle.TextYAlignment = Enum.TextYAlignment.Center
         textClean(StaffListTitle,10,C.white)
@@ -7286,8 +7666,8 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         round(knob, 9)
 
         local TweenService = game:GetService("TweenService")
-        local tweenInfo = TweenInfo.new(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-        local colorInfo = TweenInfo.new(0.26, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local tweenInfo = PRISONRP_UITweenInfo(0.32, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        local colorInfo = PRISONRP_UITweenInfo(0.26, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         -- On garde les tweens en cours pour pouvoir les annuler proprement.
         -- Cela évite le désynchronisation visuelle quand on clique très vite.
         local activeMoveTween = nil
@@ -7311,9 +7691,9 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             if activeKnobTween then activeKnobTween:Cancel(); activeKnobTween = nil end
 
             if animated then
-                activeMoveTween = TweenService:Create(knob, tweenInfo, {Position = targetPos})
-                activeColorTween = TweenService:Create(switch, colorInfo, {BackgroundColor3 = targetColor})
-                activeKnobTween = TweenService:Create(knob, colorInfo, {BackgroundColor3 = knobColor})
+                activeMoveTween = TweenService:Create(knob, PRISONRP_AdjustUITweenInfo(tweenInfo), {Position = targetPos})
+                activeColorTween = TweenService:Create(switch, PRISONRP_AdjustUITweenInfo(colorInfo), {BackgroundColor3 = targetColor})
+                activeKnobTween = TweenService:Create(knob, PRISONRP_AdjustUITweenInfo(colorInfo), {BackgroundColor3 = knobColor})
                 activeMoveTween:Play()
                 activeColorTween:Play()
                 activeKnobTween:Play()
@@ -7351,6 +7731,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
                 or btn == BlackMarketBtn
                 or btn == ESPToggleBtn
                 or btn == StaffAutoLeaveBtn
+                or btn == StaffJoinNotificationBtn
             )
 
             if startAutoFishStyle then
@@ -8487,7 +8868,7 @@ end)
         specClone.Position = UDim2.fromOffset(6, 181)
         specClone.Size = UDim2.new(1, -12, 0, 27)
         specClone.ZIndex = flyBtn.ZIndex
-        specClone.Text = "🎥 SPEC"
+        specClone.Text = "🔭 SPEC"
         specClone.TextXAlignment = flyBtn.TextXAlignment
         specClone.TextYAlignment = flyBtn.TextYAlignment
         specClone.AutoButtonColor = flyBtn.AutoButtonColor
@@ -8575,6 +8956,13 @@ end)
         function()
             StaffAutoLeaveEnabled = not StaffAutoLeaveEnabled
             StaffAutoLeaveBtn.Text = StaffAutoLeaveEnabled and "🚪 AUTO-LEAVE : ON" or "🚪 AUTO-LEAVE : OFF"
+        end
+    )
+
+    gdpCheckbox(StaffJoinNotificationBtn,
+        function() return StaffJoinNotificationEnabled == true end,
+        function()
+            StaffJoinNotificationEnabled = not StaffJoinNotificationEnabled
         end
     )
 
@@ -8747,13 +9135,13 @@ end)
     local v7Token = 0
     -- V199 : transition douce au survol, avec annulation automatique du tween précédent
     -- si la souris entre/sort rapidement de la barre.
-    local v7ExpandTweenInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    local v7ExpandTweenInfo = PRISONRP_UITweenInfo(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 
     local v7Categories = {
-        {"🎣", "FARM"},
-        {"🏃", "DÉPLACEMENT"},
-        {"👁", "ESP"},
-        {"⚙", "AUTRES"},
+        {"🧺", "FARM"},
+        {"🧭", "DÉPLACEMENT"},
+        {"🔬", "ESP"},
+        {"🧰", "AUTRES"},
     }
 
     local v7Buttons = {}
@@ -8786,7 +9174,7 @@ end)
 
     local function v7Tween(obj, info, props)
         pcall(function()
-            game:GetService("TweenService"):Create(obj, info, props):Play()
+            game:GetService("TweenService"):Create(obj, PRISONRP_AdjustUITweenInfo(info), props):Play()
         end)
     end
 
@@ -8827,10 +9215,10 @@ end)
 
         local b = v7Buttons[page]
         if b then
-            v7Tween(v7Marker, TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            v7Tween(v7Marker, PRISONRP_UITweenInfo(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
                 Position = UDim2.fromOffset(0, b.Position.Y.Offset + 5)
             })
-            v7Tween(v7Glow, TweenInfo.new(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            v7Tween(v7Glow, PRISONRP_UITweenInfo(0.16, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
                 Position = UDim2.fromOffset(0, b.Position.Y.Offset + 5)
             })
         end
@@ -9298,7 +9686,7 @@ end)
     -- FINAL EMOJI LABELS
     if StartBtn then StartBtn.Text = "🛒 Auto Buy Food" end
     if ToggleFishBtn then ToggleFishBtn.Text = "🎣 START AUTO-FISH" end
-    AutoSellBtn.Text = "💰 AUTO-SELL"
+    AutoSellBtn.Text = "🪙 AUTO-SELL"
     if StaffESPBtn then StaffESPBtn.Text = "🛡️ ESP STAFF" end
 
 
@@ -9401,7 +9789,7 @@ end)
         end
 
         local espOptions = panel(0, 400)
-        title(espOptions, "👁 PRISON RP — ESP JOUEURS", 5)
+        title(espOptions, "🧬 PRISON RP — ESP JOUEURS", 5)
 
         local optionsDescription = Instance.new("TextLabel")
         optionsDescription.Size = UDim2.new(1, -16, 0, 18)
@@ -9531,12 +9919,12 @@ end)
 
             -- Animation plus douce et plus progressive. Tout est tweené dans
             -- le même timing pour éviter les états visuels désynchronisés.
-            local switchTweenInfo = TweenInfo.new(
+            local switchTweenInfo = PRISONRP_UITweenInfo(
                 0.24,
                 Enum.EasingStyle.Quint,
                 Enum.EasingDirection.Out
             )
-            local checkTweenInfo = TweenInfo.new(
+            local checkTweenInfo = PRISONRP_UITweenInfo(
                 0.18,
                 Enum.EasingStyle.Sine,
                 Enum.EasingDirection.Out
@@ -9556,7 +9944,7 @@ end)
             end
 
             local function playTween(instance, info, props)
-                local tw = TweenService:Create(instance, info, props)
+                local tw = TweenService:Create(instance, PRISONRP_AdjustUITweenInfo(info), props)
                 runningTweens[#runningTweens + 1] = tw
                 tw.Completed:Connect(function()
                     for i = #runningTweens, 1, -1 do
@@ -9695,11 +10083,11 @@ end)
             function() return ESPConfig.HealthEnabled end,
             function(v) ESPConfig.HealthEnabled = v end)
 
-        makeIntegratedSwitch("🎯 TRACERS", 259,
+        makeIntegratedSwitch("🪄 TRACERS", 259,
             function() return ESPConfig.TracersEnabled end,
             function(v) ESPConfig.TracersEnabled = v end)
 
-        local StaffDetectionCard = makeIntegratedSwitch("🛡 ESP STAFF", 303,
+        local StaffDetectionCard = makeIntegratedSwitch("👮 ESP STAFF", 303,
             function()
                 return ESPConfig.StaffDetection == true
             end,
@@ -9720,7 +10108,7 @@ end)
                 end
             end)
 
-        local MoneyViewCard = makeIntegratedSwitch("💰 MONEY VIEW", 347,
+        local MoneyViewCard = makeIntegratedSwitch("💵 MONEY VIEW", 347,
             function() return MoneyViewEnabled == true end,
             function(v)
                 moneyViewSetEnabled(v)
@@ -9831,7 +10219,7 @@ end)
         ml.Size = UDim2.new(1, -30, 1, 0)
         ml.Position = UDim2.fromOffset(30, 0)
         ml.BackgroundTransparency = 1
-        ml.Text = "⚡ ACTIVER LES BOUTONS COCHÉS"
+        ml.Text = "🔀 ACTIVER LES BOUTONS COCHÉS"
         ml.TextColor3 = Color3.fromRGB(255,255,255)
         ml.TextSize = 10
         ml.Font = Enum.Font.GothamBold
@@ -9914,7 +10302,7 @@ end)
             StaffListTitle.Visible = true
             StaffListTitle.Position = UDim2.fromOffset(8, 6)
             StaffListTitle.Size = UDim2.new(1, -16, 0, 24)
-            StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
+            StaffListTitle.Text = "👥 STAFF DÉTECTÉS"
             StaffListTitle.TextXAlignment = Enum.TextXAlignment.Center
             StaffListTitle.TextYAlignment = Enum.TextYAlignment.Center
             StaffListTitle.ZIndex = 99
@@ -10436,7 +10824,7 @@ local function createStaffTag(player, root)
     status.Size = UDim2.new(1, 0, 0, 20)
     status.Position = UDim2.fromOffset(0, 22)
     status.BackgroundTransparency = 1
-    status.Text = "🛡 STAFF"
+    status.Text = "🪪 STAFF"
     status.TextSize = 10
     status.Font = Enum.Font.GothamMedium
     status.TextColor3 = Color3.fromRGB(245, 245, 245)
@@ -10537,7 +10925,7 @@ local function updateStaffESP(data)
     data.billboard.Enabled = inRange
     data.billboard.MaxDistance = ESPConfig.MaxDistance
     data.rpNameLabel.Text = getCachedRPName(player)
-    data.statusLabel.Text = string.format("🛡 STAFF  •  %dm", math.floor(distance + 0.5))
+    data.statusLabel.Text = string.format("🪪 STAFF  •  %dm", math.floor(distance + 0.5))
 end
 
 -- =========================
@@ -10824,7 +11212,7 @@ end
             StaffListTitle.Visible = true
             StaffListTitle.Position = UDim2.fromOffset(8, 6)
             StaffListTitle.Size = UDim2.new(1, -16, 0, 24)
-            StaffListTitle.Text = "🛡 STAFF DÉTECTÉS"
+            StaffListTitle.Text = "👥 STAFF DÉTECTÉS"
             StaffListTitle.TextXAlignment = Enum.TextXAlignment.Center
             StaffListTitle.TextYAlignment = Enum.TextYAlignment.Center
             StaffListTitle.ZIndex = 99
@@ -10869,7 +11257,7 @@ task.defer(function()
     end
 
     if AutoSellBtn then
-        AutoSellBtn.Text = "💰 AUTO-SELL"
+        AutoSellBtn.Text = "🪙 AUTO-SELL"
     end
 end)
 
@@ -10956,7 +11344,7 @@ end)
             GiveMoneyTitle.Size = UDim2.new(1, -12, 0, 26)
             GiveMoneyTitle.Position = UDim2.fromOffset(6, 5)
             GiveMoneyTitle.BackgroundTransparency = 1
-            GiveMoneyTitle.Text = "💰 GIVE MONEY"
+            GiveMoneyTitle.Text = "💸 GIVE MONEY"
             GiveMoneyTitle.TextColor3 = Color3.fromRGB(240, 245, 255)
             GiveMoneyTitle.TextSize = 11
             GiveMoneyTitle.Font = Enum.Font.GothamBold
@@ -11662,6 +12050,7 @@ end)
             BlackMarketBtn,
             ESPToggleBtn,
             StaffAutoLeaveBtn,
+            StaffJoinNotificationBtn,
             AutoArmWrestleState.Btn,
             speedBtn,
             speedLabel,
@@ -12269,10 +12658,10 @@ local function addToggle(parent, x, text, getter, setter)
 
     local function refresh()
         local on = getter()
-        game:GetService("TweenService"):Create(sw, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        game:GetService("TweenService"):Create(sw, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
             BackgroundColor3 = on and AIM_C.on or AIM_C.off
         }):Play()
-        game:GetService("TweenService"):Create(knob, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        game:GetService("TweenService"):Create(knob, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
             Position = on and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3)
         }):Play()
     end
@@ -12726,6 +13115,7 @@ if v7Sidebar then
     end
 
     aimTab.MouseButton1Click:Connect(showAimbotPage)
+    _G.PRISONRP_SHOW_AIMBOT_PAGE = showAimbotPage
     aimTab.MouseEnter:Connect(function()
         if type(_G.PRISONRP_V7_SET_EXPANDED) == "function" then
             _G.PRISONRP_V7_SET_EXPANDED(true)
@@ -12823,7 +13213,7 @@ do
         title.Size = UDim2.new(1, -4, 0, 42)
         title.BackgroundColor3 = Color3.fromRGB(22, 27, 35)
         title.BorderSizePixel = 0
-        title.Text = "⚙ PARAMÈTRES"
+        title.Text = "PARAMÈTRES"
         title.TextColor3 = Color3.fromRGB(255,255,255)
         title.TextSize = 14
         title.Font = Enum.Font.GothamBold
@@ -12835,6 +13225,8 @@ do
         titlePad.PaddingLeft = UDim.new(0, 12)
         titlePad.Parent = title
         makeCorner(title, 8)
+
+
 
         local slotsTitle = Instance.new("TextLabel")
         slotsTitle.LayoutOrder = 2
@@ -12853,7 +13245,7 @@ do
         slotsTitlePad.Parent = slotsTitle
 
         local status = Instance.new("TextLabel")
-        status.LayoutOrder = 9
+        status.LayoutOrder = 16
         status.Size = UDim2.new(1, -4, 0, 34)
         status.BackgroundTransparency = 1
         status.Text = ""
@@ -12869,7 +13261,7 @@ do
         -- Échelle réglable de l'interface principale ; elle est incluse dans chaque profil.
         local interfaceScaleRow = Instance.new("Frame")
         interfaceScaleRow.Name = "InterfaceScaleSetting"
-        interfaceScaleRow.LayoutOrder = 8
+        interfaceScaleRow.LayoutOrder = 10
         interfaceScaleRow.Size = UDim2.new(1, -4, 0, 52)
         interfaceScaleRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
         interfaceScaleRow.BorderSizePixel = 0
@@ -12902,15 +13294,80 @@ do
 
         local INTERFACE_SCALE_MIN = 0.55
         local INTERFACE_SCALE_MAX = 1.00
-        local function setInterfaceScale(value)
-            local scale = math.clamp(tonumber(value) or 0.60, INTERFACE_SCALE_MIN, INTERFACE_SCALE_MAX)
-            scale = math.floor(scale * 20 + 0.5) / 20
-            if MainFrameScale then MainFrameScale.Scale = scale end
-            interfaceScaleValue.Text = string.format("%d%%  •  glisse le coin ↘  •  sauvegardé", math.floor(scale * 100 + 0.5))
+        local preferredInterfaceScale = math.clamp(
+            (MainFrameScale and MainFrameScale.Scale) or 0.70,
+            INTERFACE_SCALE_MIN,
+            INTERFACE_SCALE_MAX
+        )
+
+        local function getViewportLimitedScale(preferred)
+            if not (ScreenGui and MainFrame) then return preferred end
+            local viewport = ScreenGui.AbsoluteSize
+            if viewport.X <= 0 or viewport.Y <= 0 then return preferred end
+
+            local sizeForFit = (HubExpanded == false and HubFullSize) or MainFrame.Size
+            local logicalWidth = math.max(1, tonumber(sizeForFit.X.Offset) or 770)
+            local logicalHeight = math.max(1, tonumber(sizeForFit.Y.Offset) or 515)
+            local widthLimit = (viewport.X - 24) / logicalWidth
+            local heightLimit = (viewport.Y - 24) / logicalHeight
+            local viewportLimit = math.min(1, widthLimit, heightLimit)
+            local targetScale = preferred
+            if _G.PRISONRP_TOUCH_MODE == true then
+                targetScale = math.max(targetScale, 0.85)
+            end
+            return math.max(0.40, math.min(targetScale, viewportLimit))
+        end
+
+        local function applyResponsiveInterfaceScale()
+            if not MainFrameScale then return end
+            local effectiveScale = getViewportLimitedScale(preferredInterfaceScale)
+            MainFrameScale.Scale = effectiveScale
+            _G.PRISONRP_EFFECTIVE_UI_SCALE = effectiveScale
+            local targetScale = preferredInterfaceScale
+            if _G.PRISONRP_TOUCH_MODE == true then targetScale = math.max(targetScale, 0.85) end
+            local fitHint = effectiveScale + 0.001 < targetScale
+                and "  •  ajustée à l’écran"
+                or (_G.PRISONRP_TOUCH_MODE == true and "  •  mode tactile" or "  •  profil")
+            interfaceScaleValue.Text = string.format(
+                "%d%%  •  glisse le coin ↘%s",
+                math.floor(preferredInterfaceScale * 100 + 0.5),
+                fitHint
+            )
+            task.defer(function()
+                if not (ScreenGui and ScreenGui.Parent and MainFrame and MainFrame.Parent) then return end
+                local viewport = ScreenGui.AbsoluteSize
+                local framePosition = MainFrame.AbsolutePosition
+                local frameSize = MainFrame.AbsoluteSize
+                local maxX = math.max(0, viewport.X - frameSize.X - 8)
+                local maxY = math.max(0, viewport.Y - frameSize.Y - 8)
+                local x = math.clamp(framePosition.X, 0, maxX)
+                local y = math.clamp(framePosition.Y, 0, maxY)
+                if math.abs(x - framePosition.X) > 1 or math.abs(y - framePosition.Y) > 1 then
+                    local anchorPoint = MainFrame.AnchorPoint
+                    MainFrame.Position = UDim2.fromOffset(
+                        (x + frameSize.X * anchorPoint.X) / math.max(effectiveScale, 0.01),
+                        (y + frameSize.Y * anchorPoint.Y) / math.max(effectiveScale, 0.01)
+                    )
+                    if HubExpanded ~= false then HubExpandedPosition = MainFrame.Position end
+                end
+            end)
             if type(_G.PRISONRP_APPLY_TEXT_READABILITY) == "function" then
                 pcall(_G.PRISONRP_APPLY_TEXT_READABILITY, MainFrame)
             end
         end
+
+        local function setInterfaceScale(value)
+            preferredInterfaceScale = math.clamp(
+                tonumber(value) or 0.70,
+                INTERFACE_SCALE_MIN,
+                INTERFACE_SCALE_MAX
+            )
+            preferredInterfaceScale = math.floor(preferredInterfaceScale * 20 + 0.5) / 20
+            applyResponsiveInterfaceScale()
+
+            
+        end
+    _G.PRISONRP_V7_SELECT_PAGE = v7Select
 
         local function makeScaleButton(name, text, xOffset, delta)
             local button = Instance.new("TextButton")
@@ -12928,7 +13385,7 @@ do
             button.Parent = interfaceScaleRow
             makeCorner(button, 7)
             button.Activated:Connect(function()
-                local current = MainFrameScale and MainFrameScale.Scale or 0.60
+                local current = preferredInterfaceScale
                 setInterfaceScale(current + delta)
             end)
             return button
@@ -12936,7 +13393,287 @@ do
 
         makeScaleButton("InterfaceScaleDown", "−", -76, -0.05)
         makeScaleButton("InterfaceScaleUp", "+", -38, 0.05)
-        setInterfaceScale(MainFrameScale and MainFrameScale.Scale or 0.60)
+        setInterfaceScale(MainFrameScale and MainFrameScale.Scale or 0.70)
+        if _G.PRISONRP_UI_SCALE_CONNECTION then
+            pcall(function() _G.PRISONRP_UI_SCALE_CONNECTION:Disconnect() end)
+        end
+        _G.PRISONRP_UI_SCALE_CONNECTION = ScreenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+            task.defer(applyResponsiveInterfaceScale)
+        end)
+
+        -- Taille de police indépendante de l’échelle globale de la fenêtre.
+        local appearanceSettings = (function()
+        local appearanceTitle = Instance.new("TextLabel")
+        appearanceTitle.LayoutOrder = 9
+        appearanceTitle.Size = UDim2.new(1, -4, 0, 26)
+        appearanceTitle.BackgroundTransparency = 1
+        appearanceTitle.Text = "APPARENCE ET ACCESSIBILITÉ"
+        appearanceTitle.TextColor3 = Color3.fromRGB(170, 178, 190)
+        appearanceTitle.TextSize = 11
+        appearanceTitle.Font = Enum.Font.GothamBold
+        appearanceTitle.TextXAlignment = Enum.TextXAlignment.Left
+        appearanceTitle.TextYAlignment = Enum.TextYAlignment.Center
+        appearanceTitle.ZIndex = 92
+        appearanceTitle.Parent = settingsPage
+        local appearanceTitlePad = Instance.new("UIPadding")
+        appearanceTitlePad.PaddingLeft = UDim.new(0, 8)
+        appearanceTitlePad.Parent = appearanceTitle
+        local textScaleRow = Instance.new("Frame")
+        textScaleRow.Name = "TextScaleSetting"
+        textScaleRow.LayoutOrder = 11
+        textScaleRow.Size = UDim2.new(1, -4, 0, 52)
+        textScaleRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        textScaleRow.BorderSizePixel = 0
+        textScaleRow.ZIndex = 92
+        textScaleRow.Parent = settingsPage
+        makeCorner(textScaleRow, 8)
+
+        local textScaleTitle = Instance.new("TextLabel")
+        textScaleTitle.Size = UDim2.new(1, -96, 0, 22)
+        textScaleTitle.Position = UDim2.fromOffset(10, 4)
+        textScaleTitle.BackgroundTransparency = 1
+        textScaleTitle.Text = "TAILLE DU TEXTE"
+        textScaleTitle.TextColor3 = Color3.fromRGB(235, 238, 244)
+        textScaleTitle.TextSize = 10
+        textScaleTitle.Font = Enum.Font.GothamBold
+        textScaleTitle.TextXAlignment = Enum.TextXAlignment.Left
+        textScaleTitle.ZIndex = 93
+        textScaleTitle.Parent = textScaleRow
+
+        local textScaleValue = Instance.new("TextLabel")
+        textScaleValue.Size = UDim2.new(1, -96, 0, 18)
+        textScaleValue.Position = UDim2.fromOffset(10, 27)
+        textScaleValue.BackgroundTransparency = 1
+        textScaleValue.TextColor3 = Color3.fromRGB(170, 178, 190)
+        textScaleValue.TextSize = 9
+        textScaleValue.Font = Enum.Font.GothamMedium
+        textScaleValue.TextXAlignment = Enum.TextXAlignment.Left
+        textScaleValue.ZIndex = 93
+        textScaleValue.Parent = textScaleRow
+
+        local function setTextScale(value)
+            local scale = math.clamp(tonumber(value) or 1.0, 0.85, 1.35)
+            scale = math.floor(scale * 20 + 0.5) / 20
+            _G.PRISONRP_TEXT_SCALE = scale
+            textScaleValue.Text = string.format("%d%%  •  libellés ajustés", math.floor(scale * 100 + 0.5))
+            if type(_G.PRISONRP_APPLY_TEXT_READABILITY) == "function" then
+                pcall(_G.PRISONRP_APPLY_TEXT_READABILITY, MainFrame)
+            end
+        end
+
+        local function makeTextScaleButton(name, text, xOffset, delta)
+            local button = Instance.new("TextButton")
+            button.Name = name
+            button.Size = UDim2.fromOffset(32, 30)
+            button.Position = UDim2.new(1, xOffset, 0.5, -15)
+            button.BackgroundColor3 = Color3.fromRGB(58, 67, 82)
+            button.BorderSizePixel = 0
+            button.AutoButtonColor = true
+            button.Text = text
+            button.TextColor3 = Color3.fromRGB(255, 255, 255)
+            button.TextSize = 17
+            button.Font = Enum.Font.GothamBold
+            button.ZIndex = 94
+            button.Parent = textScaleRow
+            makeCorner(button, 7)
+            button.Activated:Connect(function()
+                setTextScale((_G.PRISONRP_TEXT_SCALE or 1.0) + delta)
+            end)
+            return button
+        end
+        makeTextScaleButton("TextScaleDown", "−", -76, -0.05)
+        makeTextScaleButton("TextScaleUp", "+", -38, 0.05)
+        setTextScale(_G.PRISONRP_TEXT_SCALE or 1.0)
+
+        -- Contraste renforcé pour les textes neutres sur surfaces sombres.
+        local contrastRow = Instance.new("Frame")
+        contrastRow.Name = "HighContrastSetting"
+        contrastRow.LayoutOrder = 12
+        contrastRow.Size = UDim2.new(1, -4, 0, 48)
+        contrastRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        contrastRow.BorderSizePixel = 0
+        contrastRow.ZIndex = 92
+        contrastRow.Parent = settingsPage
+        makeCorner(contrastRow, 8)
+
+        local contrastTitle = Instance.new("TextLabel")
+        contrastTitle.Size = UDim2.new(1, -100, 0, 22)
+        contrastTitle.Position = UDim2.fromOffset(10, 4)
+        contrastTitle.BackgroundTransparency = 1
+        contrastTitle.Text = "CONTRASTE RENFORCÉ"
+        contrastTitle.TextColor3 = Color3.fromRGB(235, 238, 244)
+        contrastTitle.TextSize = 10
+        contrastTitle.Font = Enum.Font.GothamBold
+        contrastTitle.TextXAlignment = Enum.TextXAlignment.Left
+        contrastTitle.ZIndex = 93
+        contrastTitle.Parent = contrastRow
+
+        local contrastHint = Instance.new("TextLabel")
+        contrastHint.Size = UDim2.new(1, -100, 0, 15)
+        contrastHint.Position = UDim2.fromOffset(10, 27)
+        contrastHint.BackgroundTransparency = 1
+        contrastHint.Text = "Textes neutres plus lumineux"
+        contrastHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+        contrastHint.TextSize = 9
+        contrastHint.Font = Enum.Font.GothamMedium
+        contrastHint.TextXAlignment = Enum.TextXAlignment.Left
+        contrastHint.ZIndex = 93
+        contrastHint.Parent = contrastRow
+
+        local contrastButton = Instance.new("TextButton")
+        contrastButton.Name = "HighContrastToggle"
+        contrastButton.Size = UDim2.fromOffset(72, 30)
+        contrastButton.Position = UDim2.new(1, -82, 0.5, -15)
+        contrastButton.BorderSizePixel = 0
+        contrastButton.AutoButtonColor = true
+        contrastButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        contrastButton.TextSize = 10
+        contrastButton.Font = Enum.Font.GothamBold
+        contrastButton.ZIndex = 94
+        contrastButton.Parent = contrastRow
+        makeCorner(contrastButton, 7)
+
+        local function setHighContrast(enabled)
+            _G.PRISONRP_HIGH_CONTRAST = enabled == true
+            contrastButton.Text = _G.PRISONRP_HIGH_CONTRAST and "ON" or "OFF"
+            contrastButton.BackgroundColor3 = _G.PRISONRP_HIGH_CONTRAST
+                and Color3.fromRGB(40, 130, 75)
+                or Color3.fromRGB(58, 67, 82)
+            if type(_G.PRISONRP_APPLY_TEXT_READABILITY) == "function" then
+                pcall(_G.PRISONRP_APPLY_TEXT_READABILITY, MainFrame)
+            end
+        end
+        contrastButton.Activated:Connect(function()
+            setHighContrast(not (_G.PRISONRP_HIGH_CONTRAST == true))
+        end)
+        setHighContrast(_G.PRISONRP_HIGH_CONTRAST == true)
+
+
+        -- Agrandit les cibles de clic et les contrôles pour les écrans tactiles.
+        local touchRow = Instance.new("Frame")
+        touchRow.Name = "TouchModeSetting"
+        touchRow.LayoutOrder = 13
+        touchRow.Size = UDim2.new(1, -4, 0, 48)
+        touchRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        touchRow.BorderSizePixel = 0
+        touchRow.ZIndex = 92
+        touchRow.Parent = settingsPage
+        makeCorner(touchRow, 8)
+
+        local touchTitle = Instance.new("TextLabel")
+        touchTitle.Size = UDim2.new(1, -100, 0, 22)
+        touchTitle.Position = UDim2.fromOffset(10, 4)
+        touchTitle.BackgroundTransparency = 1
+        touchTitle.Text = "CIBLES TACTILES AGRANDIES"
+        touchTitle.TextColor3 = Color3.fromRGB(235, 238, 244)
+        touchTitle.TextSize = 10
+        touchTitle.Font = Enum.Font.GothamBold
+        touchTitle.TextXAlignment = Enum.TextXAlignment.Left
+        touchTitle.ZIndex = 93
+        touchTitle.Parent = touchRow
+
+        local touchHint = Instance.new("TextLabel")
+        touchHint.Size = UDim2.new(1, -100, 0, 15)
+        touchHint.Position = UDim2.fromOffset(10, 27)
+        touchHint.BackgroundTransparency = 1
+        touchHint.Text = "Agrandit le menu quand l’écran le permet"
+        touchHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+        touchHint.TextSize = 9
+        touchHint.Font = Enum.Font.GothamMedium
+        touchHint.TextXAlignment = Enum.TextXAlignment.Left
+        touchHint.ZIndex = 93
+        touchHint.Parent = touchRow
+
+        local touchButton = Instance.new("TextButton")
+        touchButton.Name = "TouchModeToggle"
+        touchButton.Size = UDim2.fromOffset(72, 30)
+        touchButton.Position = UDim2.new(1, -82, 0.5, -15)
+        touchButton.BorderSizePixel = 0
+        touchButton.AutoButtonColor = true
+        touchButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        touchButton.TextSize = 10
+        touchButton.Font = Enum.Font.GothamBold
+        touchButton.ZIndex = 94
+        touchButton.Parent = touchRow
+        makeCorner(touchButton, 7)
+        local function setTouchMode(enabled)
+            _G.PRISONRP_TOUCH_MODE = enabled == true
+            touchButton.Text = _G.PRISONRP_TOUCH_MODE and "ON" or "OFF"
+            touchButton.BackgroundColor3 = _G.PRISONRP_TOUCH_MODE
+                and Color3.fromRGB(40, 130, 75)
+                or Color3.fromRGB(58, 67, 82)
+            applyResponsiveInterfaceScale()
+        end
+        touchButton.Activated:Connect(function()
+            setTouchMode(not (_G.PRISONRP_TOUCH_MODE == true))
+        end)
+        setTouchMode(_G.PRISONRP_TOUCH_MODE == true)
+        -- Les transitions visuelles suivantes seront plus courtes.
+        local motionRow = Instance.new("Frame")
+        motionRow.Name = "ReducedMotionSetting"
+        motionRow.LayoutOrder = 14
+        motionRow.Size = UDim2.new(1, -4, 0, 48)
+        motionRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        motionRow.BorderSizePixel = 0
+        motionRow.ZIndex = 92
+        motionRow.Parent = settingsPage
+        makeCorner(motionRow, 8)
+
+        local motionTitle = Instance.new("TextLabel")
+        motionTitle.Size = UDim2.new(1, -100, 0, 22)
+        motionTitle.Position = UDim2.fromOffset(10, 4)
+        motionTitle.BackgroundTransparency = 1
+        motionTitle.Text = "ANIMATIONS RÉDUITES"
+        motionTitle.TextColor3 = Color3.fromRGB(235, 238, 244)
+        motionTitle.TextSize = 10
+        motionTitle.Font = Enum.Font.GothamBold
+        motionTitle.TextXAlignment = Enum.TextXAlignment.Left
+        motionTitle.ZIndex = 93
+        motionTitle.Parent = motionRow
+
+        local motionHint = Instance.new("TextLabel")
+        motionHint.Size = UDim2.new(1, -100, 0, 15)
+        motionHint.Position = UDim2.fromOffset(10, 27)
+        motionHint.BackgroundTransparency = 1
+        motionHint.Text = "Transitions plus courtes"
+        motionHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+        motionHint.TextSize = 9
+        motionHint.Font = Enum.Font.GothamMedium
+        motionHint.TextXAlignment = Enum.TextXAlignment.Left
+        motionHint.ZIndex = 93
+        motionHint.Parent = motionRow
+
+        local motionButton = Instance.new("TextButton")
+        motionButton.Name = "ReducedMotionToggle"
+        motionButton.Size = UDim2.fromOffset(72, 30)
+        motionButton.Position = UDim2.new(1, -82, 0.5, -15)
+        motionButton.BorderSizePixel = 0
+        motionButton.AutoButtonColor = true
+        motionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        motionButton.TextSize = 10
+        motionButton.Font = Enum.Font.GothamBold
+        motionButton.ZIndex = 94
+        motionButton.Parent = motionRow
+        makeCorner(motionButton, 7)
+        local function setReducedMotion(enabled)
+            _G.PRISONRP_REDUCED_MOTION = enabled == true
+            motionButton.Text = _G.PRISONRP_REDUCED_MOTION and "ON" or "OFF"
+            motionButton.BackgroundColor3 = _G.PRISONRP_REDUCED_MOTION
+                and Color3.fromRGB(40, 130, 75)
+                or Color3.fromRGB(58, 67, 82)
+        end
+        motionButton.Activated:Connect(function()
+            setReducedMotion(not (_G.PRISONRP_REDUCED_MOTION == true))
+        end)
+        setReducedMotion(_G.PRISONRP_REDUCED_MOTION == true)
+
+        return {
+            SetTextScale = setTextScale,
+            SetHighContrast = setHighContrast,
+            SetReducedMotion = setReducedMotion,
+            SetTouchMode = setTouchMode,
+        }
+        end)()
 
         local settingsFile = "PRISON_RP_Settings.json"
         local slotFiles = {
@@ -12969,6 +13706,11 @@ do
         local slotNamesFile = "PRISON_RP_Settings_SlotNames.json"
         local slotNames = {}
         local slotNameLabels = {}
+        local profileMetadata = {
+            File = "PRISON_RP_Settings_SlotMetadata.json",
+            DescriptionLabels = {},
+            Values = {},
+        }
 
         local function cleanSlotName(value, index)
             local name = tostring(value or "")
@@ -13018,7 +13760,80 @@ do
             return okWrite
         end
 
+        profileMetadata.Clean = function(value)
+            local description = tostring(value or "")
+            description = description:gsub("[%c]", " "):gsub("%s+", " ")
+            description = description:gsub("^%s+", ""):gsub("%s+$", "")
+            return description:sub(1, 64)
+        end
+
+        profileMetadata.Load = function()
+            local stored = nil
+            if type(isfile) == "function" and type(readfile) == "function" then
+                local okExists, exists = pcall(function() return isfile(profileMetadata.File) end)
+                if okExists and exists then
+                    local okRead, raw = pcall(function() return readfile(profileMetadata.File) end)
+                    if okRead and type(raw) == "string" then
+                        local okDecode, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
+                        if okDecode and type(decoded) == "table" then stored = decoded end
+                    end
+                end
+            end
+            for index = 1, 5 do
+                local entry = stored and (stored[tostring(index)] or stored[index])
+                if type(entry) == "table" then
+                    profileMetadata.Values[index] = {
+                        Description = profileMetadata.Clean(entry.Description),
+                        ModifiedAt = tonumber(entry.ModifiedAt),
+                    }
+                else
+                    profileMetadata.Values[index] = {Description = "", ModifiedAt = nil}
+                end
+            end
+        end
+
+        profileMetadata.Write = function()
+            if type(writefile) ~= "function" then return false end
+            local serializable = {}
+            for index = 1, 5 do
+                local entry = profileMetadata.Values[index] or {}
+                serializable[tostring(index)] = {
+                    Description = profileMetadata.Clean(entry.Description),
+                    ModifiedAt = tonumber(entry.ModifiedAt),
+                }
+            end
+            local okEncode, encoded = pcall(function() return HttpService:JSONEncode(serializable) end)
+            if not okEncode then return false end
+            local okWrite = pcall(function() writefile(profileMetadata.File, encoded) end)
+            return okWrite
+        end
+
+        profileMetadata.Format = function(index)
+            local entry = profileMetadata.Values[index] or {}
+            local dateText = "jamais"
+            if tonumber(entry.ModifiedAt) then
+                pcall(function() dateText = os.date("%d/%m/%y", tonumber(entry.ModifiedAt)) end)
+            end
+            local description = profileMetadata.Clean(entry.Description)
+            return "Modifié " .. dateText .. (description ~= "" and ("  •  " .. description) or "  •  sans description")
+        end
+
+        profileMetadata.RefreshLabel = function(index)
+            local label = profileMetadata.DescriptionLabels[index]
+            if label and label.Parent then label.Text = profileMetadata.Format(index) end
+        end
+
+        profileMetadata.MarkModified = function(index)
+            profileMetadata.Values[index] = profileMetadata.Values[index] or {Description = "", ModifiedAt = nil}
+            local modifiedAt = nil
+            pcall(function() modifiedAt = os.time() end)
+            profileMetadata.Values[index].ModifiedAt = tonumber(modifiedAt)
+            profileMetadata.RefreshLabel(index)
+            return profileMetadata.Write()
+        end
+
         loadSlotNames()
+        profileMetadata.Load()
 
         local function numberClamp(value, minValue, maxValue, fallback)
             local n = tonumber(value)
@@ -13322,13 +14137,17 @@ do
             local spec = type(_G.PRISONRP_GET_SPEC_STATE)=="function" and _G.PRISONRP_GET_SPEC_STATE() or {}
             local tpspec = type(_G.PRISONRP_GET_TPSPEC_STATE)=="function" and _G.PRISONRP_GET_TPSPEC_STATE() or {}
             return {
-                Version=5,
+                Version=6,
                 Snapshot="FULL_EXACT",
                 SavedAt=os.time(),
                 CurrentPage=getCurrentPageIndex(),
                 WalkSpeed=tonumber(MovementWalkSpeed) or 35,
                 FlySpeed=tonumber(MovementFlySpeed) or 60,
-                InterfaceScale=MainFrameScale and tonumber(MainFrameScale.Scale) or 0.60,
+                InterfaceScale=preferredInterfaceScale,
+                TextScale=tonumber(_G.PRISONRP_TEXT_SCALE) or 1.0,
+                HighContrast=_G.PRISONRP_HIGH_CONTRAST==true,
+                ReducedMotion=_G.PRISONRP_REDUCED_MOTION==true,
+                TouchMode=_G.PRISONRP_TOUCH_MODE==true,
                 WindowWidth=MainFrame and tonumber(MainFrame.Size.X.Offset) or 770,
                 WindowHeight=MainFrame and tonumber(MainFrame.Size.Y.Offset) or 515,
                 WalkSpeedText=MovementSpeedBox and tostring(MovementSpeedBox.Text) or tostring(MovementWalkSpeed),
@@ -13363,6 +14182,7 @@ do
                     InvisibleEnabled=(type(_G.PRISONRP_GET_INVISIBLE_STATE)=="function" and _G.PRISONRP_GET_INVISIBLE_STATE()) or false,
                     StaffESP=_G.PRISONRP_V128_ESP_STAFF_ENABLED==true,
                     StaffAutoLeave=StaffAutoLeaveEnabled==true,
+                    StaffJoinNotification=StaffJoinNotificationEnabled==true,
                     BlackMarketESP=_G.BlackMarketESP==true,
                     MoneyView=_G.MoneyViewEnabledValue==true,
                     AutoArmWrestle=(_G.PRISONRP_AUTO_ARM_WRESTLE_STATE and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Enabled)==true,
@@ -13418,7 +14238,19 @@ do
             MovementWalkSpeed=numberClamp(data.WalkSpeed,1,250,MovementWalkSpeed)
             MovementFlySpeed=numberClamp(data.FlySpeed,10,500,MovementFlySpeed)
             if data.InterfaceScale ~= nil then
-                setInterfaceScale(numberClamp(data.InterfaceScale, INTERFACE_SCALE_MIN, INTERFACE_SCALE_MAX, MainFrameScale and MainFrameScale.Scale or 0.60))
+                setInterfaceScale(numberClamp(data.InterfaceScale, INTERFACE_SCALE_MIN, INTERFACE_SCALE_MAX, MainFrameScale and MainFrameScale.Scale or 0.70))
+            end
+            if data.TextScale ~= nil then
+                appearanceSettings.SetTextScale(numberClamp(data.TextScale, 0.85, 1.35, _G.PRISONRP_TEXT_SCALE or 1.0))
+            end
+            if data.HighContrast ~= nil then
+                appearanceSettings.SetHighContrast(data.HighContrast == true)
+            end
+            if data.ReducedMotion ~= nil then
+                appearanceSettings.SetReducedMotion(data.ReducedMotion == true)
+            end
+            if data.TouchMode ~= nil then
+                appearanceSettings.SetTouchMode(data.TouchMode == true)
             end
             if MainFrame and (data.WindowWidth ~= nil or data.WindowHeight ~= nil) then
                 local currentSize = MainFrame.Size
@@ -13427,6 +14259,7 @@ do
                 local restoredSize = UDim2.fromOffset(width, height)
                 HubFullSize = restoredSize
                 if HubExpanded ~= false then MainFrame.Size = restoredSize end
+                applyResponsiveInterfaceScale()
             end
             if MovementSpeedBox then MovementSpeedBox.Text=tostring(data.WalkSpeedText or MovementWalkSpeed) end
             if MovementFlySpeedBox then MovementFlySpeedBox.Text=tostring(data.FlySpeedText or MovementFlySpeed) end
@@ -13571,6 +14404,10 @@ do
                 StaffAutoLeaveBtn.Text = StaffAutoLeaveEnabled and "🚪 AUTO-LEAVE : ON" or "🚪 AUTO-LEAVE : OFF"
             end
 
+            if t.StaffJoinNotification ~= nil then
+                StaffJoinNotificationEnabled = t.StaffJoinNotification == true
+            end
+
             -- BLACK MARKET ESP
             _G.BlackMarketESP = t.BlackMarketESP == true
             pcall(function() toggleBlackMarketESP() end)
@@ -13636,6 +14473,7 @@ do
                 syncSwitchVisual(noclipBtn, MovementNoclipEnabled == true)
                 syncSwitchVisual(StaffESPBtn, _G.PRISONRP_V128_ESP_STAFF_ENABLED == true)
                 syncSwitchVisual(StaffAutoLeaveBtn, StaffAutoLeaveEnabled == true)
+                syncSwitchVisual(StaffJoinNotificationBtn, StaffJoinNotificationEnabled == true)
                 syncSwitchVisual(ESPToggleBtn, _G.BlackMarketESP == true)
                 syncSwitchVisual(MoneyViewBtn, _G.MoneyViewEnabledValue == true)
                 syncSwitchVisual((_G.PRISONRP_AUTO_ARM_WRESTLE_STATE and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Btn), (_G.PRISONRP_AUTO_ARM_WRESTLE_STATE and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Enabled) == true)
@@ -13807,7 +14645,7 @@ do
             panel.Name = "RenamePanel"
             panel.AnchorPoint = Vector2.new(0.5, 0.5)
             panel.Position = UDim2.fromScale(0.5, 0.5)
-            panel.Size = UDim2.new(1, -28, 0, 166)
+            panel.Size = UDim2.new(1, -28, 0, 210)
             panel.BackgroundColor3 = Color3.fromRGB(24, 29, 38)
             panel.BorderSizePixel = 0
             panel.ZIndex = 201
@@ -13823,7 +14661,7 @@ do
             heading.Size = UDim2.new(1, -20, 0, 30)
             heading.Position = UDim2.fromOffset(10, 9)
             heading.BackgroundTransparency = 1
-            heading.Text = "RENOMMER LA SAUVEGARDE"
+            heading.Text = "NOM ET DESCRIPTION DU PROFIL"
             heading.TextColor3 = Color3.fromRGB(240, 244, 250)
             heading.TextSize = 12
             heading.Font = Enum.Font.GothamBold
@@ -13833,8 +14671,8 @@ do
 
             local input = Instance.new("TextBox")
             input.Name = "SaveNameInput"
-            input.Size = UDim2.new(1, -20, 0, 34)
-            input.Position = UDim2.fromOffset(10, 48)
+            input.Size = UDim2.new(1, -20, 0, 32)
+            input.Position = UDim2.fromOffset(10, 46)
             input.BackgroundColor3 = Color3.fromRGB(35, 42, 54)
             input.BorderSizePixel = 0
             input.ClearTextOnFocus = false
@@ -13852,6 +14690,28 @@ do
             inputPadding.PaddingLeft = UDim.new(0, 9)
             inputPadding.PaddingRight = UDim.new(0, 9)
             inputPadding.Parent = input
+
+            local descriptionInput = Instance.new("TextBox")
+            descriptionInput.Name = "ProfileDescriptionInput"
+            descriptionInput.Size = UDim2.new(1, -20, 0, 34)
+            descriptionInput.Position = UDim2.fromOffset(10, 86)
+            descriptionInput.BackgroundColor3 = Color3.fromRGB(35, 42, 54)
+            descriptionInput.BorderSizePixel = 0
+            descriptionInput.ClearTextOnFocus = false
+            descriptionInput.Text = profileMetadata.Clean(profileMetadata.Values[slotIndex] and profileMetadata.Values[slotIndex].Description)
+            descriptionInput.PlaceholderText = "Description courte (optionnelle)"
+            descriptionInput.PlaceholderColor3 = Color3.fromRGB(145, 153, 166)
+            descriptionInput.TextColor3 = Color3.fromRGB(230, 235, 243)
+            descriptionInput.TextSize = 10
+            descriptionInput.Font = Enum.Font.GothamMedium
+            descriptionInput.TextXAlignment = Enum.TextXAlignment.Left
+            descriptionInput.ZIndex = 202
+            descriptionInput.Parent = panel
+            makeCorner(descriptionInput, 7)
+            local descriptionPadding = Instance.new("UIPadding")
+            descriptionPadding.PaddingLeft = UDim.new(0, 9)
+            descriptionPadding.PaddingRight = UDim.new(0, 9)
+            descriptionPadding.Parent = descriptionInput
 
             local function makeModalButton(name, text, color, xOffset)
                 local button = Instance.new("TextButton")
@@ -13879,11 +14739,16 @@ do
                 if committed then return end
                 committed = true
                 slotNames[slotIndex] = cleanSlotName(input.Text, slotIndex)
-                local persisted = writeSlotNames()
+                profileMetadata.Values[slotIndex] = profileMetadata.Values[slotIndex] or {Description = "", ModifiedAt = nil}
+                profileMetadata.Values[slotIndex].Description = profileMetadata.Clean(descriptionInput.Text)
+                local namesPersisted = writeSlotNames()
+                local metadataPersisted = profileMetadata.MarkModified(slotIndex)
+                local persisted = namesPersisted and metadataPersisted
                 local nameLabel = slotNameLabels[slotIndex]
                 if nameLabel and nameLabel.Parent then
                     nameLabel.Text = slotNames[slotIndex] .. "  ✎"
                 end
+                profileMetadata.RefreshLabel(slotIndex)
                 if persisted then
                     status.Text = "✓ Nom enregistré : " .. slotNames[slotIndex]
                     status.TextColor3 = Color3.fromRGB(125, 230, 155)
@@ -14035,8 +14900,9 @@ do
         for index = 1, 5 do
             local slotIndex = index
             local row = Instance.new("Frame")
+            row.Name = "SettingsProfileSlot" .. tostring(slotIndex)
             row.LayoutOrder = 2 + index
-            row.Size = UDim2.new(1, -4, 0, 50)
+            row.Size = UDim2.new(1, -4, 0, 54)
             row.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
             row.BorderSizePixel = 0
             row.ZIndex = 92
@@ -14045,8 +14911,8 @@ do
 
             local label = Instance.new("TextButton")
             label.Name = "SlotNameButton"
-            label.Size = UDim2.new(1, -274, 1, 0)
-            label.Position = UDim2.fromOffset(10, 0)
+            label.Size = UDim2.new(1, -274, 0, 27)
+            label.Position = UDim2.fromOffset(10, 1)
             label.BackgroundTransparency = 1
             label.BorderSizePixel = 0
             label.AutoButtonColor = false
@@ -14060,6 +14926,22 @@ do
             label.ZIndex = 93
             label.Parent = row
             slotNameLabels[slotIndex] = label
+
+            local descriptionLabel = Instance.new("TextLabel")
+            descriptionLabel.Name = "ProfileMetadataLabel"
+            descriptionLabel.Size = UDim2.new(1, -274, 0, 18)
+            descriptionLabel.Position = UDim2.fromOffset(10, 29)
+            descriptionLabel.BackgroundTransparency = 1
+            descriptionLabel.Text = profileMetadata.Format(slotIndex)
+            descriptionLabel.TextColor3 = Color3.fromRGB(165, 175, 190)
+            descriptionLabel.TextSize = 7
+            descriptionLabel.Font = Enum.Font.GothamMedium
+            descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+            descriptionLabel.TextYAlignment = Enum.TextYAlignment.Center
+            descriptionLabel.TextTruncate = Enum.TextTruncate.AtEnd
+            descriptionLabel.ZIndex = 93
+            descriptionLabel.Parent = row
+            profileMetadata.DescriptionLabels[slotIndex] = descriptionLabel
             label.MouseButton1Click:Connect(function()
                 openRenameModal(slotIndex)
             end)
@@ -14124,8 +15006,11 @@ do
             saveSlotButton.MouseButton1Click:Connect(function()
                 confirmSlotAction(slotIndex, "save", function()
                     if writeSettingsFile(slotFiles[slotIndex]) then
+                        local metadataSaved = profileMetadata.MarkModified(slotIndex)
                         status.Text = "✓ «" .. slotNames[slotIndex] .. "» enregistrée."
-                        status.TextColor3 = Color3.fromRGB(125,230,155)
+                        if not metadataSaved then status.Text = status.Text .. " (date non conservée)" end
+                        status.TextColor3 = metadataSaved and Color3.fromRGB(125,230,155) or Color3.fromRGB(255,170,90)
+                        if BindPages and BindPages.MarkClean then BindPages.MarkClean() end
                     end
                 end)
             end)
@@ -14133,8 +15018,10 @@ do
             resetSlotButton.MouseButton1Click:Connect(function()
                 confirmSlotAction(slotIndex, "reset", function()
                     if writeSettingsData(slotFiles[slotIndex], defaultSettings) then
+                        local metadataSaved = profileMetadata.MarkModified(slotIndex)
                         status.Text = "✓ «" .. slotNames[slotIndex] .. "» réinitialisée par défaut."
-                        status.TextColor3 = Color3.fromRGB(125,230,155)
+                        if not metadataSaved then status.Text = status.Text .. " (date non conservée)" end
+                        status.TextColor3 = metadataSaved and Color3.fromRGB(125,230,155) or Color3.fromRGB(255,170,90)
                     end
                 end)
             end)
@@ -14160,22 +15047,329 @@ do
                     status.TextColor3 = Color3.fromRGB(255,170,90)
                     return
                 end
-                local ok = pcall(function() applyLoadedSettings(data) end)
-                if ok then
-                    status.Text = "✓ «" .. slotNames[slotIndex] .. "» chargée."
-                    status.TextColor3 = Color3.fromRGB(125,230,155)
+                if BindPages and type(BindPages.PreviewProfile) == "function" then
+                    BindPages.PreviewProfile(data, slotNames[slotIndex], "Sauvegarde")
                 else
-                    status.Text = "⚠ Impossible de charger «" .. slotNames[slotIndex] .. "»."
+                    status.Text = "⚠ Aperçu du profil indisponible."
                     status.TextColor3 = Color3.fromRGB(255,110,110)
                 end
             end)
         end
         refreshDefaultSlotButtons()
 
+        -- Recherche simple, état des fichiers et aperçu avant chargement des profils.
+        do
+            local function buildSettingsExtras()
+                local searchRow = Instance.new("Frame")
+                searchRow.Name = "SettingsSearchRow"
+                searchRow.LayoutOrder = 8
+                searchRow.Size = UDim2.new(1, -4, 0, 36)
+                searchRow.BackgroundTransparency = 1
+                searchRow.ZIndex = 92
+                searchRow.Parent = settingsPage
+
+                local searchBox = Instance.new("TextBox")
+                searchBox.Name = "SettingsSearchBox"
+                searchBox.Size = UDim2.new(1, -8, 1, 0)
+                searchBox.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                searchBox.BorderSizePixel = 0
+                searchBox.ClearTextOnFocus = false
+                searchBox.PlaceholderText = "⌕  Rechercher un réglage ou profil..."
+                searchBox.PlaceholderColor3 = Color3.fromRGB(145, 153, 166)
+                searchBox.Text = ""
+                searchBox.TextColor3 = Color3.fromRGB(240, 244, 250)
+                searchBox.TextSize = 10
+                searchBox.Font = Enum.Font.GothamMedium
+                searchBox.TextXAlignment = Enum.TextXAlignment.Left
+                searchBox.ZIndex = 93
+                searchBox.Parent = searchRow
+                makeCorner(searchBox, 7)
+                local searchPadding = Instance.new("UIPadding")
+                searchPadding.PaddingLeft = UDim.new(0, 9)
+                searchPadding.Parent = searchBox
+
+                local dirtyLabel
+                local function deepEqual(left, right)
+                    if type(left) ~= type(right) then return false end
+                    if type(left) ~= "table" then return left == right end
+                    for key, value in pairs(left) do
+                        if not deepEqual(value, right[key]) then return false end
+                    end
+                    for key in pairs(right) do
+                        if left[key] == nil then return false end
+                    end
+                    return true
+                end
+
+                local baselineData = currentSettings()
+                local function refreshDirty()
+                    if not (dirtyLabel and dirtyLabel.Parent) then return end
+                    local okCurrent, liveData = pcall(currentSettings)
+                    local changed = not okCurrent or not deepEqual(liveData, baselineData)
+                    dirtyLabel.Text = changed and "● MODIFIÉ" or "✓ À JOUR"
+                    dirtyLabel.TextColor3 = changed
+                        and Color3.fromRGB(255, 190, 105)
+                        or Color3.fromRGB(150, 220, 170)
+                end
+                BindPages.MarkClean = function()
+                    baselineData = currentSettings()
+                    refreshDirty()
+                end
+
+                local diagnosticsRow = Instance.new("Frame")
+                diagnosticsRow.Name = "SettingsDiagnostics"
+                diagnosticsRow.LayoutOrder = 15
+                diagnosticsRow.Size = UDim2.new(1, -4, 0, 34)
+                diagnosticsRow.BackgroundColor3 = Color3.fromRGB(25, 30, 39)
+                diagnosticsRow.BackgroundTransparency = 0.15
+                diagnosticsRow.BorderSizePixel = 0
+                diagnosticsRow.ZIndex = 92
+                diagnosticsRow.Parent = settingsPage
+                makeCorner(diagnosticsRow, 7)
+
+                local diagnosticsLabel = Instance.new("TextLabel")
+                diagnosticsLabel.Name = "DiagnosticsLabel"
+                diagnosticsLabel.Size = UDim2.new(1, -106, 1, 0)
+                diagnosticsLabel.Position = UDim2.fromOffset(8, 0)
+                diagnosticsLabel.BackgroundTransparency = 1
+                local filesOk = type(isfile) == "function"
+                    and type(readfile) == "function"
+                    and type(writefile) == "function"
+                diagnosticsLabel.Text = "FICHIERS : " .. (filesOk and "OK" or "INDISPONIBLES")
+                diagnosticsLabel.TextColor3 = filesOk
+                    and Color3.fromRGB(165, 220, 180)
+                    or Color3.fromRGB(255, 180, 125)
+                diagnosticsLabel.TextSize = 8
+                diagnosticsLabel.Font = Enum.Font.GothamMedium
+                diagnosticsLabel.TextWrapped = true
+                diagnosticsLabel.TextXAlignment = Enum.TextXAlignment.Left
+                diagnosticsLabel.ZIndex = 93
+                diagnosticsLabel.Parent = diagnosticsRow
+
+                dirtyLabel = Instance.new("TextLabel")
+                dirtyLabel.Name = "UnsavedChangesLabel"
+                dirtyLabel.Size = UDim2.fromOffset(94, 34)
+                dirtyLabel.Position = UDim2.new(1, -98, 0, 0)
+                dirtyLabel.BackgroundTransparency = 1
+                dirtyLabel.Text = "✓ À JOUR"
+                dirtyLabel.TextColor3 = Color3.fromRGB(150, 220, 170)
+                dirtyLabel.TextSize = 8
+                dirtyLabel.Font = Enum.Font.GothamBold
+                dirtyLabel.TextXAlignment = Enum.TextXAlignment.Center
+                dirtyLabel.TextYAlignment = Enum.TextYAlignment.Center
+                dirtyLabel.ZIndex = 93
+                dirtyLabel.Parent = diagnosticsRow
+
+                local previewOverlay
+                local function closePreview()
+                    if previewOverlay then pcall(function() previewOverlay:Destroy() end); previewOverlay = nil end
+                end
+                local previewGroups = {
+                    {Label="Apparence", Keys={"InterfaceScale","TextScale","HighContrast","ReducedMotion","TouchMode","WindowWidth","WindowHeight"}},
+                    {Label="Déplacement", Keys={"WalkSpeed","FlySpeed","MoneyViewDistance","AutoEatDrinkThreshold"}},
+                    {Label="Options", Keys={"Toggles"}},
+                    {Label="ESP", Keys={"ESP"}},
+                    {Label="Binds", Keys={"Binds"}},
+                    {Label="Caméra", Keys={"Freecam","TPSpecSettings"}},
+                    {Label="Aimbot", Keys={"Aimbot"}},
+                    {Label="Navigation", Keys={"CurrentPage"}},
+                }
+                local function buildPreviewText(data)
+                    local liveData = currentSettings()
+                    local changedGroups = {}
+                    for _, group in ipairs(previewGroups) do
+                        local changed = false
+                        for _, key in ipairs(group.Keys) do
+                            if data[key] ~= nil and not deepEqual(liveData[key], data[key]) then
+                                changed = true
+                                break
+                            end
+                        end
+                        if changed then table.insert(changedGroups, "• " .. group.Label) end
+                    end
+                    if #changedGroups == 0 then return "Aucun changement détecté par rapport aux réglages actuels." end
+                    local shown = {}
+                    for index = 1, math.min(6, #changedGroups) do table.insert(shown, changedGroups[index]) end
+                    if #changedGroups > #shown then table.insert(shown, "• et " .. tostring(#changedGroups - #shown) .. " autre(s) catégorie(s)") end
+                    return "Catégories modifiées :\n" .. table.concat(shown, "\n")
+                end
+
+                local function previewProfile(data, profileName, sourceName)
+                    if type(data) ~= "table" then return end
+                    closePreview()
+                    closeRenameModal()
+                    closeSlotConfirmModal()
+                    local overlay = Instance.new("Frame")
+                    overlay.Name = "ProfilePreviewOverlay"
+                    overlay.Size = UDim2.fromScale(1, 1)
+                    overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+                    overlay.BackgroundTransparency = 0.35
+                    overlay.BorderSizePixel = 0
+                    overlay.ZIndex = 230
+                    overlay.Parent = MainFrame
+                    previewOverlay = overlay
+                    local panel = Instance.new("Frame")
+                    panel.Name = "ProfilePreviewPanel"
+                    panel.AnchorPoint = Vector2.new(0.5, 0.5)
+                    panel.Position = UDim2.fromScale(0.5, 0.5)
+                    panel.Size = UDim2.new(1, -28, 0, 250)
+                    panel.BackgroundColor3 = Color3.fromRGB(24, 29, 38)
+                    panel.BorderSizePixel = 0
+                    panel.ZIndex = 231
+                    panel.Parent = overlay
+                    makeCorner(panel, 10)
+                    local heading = Instance.new("TextLabel")
+                    heading.Size = UDim2.new(1, -20, 0, 28)
+                    heading.Position = UDim2.fromOffset(10, 8)
+                    heading.BackgroundTransparency = 1
+                    heading.Text = "APERÇU AVANT CHARGEMENT"
+                    heading.TextColor3 = Color3.fromRGB(240, 244, 250)
+                    heading.TextSize = 12
+                    heading.Font = Enum.Font.GothamBold
+                    heading.TextXAlignment = Enum.TextXAlignment.Left
+                    heading.ZIndex = 232
+                    heading.Parent = panel
+                    local sourceLabel = Instance.new("TextLabel")
+                    sourceLabel.Size = UDim2.new(1, -20, 0, 22)
+                    sourceLabel.Position = UDim2.fromOffset(10, 38)
+                    sourceLabel.BackgroundTransparency = 1
+                    sourceLabel.Text = tostring(profileName or "Profil") .. "  •  " .. tostring(sourceName or ""):upper()
+                    sourceLabel.TextColor3 = Color3.fromRGB(160, 190, 230)
+                    sourceLabel.TextSize = 9
+                    sourceLabel.Font = Enum.Font.GothamBold
+                    sourceLabel.TextXAlignment = Enum.TextXAlignment.Left
+                    sourceLabel.ZIndex = 232
+                    sourceLabel.Parent = panel
+                    local changeLabel = Instance.new("TextLabel")
+                    changeLabel.Size = UDim2.new(1, -20, 0, 136)
+                    changeLabel.Position = UDim2.fromOffset(10, 64)
+                    changeLabel.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                    changeLabel.BorderSizePixel = 0
+                    changeLabel.Text = buildPreviewText(data) .. "\n\nUne sauvegarde de secours sera créée avant l'application."
+                    changeLabel.TextColor3 = Color3.fromRGB(210, 218, 230)
+                    changeLabel.TextSize = 10
+                    changeLabel.Font = Enum.Font.GothamMedium
+                    changeLabel.TextWrapped = true
+                    changeLabel.TextXAlignment = Enum.TextXAlignment.Left
+                    changeLabel.TextYAlignment = Enum.TextYAlignment.Top
+                    changeLabel.ZIndex = 232
+                    changeLabel.Parent = panel
+                    makeCorner(changeLabel, 7)
+                    local changePadding = Instance.new("UIPadding")
+                    changePadding.PaddingLeft = UDim.new(0, 10)
+                    changePadding.PaddingRight = UDim.new(0, 8)
+                    changePadding.PaddingTop = UDim.new(0, 8)
+                    changePadding.Parent = changeLabel
+                    local cancelButton = Instance.new("TextButton")
+                    cancelButton.Size = UDim2.new(0.5, -15, 0, 34)
+                    cancelButton.Position = UDim2.new(0, 10, 1, -44)
+                    cancelButton.BackgroundColor3 = Color3.fromRGB(58, 66, 80)
+                    cancelButton.BorderSizePixel = 0
+                    cancelButton.AutoButtonColor = true
+                    cancelButton.Text = "ANNULER"
+                    cancelButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    cancelButton.TextSize = 10
+                    cancelButton.Font = Enum.Font.GothamBold
+                    cancelButton.ZIndex = 232
+                    cancelButton.Parent = panel
+                    makeCorner(cancelButton, 7)
+                    local applyButton = Instance.new("TextButton")
+                    applyButton.Size = UDim2.new(0.5, -15, 0, 34)
+                    applyButton.Position = UDim2.new(0.5, 5, 1, -44)
+                    applyButton.BackgroundColor3 = Color3.fromRGB(40, 145, 78)
+                    applyButton.BorderSizePixel = 0
+                    applyButton.AutoButtonColor = true
+                    applyButton.Text = "APPLIQUER"
+                    applyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    applyButton.TextSize = 10
+                    applyButton.Font = Enum.Font.GothamBold
+                    applyButton.ZIndex = 232
+                    applyButton.Parent = panel
+                    makeCorner(applyButton, 7)
+                    cancelButton.Activated:Connect(closePreview)
+                    applyButton.Activated:Connect(function()
+                        local snapshot = currentSettings()
+                        local backupWritten = writeSettingsData("PRISON_RP_PreApply_Backup.json", snapshot)
+                        local okApply, applyError = pcall(applyLoadedSettings, data)
+                        closePreview()
+                        if okApply then
+                            BindPages.MarkClean()
+                            status.Text = backupWritten
+                                and "✓ Profil appliqué. Sauvegarde de secours créée."
+                                or "⚠ Profil appliqué, mais sauvegarde de secours impossible."
+                            status.TextColor3 = backupWritten and Color3.fromRGB(125, 230, 155) or Color3.fromRGB(255, 170, 90)
+                        else
+                            status.Text = "⚠ Chargement interrompu : " .. tostring(applyError)
+                            status.TextColor3 = Color3.fromRGB(255, 110, 110)
+                        end
+                        refreshDirty()
+                    end)
+                end
+                BindPages.PreviewProfile = previewProfile
+
+                local originalVisibility = {}
+                for _, child in ipairs(settingsPage:GetChildren()) do
+                    if child:IsA("GuiObject") then
+                        originalVisibility[child] = child.Visible
+                    end
+                end
+
+                local function normalizeSearch(value)
+                    local normalized = string.lower(tostring(value or ""))
+                    for _, pair in ipairs({{"é","e"},{"è","e"},{"ê","e"},{"ë","e"},{"à","a"},{"â","a"},{"ù","u"},{"û","u"},{"ô","o"},{"î","i"},{"ï","i"},{"ç","c"}}) do
+                        normalized = normalized:gsub(pair[1], pair[2])
+                    end
+                    return normalized:gsub("^%s+", ""):gsub("%s+$", "")
+                end
+
+                local function matchesQuery(child, query)
+                    if query == "" then return true end
+                    local searchable = tostring(child.Name or "")
+                    for _, descendant in ipairs(child:GetDescendants()) do
+                        if descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox") then
+                            searchable = searchable .. " " .. tostring(descendant.Text or "")
+                        end
+                    end
+                    return string.find(normalizeSearch(searchable), query, 1, true) ~= nil
+                end
+
+                local function refreshSearch()
+                    local query = normalizeSearch(searchBox.Text)
+                    for _, child in ipairs(settingsPage:GetChildren()) do
+                        if child:IsA("GuiObject") then
+                            local alwaysVisible = child == title or child == slotsTitle
+                                or child == searchRow or child == status or child == diagnosticsRow
+                            if alwaysVisible then
+                                child.Visible = true
+                            elseif query == "" then
+                                child.Visible = originalVisibility[child] ~= false
+                            else
+                                child.Visible = matchesQuery(child, query)
+                            end
+                        end
+                    end
+                end
+
+                searchBox:GetPropertyChangedSignal("Text"):Connect(refreshSearch)
+                refreshSearch()
+                refreshDirty()
+                task.spawn(function()
+                    while dirtyLabel and dirtyLabel.Parent and settingsPage and settingsPage.Parent do
+                        task.wait(2.5)
+                        if dirtyLabel and dirtyLabel.Parent then refreshDirty() end
+                    end
+                end)
+            end
+            buildSettingsExtras()
+        end
+        -- Pré-déclarées pour être partagées avec la construction séparée de l'onglet Binds.
+        local settingsMarker, settingsGlow
+        local closeDropdown
+
         --==============================================================
         -- ONGLET BINDS
         --==============================================================
-        do
+        local function createBindsPage()
             local oldBindsPage = settingsBody:FindFirstChild("OmegaBindsPage")
             if oldBindsPage then oldBindsPage:Destroy() end
 
@@ -14219,7 +15413,7 @@ do
             local title = Instance.new("TextLabel")
             title.LayoutOrder = 1; title.Size = UDim2.new(1,-4,0,42)
             title.BackgroundColor3 = Color3.fromRGB(22,27,35); title.BorderSizePixel = 0
-            title.Text = "⌨ BINDS"
+            title.Text = "BINDS"
             title.TextColor3 = Color3.fromRGB(255,255,255); title.TextSize = 14
             title.Font = Enum.Font.GothamBold; title.TextXAlignment = Enum.TextXAlignment.Left
             title.TextYAlignment = Enum.TextYAlignment.Center; title.ZIndex = 92; title.Parent = bindsPage
@@ -14241,7 +15435,7 @@ do
 
             -- Aucun menu déroulant : cliquer sur le bouton TOUCHE démarre une capture clavier.
             -- Cela évite que l'ancienne petite liste se retrouve masquée par d'autres panneaux.
-            local function closeDropdown()
+            closeDropdown = function()
                 bindCaptureEntry = nil
                 bindCaptureButton = nil
                 activeBindDropdown = nil
@@ -14297,9 +15491,24 @@ do
                     local entry=BindConfig[id]
                     if entry and button then
                         button:SetAttribute("BindKeyValue", entry.key)
+                        local hasConflict = false
+                        if entry.key ~= nil then
+                            local currentKey = tostring(entry.key):upper()
+                            for _, otherId in ipairs(BindOrder) do
+                                local otherEntry = BindConfig[otherId]
+                                if otherId ~= id and otherEntry and otherEntry.key ~= nil
+                                    and tostring(otherEntry.key):upper() == currentKey then
+                                    hasConflict = true
+                                    break
+                                end
+                            end
+                        end
                         if bindCaptureEntry == entry then
                             button.Text = "APPUIE UNE TOUCHE"
                             button.BackgroundColor3 = Color3.fromRGB(60,90,145)
+                        elseif hasConflict then
+                            button.Text = "⚠ DOUBLON : " .. bindKeyToDisplay(entry.key)
+                            button.BackgroundColor3 = Color3.fromRGB(145,75,45)
                         else
                             button.Text = "TOUCHE : " .. bindKeyToDisplay(entry.key)
                             button.BackgroundColor3 = Color3.fromRGB(45,54,67)
@@ -14332,16 +15541,14 @@ do
             bl.BackgroundTransparency=1; bl.Text="BINDS"; bl.TextColor3=Color3.fromRGB(116,121,132); bl.Font=Enum.Font.GothamBold; bl.TextSize=11
             bl.TextXAlignment=Enum.TextXAlignment.Left; bl.TextYAlignment=Enum.TextYAlignment.Center; bl.TextTransparency=1; bl.ZIndex=103
 
-            local marker=settingsMarker
-            local glow=settingsGlow
             local function setBindsActive(v)
                 active=v; local scale=(MainFrameScale and MainFrameScale.Scale) or 1
                 local expanded=(settingsSidebar.AbsoluteSize.X/scale)>=100
                 bindsTab.BackgroundTransparency=(expanded and v) and 0.72 or 1
                 bi.TextColor3=v and activeColor or iconColor
                 if v then
-                    if marker then marker.Position=UDim2.fromOffset(0,bindsTab.Position.Y.Offset+5) end
-                    if glow then glow.Position=UDim2.fromOffset(0,bindsTab.Position.Y.Offset+5) end
+                    if settingsMarker then settingsMarker.Position=UDim2.fromOffset(0,bindsTab.Position.Y.Offset+5) end
+                    if settingsGlow then settingsGlow.Position=UDim2.fromOffset(0,bindsTab.Position.Y.Offset+5) end
                 end
             end
 
@@ -14391,11 +15598,11 @@ do
             end
             local aim=settingsSidebar:FindFirstChild("V7Tab_Aimbot")
             if aim then aim.MouseButton1Click:Connect(function() bindsPage.Visible=false; setBindsActive(false); closeDropdown() end) end
-            if settingsTab then settingsTab.MouseButton1Click:Connect(function() bindsPage.Visible=false; setBindsActive(false); closeDropdown() end) end
-
             BindPages.Fit=fitBindsPage
+            BindPages.SetActive=setBindsActive
             refreshBindsUI()
         end
+        createBindsPage()
 
         local function loadSettings()
             -- Charger d'abord le slot choisi ; garder l'ancien fichier comme secours.
@@ -14414,6 +15621,7 @@ do
                     warn("[Prison RP] Échec du chargement automatique : " .. tostring(applyError))
                     return false, false, applyError
                 end
+                if BindPages and BindPages.MarkClean then BindPages.MarkClean() end
             end
             return loadedDefaultSlot, loadedLegacyFile, nil
         end
@@ -14464,7 +15672,6 @@ do
         label.TextTransparency = 1
         label.ZIndex = 103
 
-        local settingsMarker, settingsGlow
         for _, child in ipairs(settingsSidebar:GetChildren()) do
             if child:IsA("Frame") and child.Size == UDim2.fromOffset(2,22) then
                 if child.BackgroundTransparency < 0.5 and not settingsMarker then
@@ -14501,6 +15708,9 @@ do
             if BindPages and BindPages.Page and BindPages.Page:IsA("GuiObject") then
                 BindPages.Page.Visible = false
             end
+            if BindPages and BindPages.SetActive then
+                BindPages.SetActive(false)
+            end
             settingsPage.Visible = true
             _G.PRISONRP_ACTIVE_UI_PAGE = 6
             if type(_G.PRISONRP_ENFORCE_ACTIVE_PAGE) == "function" then
@@ -14522,6 +15732,23 @@ do
             local ai = aim and aim:FindFirstChild("V7Icon")
             if aim then aim.BackgroundTransparency = 1 end
             if ai then ai.TextColor3 = Color3.fromRGB(92,97,108) end
+        end
+
+        BindPages.Navigate = function(page)
+            page = math.clamp(math.floor(tonumber(page) or 1), 1, 7)
+            if page <= 4 then
+                if type(_G.PRISONRP_V7_SELECT_PAGE) == "function" then
+                    pcall(_G.PRISONRP_V7_SELECT_PAGE, page)
+                elseif type(_G.PRISONRP_SELECT_PAGE) == "function" then
+                    pcall(_G.PRISONRP_SELECT_PAGE, page)
+                end
+            elseif page == 5 then
+                if type(_G.PRISONRP_SHOW_AIMBOT_PAGE) == "function" then pcall(_G.PRISONRP_SHOW_AIMBOT_PAGE) end
+            elseif page == 6 then
+                showSettingsPage()
+            elseif page == 7 and type(showBindsPage) == "function" then
+                showBindsPage()
+            end
         end
 
         settingsTab.MouseButton1Click:Connect(showSettingsPage)
@@ -14769,7 +15996,7 @@ pcall(function()
         if TitleLabel then
             TitleLabel.Position = UDim2.fromOffset(14, 0)
             TitleLabel.Size = UDim2.fromOffset(100, 44)
-            TitleLabel.Text = "⛏ PRISON RP"
+            TitleLabel.Text = "🏛️ PRISON RP"
             TitleLabel.TextColor3 = UX.Text
             TitleLabel.TextSize = 13
             TitleLabel.Font = Enum.Font.GothamBold
@@ -14907,14 +16134,14 @@ pcall(function()
                 obj:SetAttribute("PRISONRP_UXFocusBound", true)
                 obj.Focused:Connect(function()
                     if not stroke or not stroke.Parent then return end
-                    TweenService:Create(stroke, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TweenService:Create(stroke, PRISONRP_UITweenInfo(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                         Transparency = 0.08,
                         Thickness = 1.6,
                     }):Play()
                 end)
                 obj.FocusLost:Connect(function()
                     if not stroke or not stroke.Parent then return end
-                    TweenService:Create(stroke, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                    TweenService:Create(stroke, PRISONRP_UITweenInfo(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
                         Transparency = 1,
                         Thickness = 1.35,
                     }):Play()
@@ -14964,7 +16191,7 @@ pcall(function()
                         activeTween = nil
                     end
                     activeTween = TweenService:Create(stroke,
-                        TweenInfo.new(duration or 0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                        PRISONRP_UITweenInfo(duration or 0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
                         {Color = color, Transparency = transparency, Thickness = thickness})
                     activeTween:Play()
                 end
@@ -15428,8 +16655,8 @@ do
         AutoPurpleStatus.Visible = false -- Masquer le petit texte sous la case.
 
         local TweenService = game:GetService("TweenService")
-        local switchTweenInfo = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-        local colorTweenInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local switchTweenInfo = PRISONRP_UITweenInfo(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        local colorTweenInfo = PRISONRP_UITweenInfo(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         local knobTween = nil
         local switchColorTween = nil
 
@@ -15445,10 +16672,10 @@ do
             if switchColorTween then pcall(function() switchColorTween:Cancel() end) end
 
             if animated then
-                knobTween = TweenService:Create(AutoPurpleKnob, switchTweenInfo, {
+                knobTween = TweenService:Create(AutoPurpleKnob, PRISONRP_AdjustUITweenInfo(switchTweenInfo), {
                     Position = targetPosition
                 })
-                switchColorTween = TweenService:Create(AutoPurpleSwitch, colorTweenInfo, {
+                switchColorTween = TweenService:Create(AutoPurpleSwitch, PRISONRP_AdjustUITweenInfo(colorTweenInfo), {
                     BackgroundColor3 = targetColor
                 })
                 knobTween:Play()
@@ -15717,7 +16944,7 @@ do
         -- Animation de survol IDENTIQUE au style UX global du hub :
         -- la carte ne change pas de fond, seul le contour bleu apparaît.
         local TweenService = game:GetService("TweenService")
-        local cardTweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local cardTweenInfo = PRISONRP_UITweenInfo(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         local cardHovered = false
         local cardPressed = false
         local activeCardTween = nil
@@ -15731,7 +16958,7 @@ do
             end
             activeCardTween = TweenService:Create(
                 buttonStroke,
-                TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                PRISONRP_UITweenInfo(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
                 {
                     Color = Color3.fromRGB(79, 142, 255),
                     Transparency = transparency,
@@ -15809,10 +17036,10 @@ do
                 and Color3.fromRGB(55, 175, 98)
                 or Color3.fromRGB(89, 97, 114)
             pcall(function()
-                TweenService:Create(AutoPurpleSwitch, cardTweenInfo, {
+                TweenService:Create(AutoPurpleSwitch, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {
                     BackgroundColor3 = hoverColor
                 }):Play()
-                TweenService:Create(switchStroke, cardTweenInfo, {
+                TweenService:Create(switchStroke, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {
                     Transparency = 0.05
                 }):Play()
             end)
@@ -15820,7 +17047,7 @@ do
         AutoPurpleSwitch.MouseLeave:Connect(function()
             updateButton(true)
             pcall(function()
-                TweenService:Create(switchStroke, cardTweenInfo, {
+                TweenService:Create(switchStroke, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {
                     Transparency = 0.18
                 }):Play()
             end)
@@ -15954,8 +17181,8 @@ do
         InfiniteYieldStatus.Parent = autresPageRef
         InfiniteYieldStatus.Visible = false -- Masquer le petit texte sous la case.
 
-        local switchTweenInfo = TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-        local colorTweenInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local switchTweenInfo = PRISONRP_UITweenInfo(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        local colorTweenInfo = PRISONRP_UITweenInfo(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         local knobTween = nil
         local switchColorTween = nil
 
@@ -15971,10 +17198,10 @@ do
             if switchColorTween then pcall(function() switchColorTween:Cancel() end) end
 
             if animated then
-                knobTween = TweenService:Create(InfiniteYieldKnob, switchTweenInfo, {
+                knobTween = TweenService:Create(InfiniteYieldKnob, PRISONRP_AdjustUITweenInfo(switchTweenInfo), {
                     Position = targetPosition
                 })
-                switchColorTween = TweenService:Create(InfiniteYieldSwitch, colorTweenInfo, {
+                switchColorTween = TweenService:Create(InfiniteYieldSwitch, PRISONRP_AdjustUITweenInfo(colorTweenInfo), {
                     BackgroundColor3 = targetColor
                 })
                 knobTween:Play()
@@ -15985,7 +17212,7 @@ do
             end
         end
 
-        local cardTweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local cardTweenInfo = PRISONRP_UITweenInfo(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         local cardHovered = false
         local cardPressed = false
         local activeCardTween = nil
@@ -15995,7 +17222,7 @@ do
             if activeCardTween then pcall(function() activeCardTween:Cancel() end) end
             local transparency = cardPressed and 0.02 or (cardHovered and 0.08 or 1)
             local thickness = cardPressed and 2 or (cardHovered and 1.5 or 1.4)
-            activeCardTween = TweenService:Create(cardStroke, cardTweenInfo, {
+            activeCardTween = TweenService:Create(cardStroke, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {
                 Color = Color3.fromRGB(79, 142, 255),
                 Transparency = transparency,
                 Thickness = thickness,
@@ -16022,13 +17249,13 @@ do
         end)
         InfiniteYieldSwitch.MouseEnter:Connect(function()
             pcall(function()
-                TweenService:Create(switchStroke, cardTweenInfo, {Transparency = 0.05}):Play()
+                TweenService:Create(switchStroke, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {Transparency = 0.05}):Play()
             end)
         end)
         InfiniteYieldSwitch.MouseLeave:Connect(function()
             updateSwitch(launched, true)
             pcall(function()
-                TweenService:Create(switchStroke, cardTweenInfo, {Transparency = 0.18}):Play()
+                TweenService:Create(switchStroke, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {Transparency = 0.18}):Play()
             end)
         end)
 
@@ -16136,9 +17363,9 @@ do
 
         local TweenService = game:GetService("TweenService")
         local definitions = {
-            {name = "🛡️ Anti VCB", objectName = "PRISONRP_Custom_AntiV", y = 310},
+            {name = "🚫 Anti VCB", objectName = "PRISONRP_Custom_AntiV", y = 310},
             {name = "⚡ Novoline", objectName = "PRISONRP_Custom_Novoline", y = 350},
-            {name = "🎯 M7", objectName = "PRISONRP_Custom_M7", y = 390},
+            {name = "🧩 M7", objectName = "PRISONRP_Custom_M7", y = 390},
         }
 
         for _, definition in ipairs(definitions) do
@@ -16185,14 +17412,14 @@ do
             title.ZIndex = button.ZIndex + 1
             title.Parent = button
 
-            local tweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+            local tweenInfo = PRISONRP_UITweenInfo(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
             local hovered, pressed = false, false
             local activeTween
 
             local function refreshStroke()
                 if not stroke.Parent then return end
                 if activeTween then pcall(function() activeTween:Cancel() end) end
-                activeTween = TweenService:Create(stroke, tweenInfo, {
+                activeTween = TweenService:Create(stroke, PRISONRP_AdjustUITweenInfo(tweenInfo), {
                     Transparency = pressed and 0.02 or (hovered and 0.08 or 1),
                     Thickness = pressed and 2 or (hovered and 1.5 or 1.4),
                 })
@@ -16360,8 +17587,8 @@ do
         knob.Parent = chatSwitch
         Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
-        local cardTweenInfo = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-        local switchTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        local cardTweenInfo = PRISONRP_UITweenInfo(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local switchTweenInfo = PRISONRP_UITweenInfo(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
         local enabled = false
         local panelGui = nil
         local panelFrame = nil
@@ -16391,8 +17618,8 @@ do
             if knobTween then pcall(function() knobTween:Cancel() end) end
             if switchTween then pcall(function() switchTween:Cancel() end) end
             if animated then
-                knobTween = TweenService:Create(knob, switchTweenInfo, {Position = targetPosition})
-                switchTween = TweenService:Create(chatSwitch, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor})
+                knobTween = TweenService:Create(knob, PRISONRP_AdjustUITweenInfo(switchTweenInfo), {Position = targetPosition})
+                switchTween = TweenService:Create(chatSwitch, PRISONRP_UITweenInfo(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor})
                 knobTween:Play()
                 switchTween:Play()
             else
@@ -16404,7 +17631,7 @@ do
         local function refreshCardStroke()
             if not cardStroke or not cardStroke.Parent then return end
             if cardStrokeTween then pcall(function() cardStrokeTween:Cancel() end) end
-            cardStrokeTween = TweenService:Create(cardStroke, cardTweenInfo, {
+            cardStrokeTween = TweenService:Create(cardStroke, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {
                 Transparency = cardPressed and 0.02 or (cardHovered and 0.08 or 1),
                 Thickness = cardPressed and 2 or (cardHovered and 1.5 or 1.4),
             })
@@ -16730,12 +17957,12 @@ do
         end)
         chatSwitch.MouseEnter:Connect(function()
             pcall(function()
-                TweenService:Create(switchStroke, TweenInfo.new(0.12), {Transparency = 0.05}):Play()
+                TweenService:Create(switchStroke, PRISONRP_UITweenInfo(0.12), {Transparency = 0.05}):Play()
             end)
         end)
         chatSwitch.MouseLeave:Connect(function()
             pcall(function()
-                TweenService:Create(switchStroke, TweenInfo.new(0.12), {Transparency = 0.18}):Play()
+                TweenService:Create(switchStroke, PRISONRP_UITweenInfo(0.12), {Transparency = 0.18}):Play()
             end)
         end)
 
@@ -16794,6 +18021,7 @@ do
             {obj = BlackMarketBtn, label = "Black Market"},
             {obj = ESPToggleBtn, label = "ESP Black Market"},
             {obj = StaffAutoLeaveBtn, label = "Auto Leave"},
+            {obj = StaffJoinNotificationBtn, label = "Staff Join Notification"},
             {obj = type(_G.PRISONRP_AUTO_ARM_WRESTLE_STATE) == "table" and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Btn or nil, label = "Auto Arm Wrestle"},
             {obj = autresPageRef:FindFirstChild("PRISONRP_AutoPurpleToggle"), label = "Auto Purple"},
             {obj = autresPageRef:FindFirstChild("PRISONRP_InfiniteYieldToggle"), label = "Infinite Yield"},
@@ -17027,7 +18255,12 @@ do
                 and math.max((MainFrameScale and MainFrameScale.Scale) or 1, 0.01)
                 or 1
             local compensation = math.min(1.2, math.max(1, 0.82 / scale))
-            obj.TextSize = math.clamp(math.floor(math.max(baseSize, 11) * compensation + 0.5), 11, 36)
+            local accessibleTextScale = math.clamp(tonumber(_G.PRISONRP_TEXT_SCALE) or 1.0, 0.85, 1.35)
+            obj.TextSize = math.clamp(
+                math.floor(math.max(baseSize, 11) * compensation * accessibleTextScale + 0.5),
+                11,
+                40
+            )
 
             if obj:IsA("TextButton") or baseFont == "bold" then
                 obj.Font = Enum.Font.GothamBold
@@ -17053,7 +18286,34 @@ do
                 obj.TextColor3 = Color3.fromRGB(184, 194, 210)
             end
 
+            local contrastColor = obj.TextColor3
+            local contrastLuminance = contrastColor.R * 0.2126 + contrastColor.G * 0.7152 + contrastColor.B * 0.0722
+            local contrastChroma = math.max(contrastColor.R, contrastColor.G, contrastColor.B)
+                - math.min(contrastColor.R, contrastColor.G, contrastColor.B)
+            local savedContrastColor = obj:GetAttribute("PRISONRP_HighContrastBaseColor")
+            if _G.PRISONRP_HIGH_CONTRAST == true and darkSurface and contrastLuminance < 0.88 and contrastChroma < 0.22 then
+                if typeof(savedContrastColor) ~= "Color3" then
+                    obj:SetAttribute("PRISONRP_HighContrastBaseColor", contrastColor)
+                end
+                obj.TextColor3 = Color3.fromRGB(255, 255, 255)
+            elseif _G.PRISONRP_HIGH_CONTRAST ~= true and typeof(savedContrastColor) == "Color3" then
+                if contrastColor == Color3.fromRGB(255, 255, 255) then
+                    obj.TextColor3 = savedContrastColor
+                end
+                obj:SetAttribute("PRISONRP_HighContrastBaseColor", nil)
+            end
+
             if darkSurface and obj:IsA("TextBox") then
+                local savedPlaceholder = obj:GetAttribute("PRISONRP_HighContrastBasePlaceholder")
+                if _G.PRISONRP_HIGH_CONTRAST == true then
+                    if typeof(savedPlaceholder) ~= "Color3" then
+                        obj:SetAttribute("PRISONRP_HighContrastBasePlaceholder", obj.PlaceholderColor3)
+                    end
+                    obj.PlaceholderColor3 = Color3.fromRGB(245, 245, 245)
+                elseif typeof(savedPlaceholder) == "Color3" then
+                    obj.PlaceholderColor3 = savedPlaceholder
+                    obj:SetAttribute("PRISONRP_HighContrastBasePlaceholder", nil)
+                end
                 local placeholder = obj.PlaceholderColor3
                 local placeholderLuminance = placeholder.R * 0.2126 + placeholder.G * 0.7152 + placeholder.B * 0.0722
                 if placeholderLuminance < 0.42 then
