@@ -1,5 +1,6 @@
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 local __PRISONRP_SOURCE = [=[
+-- V246 : timing Auto Parry ajusté prudemment au ping aller-retour.
 -- V245 : Auto Parry tolère les IDs variables et revérifie la cible, la santé et la portée.
 -- V244 : Auto Parry intégré dans la case existante avec les animations repérées.
 -- V242 : profils et choix du chargement automatique séparés par UserId Roblox.
@@ -14924,6 +14925,28 @@ do
             local maxDistance = 8
             local blockHoldUntil = 0
             local blockReleaseToken = 0
+            local smoothedNetworkPing = nil
+
+            local function getLatencyAdjustedParryDelay(baseDelay)
+                local measuredPing = nil
+                pcall(function()
+                    measuredPing = LocalPlayer and LocalPlayer:GetNetworkPing()
+                end)
+                if type(measuredPing) == "number" then
+                    measuredPing = math.clamp(measuredPing, 0, 0.5)
+                    if smoothedNetworkPing == nil then
+                        smoothedNetworkPing = measuredPing
+                    else
+                        -- Lisser les variations évite de faire bondir le timing d'une attaque à l'autre.
+                        smoothedNetworkPing = smoothedNetworkPing * 0.7 + measuredPing * 0.3
+                    end
+                end
+
+                -- Compensation prudente : 75 % du ping mesuré, plafonnée à 75 % du délai.
+                -- On garde toujours une marge positive pour éviter de parer trop tôt.
+                local compensation = math.min((smoothedNetworkPing or 0) * 0.75, baseDelay * 0.75)
+                return math.max(0.04, baseDelay - compensation)
+            end
 
             local function keep(connection)
                 if connection then
@@ -15009,7 +15032,8 @@ do
                     playerTimes[animationId] = now
 
                     local attackDelay = parryDelayByAnimation[animationId] or defaultParryDelay
-                    task.delay(attackDelay, function()
+                    local adjustedParryDelay = getLatencyAdjustedParryDelay(attackDelay)
+                    task.delay(adjustedParryDelay, function()
                         if _G.PRISONRP_AUTO_BLOCK_ENABLED ~= true
                             or _G.PRISONRP_AUTO_BLOCK_RUN_TOKEN ~= runToken then
                             return
