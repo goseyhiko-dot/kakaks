@@ -1,5 +1,6 @@
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 local __PRISONRP_SOURCE = [=[
+-- V245 : Auto Parry tolère les IDs variables et revérifie la cible, la santé et la portée.
 -- V244 : Auto Parry intégré dans la case existante avec les animations repérées.
 -- V242 : profils et choix du chargement automatique séparés par UserId Roblox.
 -- V241 : Auto Fish Cycle indépendant d'Auto Fish ; pas de relance autonome.
@@ -243,11 +244,19 @@ do
         return false
     end
     _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE = function()
-        if type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
-            _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
+        local source = _G.PRISONRP_AUTO_RELOAD_SOURCE
+        if type(source) ~= "string" or source == "" then
+            return false, "Use the packaged launcher"
+        end
+        if type(_G.PRISONRP_GET_QUEUE_ON_TELEPORT) ~= "function"
+            or type(_G.PRISONRP_GET_QUEUE_ON_TELEPORT()) ~= "function" then
+            return false, "Unavailable in this executor"
         end
         if type(_G.PRISONRP_QUEUE_AUTO_RELOAD) ~= "function" then
             return false, "Auto Reload queue helper is unavailable"
+        end
+        if type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
+            _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
         end
         return _G.PRISONRP_QUEUE_AUTO_RELOAD()
     end
@@ -14912,7 +14921,7 @@ do
             local parryHold = 0.32
             local defaultParryDelay = 0.30
             local animationCooldown = 0.12
-            local maxDistance = 15
+            local maxDistance = 8
             local blockHoldUntil = 0
             local blockReleaseToken = 0
 
@@ -14938,7 +14947,29 @@ do
                     humanoid:FindFirstChildOfClass("Animator")
                     or humanoid:WaitForChild("Animator", 8)
                 )
-                if not animator then return end
+                if not animator then
+                    -- Animator peut être créé après le Humanoid. Attendre son ajout
+                    -- au lieu de perdre définitivement la surveillance de ce personnage.
+                    local animatorConnection
+                    local function retryWithAnimator(child)
+                        if not child:IsA("Animator") then return end
+                        if animatorConnection then
+                            pcall(function() animatorConnection:Disconnect() end)
+                            animatorConnection = nil
+                        end
+                        if _G.PRISONRP_AUTO_BLOCK_ENABLED == true
+                            and _G.PRISONRP_AUTO_BLOCK_RUN_TOKEN == runToken
+                            and player.Character == character then
+                            task.spawn(hookCharacter, player, character)
+                        end
+                    end
+                    animatorConnection = humanoid.ChildAdded:Connect(retryWithAnimator)
+                    keep(animatorConnection)
+                    -- Vérifier après l'abonnement pour couvrir l'ajout entre les deux.
+                    local lateAnimator = humanoid:FindFirstChildOfClass("Animator")
+                    if lateAnimator then retryWithAnimator(lateAnimator) end
+                    return
+                end
 
                 keep(animator.AnimationPlayed:Connect(function(track)
                     if _G.PRISONRP_AUTO_BLOCK_ENABLED ~= true
@@ -14946,16 +14977,25 @@ do
                         return
                     end
 
-                    local animationId = ""
+                    -- Certains jeux/exécuteurs exposent l'ID avec un format d'URL différent.
+                    -- Comparer l'identifiant numérique évite de rater une animation connue.
+                    local rawAnimationId = ""
                     pcall(function()
-                        animationId = track.Animation and track.Animation.AnimationId or ""
+                        rawAnimationId = track.Animation and track.Animation.AnimationId or ""
                     end)
+                    local numericAnimationId = string.match(tostring(rawAnimationId), "%d+")
+                    if not numericAnimationId then return end
+                    local animationId = "rbxassetid://" .. numericAnimationId
                     if not candidateAnimations[animationId] then return end
 
+                    if player.Character ~= character then return end
                     local localCharacter = LocalPlayer and LocalPlayer.Character
                     local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
                     local targetRoot = character:FindFirstChild("HumanoidRootPart")
-                    if not localRoot or not targetRoot then return end
+                    local localHumanoid = localCharacter and localCharacter:FindFirstChildOfClass("Humanoid")
+                    local targetHumanoid = character:FindFirstChildOfClass("Humanoid")
+                    if not localRoot or not targetRoot or not localHumanoid or not targetHumanoid then return end
+                    if localHumanoid.Health <= 0 or targetHumanoid.Health <= 0 then return end
                     if (localRoot.Position - targetRoot.Position).Magnitude > maxDistance then return end
 
                     local now = os.clock()
@@ -14972,6 +15012,20 @@ do
                     task.delay(attackDelay, function()
                         if _G.PRISONRP_AUTO_BLOCK_ENABLED ~= true
                             or _G.PRISONRP_AUTO_BLOCK_RUN_TOKEN ~= runToken then
+                            return
+                        end
+
+                        -- Revalider la cible juste avant l'envoi pour ignorer les attaques interrompues.
+                        if player.Parent ~= Players or player.Character ~= character then return end
+                        local currentLocalCharacter = LocalPlayer and LocalPlayer.Character
+                        local currentLocalRoot = currentLocalCharacter and currentLocalCharacter:FindFirstChild("HumanoidRootPart")
+                        local currentTargetRoot = character:FindFirstChild("HumanoidRootPart")
+                        local currentLocalHumanoid = currentLocalCharacter and currentLocalCharacter:FindFirstChildOfClass("Humanoid")
+                        local currentTargetHumanoid = character:FindFirstChildOfClass("Humanoid")
+                        if not currentLocalRoot or not currentTargetRoot
+                            or not currentLocalHumanoid or not currentTargetHumanoid
+                            or currentLocalHumanoid.Health <= 0 or currentTargetHumanoid.Health <= 0
+                            or (currentLocalRoot.Position - currentTargetRoot.Position).Magnitude > maxDistance then
                             return
                         end
 
@@ -20030,7 +20084,7 @@ do
             -- Le titre de la carte reste volontairement à la taille définie.
             obj.TextSize = obj == StaffListTitle and 10 or readableTextSize
 
-            if obj:IsA("TextButton") or baseFont == "bold" then
+            if baseFont == "bold" then
                 obj.Font = Enum.Font.GothamBold
             else
                 obj.Font = Enum.Font.GothamMedium
