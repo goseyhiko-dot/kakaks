@@ -1,5 +1,7 @@
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 local __PRISONRP_SOURCE = [=[
+-- V252 : Auto Parry intègre les quatre attaques mesurées du style boxe.
+-- V249 : Auto Parry démarre OFF et son interrupteur répond au clic sur la carte.
 -- V246 : timing Auto Parry ajusté prudemment au ping aller-retour.
 -- V245 : Auto Parry tolère les IDs variables et revérifie la cible, la santé et la portée.
 -- V244 : Auto Parry intégré dans la case existante avec les animations repérées.
@@ -529,7 +531,7 @@ function returnToSavedTeleportPosition(expectedMode)
     end
     return ok
 end
-stats = {totalCaught = 0, perfectCount = 0, lastFish = "None", status = "Idle", fps = 0}
+stats = {totalCaught = 0, perfectCount = 0, lastFish = "None", status = "Idle", fps = 0, pingMs = nil}
 SessionStartedAt = os.clock()
 _G.PRISONRP_TEXT_SCALE = 1.0
 _G.PRISONRP_HIGH_CONTRAST = false
@@ -624,7 +626,13 @@ ScreenGui.Parent = guiParent
 ScreenGui.Enabled = false
 MainFrame.Visible = true
 
--- Afficheur FPS indépendant : il reste visible même quand le menu est masqué.
+local function formatFPSCounterText()
+    local fpsText = stats.fps and stats.fps > 0 and string.format("FPS : %d", stats.fps) or "FPS : --"
+    local pingText = stats.pingMs and string.format("Ping : %d ms", stats.pingMs) or "Ping : -- ms"
+    return fpsText .. "\n" .. pingText
+end
+
+-- Afficheur FPS et ping indépendant : il reste visible même quand le menu est masqué.
 pcall(function()
     local previousFPSGui = guiParent:FindFirstChild("PRISONRP_FPSOverlayGui")
     if previousFPSGui then previousFPSGui:Destroy() end
@@ -641,8 +649,8 @@ FPSOverlayGui.Parent = guiParent
 FPSCounterFrame = Instance.new("Frame")
 FPSCounterFrame.Name = "FPSCounterFrame"
 FPSCounterFrame.AnchorPoint = Vector2.new(1, 0)
-FPSCounterFrame.Position = UDim2.new(1, -18, 0, 92)
-FPSCounterFrame.Size = UDim2.fromOffset(108, 36)
+FPSCounterFrame.Position = UDim2.new(1, -18, 0, 60)
+FPSCounterFrame.Size = UDim2.fromOffset(120, 42)
 FPSCounterFrame.BackgroundColor3 = Color3.fromRGB(24, 28, 35)
 FPSCounterFrame.BackgroundTransparency = 0.08
 FPSCounterFrame.BorderSizePixel = 0
@@ -661,9 +669,9 @@ FPSCounterLabel = Instance.new("TextLabel")
 FPSCounterLabel.Name = "FPSCounterLabel"
 FPSCounterLabel.Size = UDim2.fromScale(1, 1)
 FPSCounterLabel.BackgroundTransparency = 1
-FPSCounterLabel.Text = "FPS: --"
+FPSCounterLabel.Text = "FPS : --\nPing : -- ms"
 FPSCounterLabel.TextColor3 = Color3.fromRGB(145, 235, 170)
-FPSCounterLabel.TextSize = 14
+FPSCounterLabel.TextSize = 13
 FPSCounterLabel.Font = Enum.Font.GothamBold
 FPSCounterLabel.TextXAlignment = Enum.TextXAlignment.Center
 FPSCounterLabel.TextYAlignment = Enum.TextYAlignment.Center
@@ -2805,7 +2813,7 @@ StaffJoinNotificationSound.PlaybackSpeed = 1.1
 StaffJoinNotificationSound.Parent = game:GetService("SoundService")
 _G.PRISONRP_STAFF_JOIN_NOTIFICATION_SOUND = StaffJoinNotificationSound
 
-local function staffGetRPName(player)
+local function staffGetRPName(player, requireActualRPName)
     if not player then return nil end
     local function trim(value)
         return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -2988,8 +2996,13 @@ local function staffGetRPName(player)
         end
     end
 
-    -- Même dernier recours que dans V221 : le DisplayName Roblox sert de nom
-    -- visible seulement s'il est différent du @, pour éviter un doublon.
+    -- Les notifications exigent un vrai nom RP : ne jamais remplacer celui-ci
+    -- par le DisplayName Roblox si le nom RP n'a pas pu être détecté.
+    if requireActualRPName then
+        return nil
+    end
+
+    -- Pour les autres affichages historiques du hub, on conserve le fallback.
     local displayName = trim(player.DisplayName)
     if displayName ~= ""
         and displayName:lower() ~= tostring(player.Name or ""):lower()
@@ -3011,7 +3024,7 @@ local function staffShowJoinNotification(player)
             return
         end
 
-        local rpNameValue = staffGetRPName(player)
+        local rpNameValue = staffGetRPName(player, true)
         for _ = 1, 10 do
             if rpNameValue then break end
             task.wait(0.2)
@@ -3019,7 +3032,7 @@ local function staffShowJoinNotification(player)
                 or not (player and player.Parent and StaffDetectedData[player]) then
                 return
             end
-            rpNameValue = staffGetRPName(player)
+            rpNameValue = staffGetRPName(player, true)
         end
 
         -- Garder au plus trois cartes visibles pour éviter qu'une arrivée groupée
@@ -3409,6 +3422,7 @@ function createStaffESP(player, reason)
 end
 
 StaffDisplayOrder = {}
+local StaffLastListSignature = nil
 
 function staffRefreshList()
     -- Keep one stable slot per player. Do not rebuild the display order from
@@ -3447,6 +3461,26 @@ function staffRefreshList()
             table.remove(StaffDisplayOrder, i)
         end
     end
+
+    -- Ne recrée pas les mêmes TextLabels à chaque scan. Sur un serveur sans staff,
+    -- l'ancien code détruisait/recréait aussi l'état vide à chaque joueur vérifié.
+    local signatureParts = {}
+    for _, entry in ipairs(StaffDisplayOrder) do
+        local player = entry.player
+        local data = player and StaffDetectedData[player]
+        if player and player.Parent and data then
+            signatureParts[#signatureParts + 1] = table.concat({
+                tostring(player.UserId),
+                tostring(data.Reason or ""),
+                tostring(staffGetRPName(player) or ""),
+            }, "|")
+        end
+    end
+    local signature = table.concat(signatureParts, "\31")
+    if signature == StaffLastListSignature and StaffListRows and StaffListRows.Parent then
+        return
+    end
+    StaffLastListSignature = signature
 
     if StaffListRows then
         for _, child in ipairs(StaffListRows:GetChildren()) do
@@ -3917,7 +3951,9 @@ task.spawn(function()
             if player ~= LocalPlayer then task.spawn(staffUpdate, player) end
         end
         staffRefreshList()
-        task.wait(1)
+        -- Team, attributs et arrivée de joueur ont déjà leurs événements dédiés.
+        -- Ce scan périodique sert surtout de filet de sécurité pour les rôles GUI.
+        task.wait(3)
     end
 end)
 
@@ -4032,8 +4068,14 @@ task.spawn(function()
 
         if elapsed >= 1 then
             stats.fps = math.floor((frameCount / elapsed) + 0.5)
+            pcall(function()
+                local pingSeconds = LocalPlayer and LocalPlayer:GetNetworkPing()
+                if type(pingSeconds) == "number" and pingSeconds >= 0 then
+                    stats.pingMs = math.floor(pingSeconds * 1000 + 0.5)
+                end
+            end)
             if _G.PRISONRP_FPS_COUNTER_ENABLED == true and FPSCounterLabel and FPSCounterLabel.Parent then
-                FPSCounterLabel.Text = string.format("FPS : %d", stats.fps)
+                FPSCounterLabel.Text = formatFPSCounterText()
             end
             frameCount = 0
             elapsed = 0
@@ -5670,26 +5712,43 @@ _G.PRISONRP_FISHING_MOUSE_RELEASE = autoFishRelease
 -- Le moteur de jeu reste responsable du déplacement de la zone blanche ;
 -- nous ne faisons que maintenir / relâcher via SetHolding().
 task.spawn(function()
+    local releaseSentSinceActive = false
     while running and ScreenGui and ScreenGui.Parent do
-        task.wait(0.01)
-
-        if _G.AutoFishingEnabled and MinigameSystem then
-            local active, phase = false, nil
-
-            pcall(function()
-                active = MinigameSystem:IsActive()
-                if active then
-                    phase = MinigameSystem:GetPhase()
-                end
-            end)
-
-            if active and phase == "reel" then
-                autoFishApplyHolding()
-            else
+        -- Au repos, inutile de réveiller le contrôle rapide 100 fois/s ou
+        -- de renvoyer SetHolding(false) en boucle : une libération suffit.
+        if not (_G.AutoFishingEnabled and MinigameSystem) then
+            if not releaseSentSinceActive then
                 autoFishRelease()
+                releaseSentSinceActive = true
             end
-        else
+            task.wait(0.15)
+            continue
+        end
+
+        task.wait(0.01)
+        -- L'état peut avoir changé pendant l'attente.
+        if not (_G.AutoFishingEnabled and MinigameSystem) then
+            if not releaseSentSinceActive then
+                autoFishRelease()
+                releaseSentSinceActive = true
+            end
+            continue
+        end
+
+        local active, phase = false, nil
+        pcall(function()
+            active = MinigameSystem:IsActive()
+            if active then
+                phase = MinigameSystem:GetPhase()
+            end
+        end)
+
+        if active and phase == "reel" then
+            autoFishApplyHolding()
+            releaseSentSinceActive = false
+        elseif not releaseSentSinceActive then
             autoFishRelease()
+            releaseSentSinceActive = true
         end
     end
 
@@ -8038,59 +8097,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     round(AutoArmWrestleState.Btn, 8)
     border(AutoArmWrestleState.Btn, C.border, 0.25)
 
-    -- Les automatismes utilisent le switch GDP centralisé.
-    local function addSwitch(btn, getOn)
-        if not btn then return end
-        local old = btn:FindFirstChild('GDPSwitch')
-        if old then old:Destroy() end
-        local track = Instance.new('Frame')
-        track.Name='GDPSwitch'
-        track.Size=UDim2.fromOffset(42,22)
-        track.Position=UDim2.new(1,-52,0.5,-11)
-        track.BorderSizePixel=0
-        track.ZIndex=btn.ZIndex+1
-        track.Parent=btn
-        round(track,11)
-        local knob=Instance.new('Frame')
-        knob.Name='Knob'; knob.Size=UDim2.fromOffset(16,16); knob.Position=UDim2.fromOffset(3,3)
-        knob.BorderSizePixel=0; knob.ZIndex=track.ZIndex+1; knob.Parent=track; round(knob,8)
-        local TweenService = game:GetService('TweenService')
-        local moveInfo = PRISONRP_UITweenInfo(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-        local colorInfo = PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-        local animating = false
-        local function refresh(animated)
-            local on = getOn and getOn() or (string.find(string.upper(btn.Text),'ON',1,true) ~= nil)
-            local targetPos = on and UDim2.new(1,-19,0,3) or UDim2.fromOffset(3,3)
-            local targetColor = on and C.accent or C.off
-            if animated then
-                if animating then return end
-                animating = true
-                local move = TweenService:Create(knob, PRISONRP_AdjustUITweenInfo(moveInfo), {Position = targetPos})
-                local color = TweenService:Create(track, PRISONRP_AdjustUITweenInfo(colorInfo), {BackgroundColor3 = targetColor})
-                move:Play(); color:Play()
-                move.Completed:Connect(function() animating = false end)
-            else
-                knob.Position = targetPos
-                track.BackgroundColor3 = targetColor
-            end
-            knob.BackgroundColor3 = C.white
-            if isAutoFish then
-                -- Auto-Fish : carte grise à l'arrêt, verte en fonctionnement.
-                btn.BackgroundColor3 = on and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(38, 43, 50)
-            else
-                btn.BackgroundColor3 = C.card
-            end
-            btn.TextColor3 = C.white
-        end
-        btn:GetPropertyChangedSignal('Text'):Connect(function() refresh(true) end)
-        refresh(false)
-    end
-
-    -- Auto-Fish utilise uniquement le switch GDPCheckbox ci-dessous.
-    addSwitch(AutoEatDrinkBtn, function() return AutoEatDrinkEnabled == true end)
-    addSwitch(AutoMineBtn, function() return AutoMineRunning == true end)
-    addSwitch(AutoSellBtn, function() return _G.AutoSellEnabled == true end)
-
+    -- Les switches sont créés par gdpCheckbox dans le bloc de configuration final.
 
     -- TP / Spec movement page.
     movementPage.Size = UDim2.new(1,-150,1,-70)
@@ -8268,7 +8275,6 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     -- Auto-Pompes est maintenant dans AUTRES.
     section(autresPage, 0, 'OTHER')
     prep(AutoPushupBtn, 145, 30, 260, 40, autresPage)
-    addSwitch(AutoPushupBtn, function() return _G.AutoPushupEnabled == true end)
 
     -- BLACK MARKET + ESP BLACK MARKET sont maintenant dans AUTRES.
     BlackMarketBtn.Parent = autresPage
@@ -8292,7 +8298,6 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     if StaffESPBtn then StaffESPBtn.Visible = false end
 
     prep(StaffAutoLeaveBtn,0,84,271,38,espPage)
-    addSwitch(StaffAutoLeaveBtn,function() return _G.PRISONRP_STAFF_AUTOLEAVE==true end)
 
     if MoneyViewBtn then
         MoneyViewBtn.Visible = false
@@ -8406,20 +8411,20 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         local oldBox = btn:FindFirstChild("GDPCheckbox")
         if oldBox then oldBox:Destroy() end
 
-        -- Le reste de la carte est bloqué : seul le switch est cliquable.
-        local blocker = btn:FindFirstChild("GDPClickBlocker")
-        if not blocker then
-            blocker = Instance.new("TextButton")
-            blocker.Name = "GDPClickBlocker"
-            blocker.Text = ""
-            blocker.AutoButtonColor = false
-            blocker.BackgroundTransparency = 1
-            blocker.BorderSizePixel = 0
-            blocker.Size = UDim2.fromScale(1, 1)
-            blocker.Position = UDim2.fromScale(0, 0)
-            blocker.ZIndex = btn.ZIndex + 1
-            blocker.Parent = btn
-        end
+        -- La carte et le switch sont cliquables et partagent le même traitement.
+        local previousBlocker = btn:FindFirstChild("GDPClickBlocker")
+        if previousBlocker then previousBlocker:Destroy() end
+        local blocker = Instance.new("TextButton")
+        blocker.Name = "GDPClickBlocker"
+        blocker.Text = ""
+        blocker.AutoButtonColor = false
+        blocker.Active = true
+        blocker.BackgroundTransparency = 1
+        blocker.BorderSizePixel = 0
+        blocker.Size = UDim2.fromScale(1, 1)
+        blocker.Position = UDim2.fromScale(0, 0)
+        blocker.ZIndex = btn.ZIndex + 1
+        blocker.Parent = btn
 
         -- Ancien style : interrupteur arrondi avec bouton rond qui coulisse
         -- légèrement avec un petit effet de bascule à l'activation.
@@ -8456,6 +8461,45 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         local activeKnobTween = nil
         local switchClickLocked = false
         local SWITCH_CLICK_COOLDOWN = 0.22
+
+        -- Style initial de la carte uniquement. Ne pas le réappliquer lors d’un toggle :
+        -- cela écraserait les tailles ajustées par les réglages de lisibilité.
+        local startAutoFishStyle = (
+            btn == ToggleFishBtn
+            or btn == speedBtn
+            or btn == flyBtn
+            or btn == noclipBtn
+            or btn == SpecCard
+            or btn == tpSpecButton
+            or btn == tpButton
+            or btn == AutoPushupBtn
+            or btn.Name == "PRISONRP_AutoChangeServerToggle"
+            or btn.Name == "PRISONRP_AutoBlockToggle"
+            or btn.Name == "PRISONRP_AutoFishCycleToggle"
+            or btn == FPSCounterBtn
+            or btn == AutoArmWrestleState.Btn
+            or btn == BlackMarketBtn
+            or btn == ESPToggleBtn
+            or btn == StaffAutoLeaveBtn
+            or btn == StaffJoinNotificationBtn
+            or btn.Name == "PRISONRP_AutoPurpleToggle"
+            or btn.Name == "PRISONRP_InfiniteYieldToggle"
+            or btn.Name == "PRISONRP_ChatDockToggle"
+        )
+
+        if startAutoFishStyle then
+            btn.Font = Enum.Font.GothamBold
+            btn.TextSize = 15
+            btn.TextColor3 = C.white
+            btn.TextStrokeTransparency = 1
+            btn.TextXAlignment = Enum.TextXAlignment.Center
+            btn.TextYAlignment = Enum.TextYAlignment.Center
+        else
+            btn.Font = Enum.Font.GothamMedium
+            btn.TextSize = 16
+            btn.TextXAlignment = Enum.TextXAlignment.Center
+            btn.TextYAlignment = Enum.TextYAlignment.Center
+        end
 
         local function refresh(animated)
             local on = getOn and getOn() == true or false
@@ -8497,65 +8541,22 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             btn.Text = cleanText
             btn.TextColor3 = C.white
 
-            -- STYLE START AUTO-FISH : appliqué aussi aux cases demandées.
-            -- Même police, taille, couleur, sans contour et texte centré.
-            local startAutoFishStyle = (
-                btn == ToggleFishBtn
-                or btn == speedBtn
-                or btn == flyBtn
-                or btn == noclipBtn
-                or btn == SpecCard
-                or btn == tpSpecButton
-                or btn == tpButton
-                or btn == AutoPushupBtn
-                or btn.Name == "PRISONRP_AutoChangeServerToggle"
-                or btn.Name == "PRISONRP_AutoBlockToggle"
-                or btn.Name == "PRISONRP_AutoFishCycleToggle"
-                or btn == FPSCounterBtn
-                or btn == AutoArmWrestleState.Btn
-                or btn == BlackMarketBtn
-                or btn == ESPToggleBtn
-                or btn == StaffAutoLeaveBtn
-                or btn == StaffJoinNotificationBtn
-                or btn.Name == "PRISONRP_AutoPurpleToggle"
-                or btn.Name == "PRISONRP_InfiniteYieldToggle"
-                or btn.Name == "PRISONRP_ChatDockToggle"
-            )
-
-            if startAutoFishStyle then
-                btn.Font = Enum.Font.GothamBold
-                btn.TextSize = 15
-                btn.TextColor3 = C.white
-                btn.TextStrokeTransparency = 1
-                btn.TextXAlignment = Enum.TextXAlignment.Center
-                btn.TextYAlignment = Enum.TextYAlignment.Center
-            else
-                btn.Font = Enum.Font.GothamMedium
-                btn.TextSize = 16
-                btn.TextXAlignment = Enum.TextXAlignment.Center
-                btn.TextYAlignment = Enum.TextYAlignment.Center
-            end
         end
 
-        switch.Activated:Connect(function()
-            -- Anti-double-clic : un clic très rapide ne peut plus lancer deux
-            -- changements d'état pendant que le précédent est encore en cours.
-            if switchClickLocked then
-                return
-            end
-
+        local function activateToggle()
+            -- Le même verrou protège le switch et le clic sur la carte.
+            if switchClickLocked then return end
             switchClickLocked = true
 
-            if onToggle then
-                onToggle()
-            end
-
+            if onToggle then onToggle() end
             refresh(true)
 
             task.delay(SWITCH_CLICK_COOLDOWN, function()
                 switchClickLocked = false
             end)
-        end)
+        end
+        switch.Activated:Connect(activateToggle)
+        blocker.Activated:Connect(activateToggle)
 
         -- Ne pas rafraîchir sur chaque changement de texte : plusieurs fonctions
         -- changent leur label pendant le toggle, ce qui cassait l'animation.
@@ -9529,9 +9530,7 @@ end)
                 FPSOverlayGui.Enabled = _G.PRISONRP_FPS_COUNTER_ENABLED
             end
             if FPSCounterLabel then
-                FPSCounterLabel.Text = stats.fps and stats.fps > 0
-                    and string.format("FPS : %d", stats.fps)
-                    or "FPS: --"
+                FPSCounterLabel.Text = formatFPSCounterText()
             end
         end
     )
@@ -12032,7 +12031,15 @@ Connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(player)
     end
 end)
 
-Connections.Render = RunService.RenderStepped:Connect(function()
+-- L'ESP n'a pas besoin d'être recalculé à 60-240 Hz : les tags et distances
+-- restent fluides à ~8 Hz, avec beaucoup moins de travail dans les gros serveurs.
+local espRefreshElapsed = 0
+local ESP_REFRESH_INTERVAL = 0.12
+Connections.Render = RunService.RenderStepped:Connect(function(deltaTime)
+    espRefreshElapsed += tonumber(deltaTime) or 0
+    if espRefreshElapsed < ESP_REFRESH_INTERVAL then return end
+    espRefreshElapsed = 0
+
     -- Résoudre et mettre à jour le staff avant l'ESP joueur : cela évite une
     -- frame où un staff serait brièvement coloré ou tracé comme un joueur.
     if ESPConfig.StaffDetection then
@@ -13446,6 +13453,18 @@ Connections.InputEnded =
 
 Connections.RenderStepped =
     RunService.RenderStepped:Connect(function()
+        local aimActive = Running and Aimbot.Settings.Enabled
+        local fovVisible = FOVCircle
+            and Aimbot.Settings.Enabled
+            and Aimbot.FOVSettings.Enabled
+            and Aimbot.FOVSettings.Visible
+
+        -- Quand l'Aimbot et son cercle sont désactivés, ne fais aucun calcul par frame.
+        if not aimActive and not fovVisible then
+            if FOVCircle then FOVCircle.Visible = false end
+            return
+        end
+
         -- Roblox peut remplacer CurrentCamera lors d’un respawn ou d’un changement de caméra.
         Camera = workspace.CurrentCamera or Camera
         if not Camera then return end
@@ -13457,7 +13476,7 @@ Connections.RenderStepped =
 
         UpdateFOV()
 
-        if not Running or not Aimbot.Settings.Enabled then
+        if not aimActive then
             return
         end
 
@@ -14895,34 +14914,37 @@ do
             end
 
             local candidateAnimations = {
-                -- Coups nouvellement repérés dans les diagnostics.
+                -- Style de rue : quatre coups du combo et le gros coup.
+                ["rbxassetid://94929293927423"] = true,
+                ["rbxassetid://121881171404671"] = true,
+                ["rbxassetid://138763900668827"] = true,
+                ["rbxassetid://101131172937437"] = true,
+                ["rbxassetid://126578428978857"] = true,
+                -- Style boxe : trois coups du combo et le gros coup.
                 ["rbxassetid://109209982161829"] = true,
-                ["rbxassetid://102753435998807"] = true,
                 ["rbxassetid://132470195946952"] = true,
                 ["rbxassetid://104183007853770"] = true,
                 ["rbxassetid://116645663559233"] = true,
-                ["rbxassetid://126578428978857"] = true,
-                ["rbxassetid://121881171404671"] = true,
-                ["rbxassetid://138763900668827"] = true,
-                -- Animations déjà reconnues par l'ancien moteur.
-                ["rbxassetid://90126792795700"] = true,
-                ["rbxassetid://125148218025855"] = true,
-                ["rbxassetid://94929293927423"] = true,
-                ["rbxassetid://91128924224191"] = true,
-                ["rbxassetid://126652325895606"] = true,
-                ["rbxassetid://76642306703517"] = true,
             }
             local parryDelayByAnimation = {
-                ["rbxassetid://109209982161829"] = 0.30,
-                ["rbxassetid://116645663559233"] = 0.285,
-                ["rbxassetid://126578428978857"] = 0.51,
+                -- Style de rue : délais centrés sur les impacts mesurés.
+                ["rbxassetid://94929293927423"] = 0.27,
+                ["rbxassetid://121881171404671"] = 0.26,
+                ["rbxassetid://138763900668827"] = 0.29,
+                ["rbxassetid://101131172937437"] = 0.41,
+                ["rbxassetid://126578428978857"] = 0.46,
+                -- Style boxe : délais centrés sur les impacts mesurés.
+                ["rbxassetid://109209982161829"] = 0.23,
+                ["rbxassetid://132470195946952"] = 0.24,
+                ["rbxassetid://104183007853770"] = 0.25,
+                ["rbxassetid://116645663559233"] = 0.24,
             }
             local hookedPlayers = {}
             local lastParryAt = {}
             local parryHold = 0.32
             local defaultParryDelay = 0.30
             local animationCooldown = 0.12
-            local maxDistance = 8
+            local maxDistance = 12
             local blockHoldUntil = 0
             local blockReleaseToken = 0
             local smoothedNetworkPing = nil
@@ -14945,7 +14967,7 @@ do
                 -- Compensation prudente : 75 % du ping mesuré, plafonnée à 75 % du délai.
                 -- On garde toujours une marge positive pour éviter de parer trop tôt.
                 local compensation = math.min((smoothedNetworkPing or 0) * 0.75, baseDelay * 0.75)
-                return math.max(0.04, baseDelay - compensation)
+                return math.max(0.04, baseDelay - compensation), compensation
             end
 
             local function keep(connection)
@@ -15032,7 +15054,7 @@ do
                     playerTimes[animationId] = now
 
                     local attackDelay = parryDelayByAnimation[animationId] or defaultParryDelay
-                    local adjustedParryDelay = getLatencyAdjustedParryDelay(attackDelay)
+                    local adjustedParryDelay, pingCompensation = getLatencyAdjustedParryDelay(attackDelay)
                     task.delay(adjustedParryDelay, function()
                         if _G.PRISONRP_AUTO_BLOCK_ENABLED ~= true
                             or _G.PRISONRP_AUTO_BLOCK_RUN_TOKEN ~= runToken then
@@ -15053,6 +15075,7 @@ do
                             return
                         end
 
+                        local adjustedParryHold = parryHold + pingCompensation
                         local currentBlockEvent = getAutoBlockEvent()
                         if not currentBlockEvent then return end
                         local started = pcall(function()
@@ -15060,7 +15083,7 @@ do
                         end)
                         if not started then return end
 
-                        blockHoldUntil = math.max(blockHoldUntil, os.clock() + parryHold)
+                        blockHoldUntil = math.max(blockHoldUntil, os.clock() + adjustedParryHold)
                         blockReleaseToken = blockReleaseToken + 1
                         local releaseToken = blockReleaseToken
 
@@ -15079,7 +15102,7 @@ do
                             releaseBlock()
                         end
 
-                        task.delay(parryHold, releaseWhenReady)
+                        task.delay(adjustedParryHold, releaseWhenReady)
                     end)
                 end))
             end
@@ -15810,7 +15833,7 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
                 },
                 Toggles={
                     AutoFishing=_G.AutoFishingEnabled==true,
-                    AutoBlock=_G.PRISONRP_AUTO_BLOCK_ENABLED==true,
+                    AutoBlock=false,
                     AutoFishCycle=_G.PRISONRP_AUTO_FISH_CYCLE_ENABLED==true,
                     AutoSell=_G.AutoSellEnabled==true,
                     AutoEatDrink=AutoEatDrinkEnabled==true,
@@ -15894,9 +15917,6 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
             end
 
             if data.TouchMode ~= nil then
-                appearanceSettings.SetReducedMotion(data.ReducedMotion == true)
-            end
-            if data.TouchMode ~= nil then
                 appearanceSettings.SetTouchMode(data.TouchMode == true)
             end
             if MainFrame and (data.WindowWidth ~= nil or data.WindowHeight ~= nil) then
@@ -15961,7 +15981,7 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
                             _G.PRISONRP_AUTO_BLOCK_SET_STATE(false)
                         end
                     end,
-                    t.AutoBlock
+                    false
                 )
             end
 
