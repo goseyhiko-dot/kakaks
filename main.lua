@@ -1,6 +1,7 @@
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 local __PRISONRP_SOURCE = [=[
--- V252 : Auto Parry intègre les quatre attaques mesurées du style boxe.
+-- V255 : Hard Fish confirme le changement de serveur et retente via l'API si le navigateur ne téléporte pas.
+-- V254 : Auto Change Server et Auto Fish Cycle fusionnés dans le switch Hard Fish.
 -- V249 : Auto Parry démarre OFF et son interrupteur répond au clic sur la carte.
 -- V246 : timing Auto Parry ajusté prudemment au ping aller-retour.
 -- V245 : Auto Parry tolère les IDs variables et revérifie la cible, la santé et la portée.
@@ -263,6 +264,11 @@ do
         end
         return _G.PRISONRP_QUEUE_AUTO_RELOAD()
     end
+    -- Purge stale executor queue entries after a queued teleport, when supported.
+    if __PRISONRP_AUTO_RELOAD_FROM_QUEUE and type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
+        local cleared = _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
+        if not cleared then warn("[Hub Prison RP] Executor could not clear the old teleport queue") end
+    end
 end
 
 get_gc = getgc or (debug and debug.getgc)
@@ -277,6 +283,257 @@ if not guiParent and LocalPlayer then
 end
 if not guiParent then
     error("[Hub Prison RP] PlayerGui not found")
+end
+
+-- Auto-run the user-provided lobby flow on script execution.
+do
+--[[
+  Prison RP | Select Character + Continue + Safe Join (LOBBY)
+]]
+
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+local pg = lp:WaitForChild("PlayerGui")
+
+local SAFE_SERVERS = {
+    { label = "Penjara Johor Bahru",  keys = {"penjara johor bahru", "johor bahru", "johor"} },
+    { label = "Penjara George Town",  keys = {"penjara george town", "george town", "georgetown"} },
+    { label = "Gevangenis Rotterdam", keys = {"gevangenis rotterdam", "rotterdam"} },
+    { label = "Gevangenis Amsterdam", keys = {"gevangenis amsterdam", "amsterdam"} },
+    { label = "Wiezienie Warszawa",   keys = {"wiezienie warszawa", "więzienie warszawa", "warszawa", "warsaw"} },
+    { label = "Wiezienie Lodz",       keys = {"wiezienie lodz", "więzienie łódź", "więzienie lodz", "lodz", "łódź"} },
+    { label = "Wiezienie Krakow",     keys = {"wiezienie krakow", "więzienie kraków", "więzienie krakow", "krakow", "kraków"} },
+    { label = "Taipei Prison",        keys = {"chinese1", "台北監獄", "taipei"} },
+    { label = "New Taipei Prison",    keys = {"chinese2", "新北監獄", "new taipei"} },
+    { label = "Taoyuan Prison",       keys = {"chinese3", "桃園監獄", "taoyuan"} },
+}
+
+local function norm(s)
+    s = tostring(s or ""):lower()
+    s = s:gsub("ę","e"):gsub("ż","z"):gsub("ź","z"):gsub("ń","n")
+    s = s:gsub("ó","o"):gsub("ł","l"):gsub("ą","a"):gsub("ć","c"):gsub("ś","s")
+    s = s:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    return s
+end
+
+local function click(btn)
+    if not btn then return false end
+    pcall(function()
+        if typeof(firesignal) == "function" then
+            pcall(function() firesignal(btn.MouseButton1Click) end)
+            pcall(function() firesignal(btn.Activated) end)
+        end
+        if btn.Activate then btn:Activate() end
+    end)
+    return true
+end
+
+local function getCharacters()
+    local menu = pg:FindFirstChild("MainMenuGui")
+    return menu and menu:FindFirstChild("Characters")
+end
+
+local function selectFirstCharacter()
+    local chars = getCharacters()
+    if not chars then
+        warn("[Lobby] Characters missing")
+        return false
+    end
+
+    local scroll = chars:FindFirstChild("Scroll")
+    if not scroll then return false end
+
+    -- priorité: slot numérique avec un vrai titre (pas New Character / +1 Slot)
+    local best = nil
+    for _, row in ipairs(scroll:GetChildren()) do
+        if row:IsA("ImageButton") or row:IsA("TextButton") then
+            local name = row.Name
+            if tonumber(name) then
+                local title = row:FindFirstChild("Title")
+                local titleText = ""
+                pcall(function() titleText = tostring(title and title.Text or "") end)
+                local t = norm(titleText)
+                if t ~= ""
+                    and not t:find("new character", 1, true)
+                    and not t:find("+1 slot", 1, true)
+                    and not t:find("unknown", 1, true) then
+                    best = row
+                    print("[Lobby] select character", name, titleText)
+                    break
+                end
+            end
+        end
+    end
+
+    -- fallback slot 1
+    if not best then
+        best = scroll:FindFirstChild("1")
+    end
+
+    if not best then
+        warn("[Lobby] no character slot found")
+        return false
+    end
+
+    click(best)
+    return true
+end
+
+local function clickContinue()
+    local chars = getCharacters()
+    local btn = chars and chars:FindFirstChild("Bottom")
+    btn = btn and btn:FindFirstChild("Continue")
+    if not btn then
+        -- fallback search
+        for _, obj in ipairs(pg:GetDescendants()) do
+            if obj:IsA("TextButton") then
+                local t = ""
+                pcall(function() t = norm(obj.Text) end)
+                if t == "continue" or t == "continuer" then
+                    btn = obj
+                    break
+                end
+            end
+        end
+    end
+    if not btn then
+        warn("[Lobby] Continue missing")
+        return false
+    end
+    print("[Lobby] Continue")
+    click(btn)
+    return true
+end
+
+local function getServerScroll()
+    local menu = pg:FindFirstChild("MainMenuGui")
+    local servers = menu and menu:FindFirstChild("Servers")
+    return servers and servers:FindFirstChild("Scroll")
+end
+
+local function waitServerScroll(timeout)
+    local t = os.clock() + (timeout or 10)
+    while os.clock() < t do
+        local scroll = getServerScroll()
+        if scroll and #scroll:GetChildren() > 1 then
+            return scroll
+        end
+        task.wait(0.2)
+    end
+    return getServerScroll()
+end
+
+local function rowBlob(row)
+    local blob = norm(row.Name)
+    for _, d in ipairs(row:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            local ok, text = pcall(function() return d.Text end)
+            if ok and text and text ~= "" then
+                blob ..= " " .. norm(text)
+            end
+        end
+    end
+    return blob
+end
+
+local function rowMatches(row, entry)
+    local blob = rowBlob(row)
+    if norm(row.Name) == norm(entry.keys[1]) then return true end
+    for _, key in ipairs(entry.keys) do
+        if blob:find(norm(key), 1, true) then return true end
+    end
+    return false
+end
+
+local function isJoinable(row)
+    for _, d in ipairs(row:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            local ok, text = pcall(function() return d.Text end)
+            if ok and text then
+                local t = norm(text)
+                if t:find("offline", 1, true) then return false end
+                local cur, max = t:match("(%d+)%s*/%s*(%d+)")
+                if cur and max then
+                    cur, max = tonumber(cur), tonumber(max)
+                    if cur and max and cur >= max then return false end
+                end
+            end
+        end
+    end
+    return true
+end
+
+local function getJoinButton(row)
+    local btn = row:FindFirstChild("Info")
+    btn = btn and btn:FindFirstChild("Right")
+    btn = btn and btn:FindFirstChild("Join")
+    if btn then return btn end
+    for _, d in ipairs(row:GetDescendants()) do
+        if d:IsA("TextButton") or d:IsA("ImageButton") then
+            local n = norm(d.Name)
+            local t = ""
+            pcall(function() t = norm(d.Text) end)
+            if n:find("join", 1, true) or t:find("join", 1, true) then
+                return d
+            end
+        end
+    end
+    return nil
+end
+
+local function joinRandomSafe()
+    local scroll = waitServerScroll(10)
+    if not scroll then
+        warn("[Lobby] server list missing")
+        return false
+    end
+
+    for _, entry in ipairs(SAFE_SERVERS) do
+        for _, row in ipairs(scroll:GetChildren()) do
+            if row.Name ~= "Template" and rowMatches(row, entry) and isJoinable(row) then
+                local btn = getJoinButton(row)
+                if btn then
+                    print("[Lobby] join", entry.label, "via", row.Name)
+                    click(btn)
+                    return true
+                end
+            end
+        end
+    end
+
+    warn("[Lobby] no safe server joinable")
+    return false
+end
+
+-- FLOW
+task.spawn(function()
+    print("[Lobby] character -> continue -> safe server")
+
+    local lobbyDeadline = os.clock() + 120
+    repeat
+        if getCharacters() then break end
+        task.wait(0.25)
+    until os.clock() >= lobbyDeadline
+    if not getCharacters() then
+        warn("[Lobby] character menu did not appear within 120 seconds")
+        return
+    end
+
+    if not selectFirstCharacter() then return end
+    task.wait(0.35)
+
+    if not clickContinue() then return end
+    task.wait(1.0)
+
+    -- si toujours sur characters, re-tente continue
+    if not getServerScroll() then
+        clickContinue()
+        task.wait(1.0)
+    end
+
+    local ok = joinRandomSafe()
+    print("[Lobby] finished =", ok)
+end)
 end
 
 -- Après une téléportation, Prison RP peut afficher son écran d'accueil et attendre
@@ -3556,14 +3813,30 @@ local function serverHopNormalize(value)
 end
 
 local function serverHopClick(button)
-    if not button then return false end
-    local ok = pcall(function() button:Activate() end)
-    if ok then return true end
-    if type(firesignal) == "function" then
-        local signal = button.Activated or button.MouseButton1Click
-        if signal then return pcall(firesignal, signal) end
+    if not button or not button.Parent then return false end
+
+    -- Match the activation path used by the standalone hop script.
+    local fired = false
+    local fireSignal = firesignal
+    if type(fireSignal) == "function" then
+        local activatedSignal = nil
+        local clickedSignal = nil
+        pcall(function() activatedSignal = button.Activated end)
+        pcall(function() clickedSignal = button.MouseButton1Click end)
+        if activatedSignal then
+            local ok = pcall(fireSignal, activatedSignal)
+            fired = fired or ok
+        end
+        if clickedSignal then
+            local ok = pcall(fireSignal, clickedSignal)
+            fired = fired or ok
+        end
     end
-    return false
+
+    local activated = pcall(function()
+        if button.Activate then button:Activate() end
+    end)
+    return fired or activated
 end
 
 local function serverHopMainGui()
@@ -3677,6 +3950,21 @@ local function serverHopJoinButton(row)
     return nil
 end
 
+local function serverHopWaitForJobChange(previousJobId, timeoutSeconds)
+    local deadline = os.clock() + (tonumber(timeoutSeconds) or 20)
+    repeat
+        local currentJobId = nil
+        pcall(function() currentJobId = game.JobId end)
+        if currentJobId and currentJobId ~= "" and currentJobId ~= previousJobId then
+            return true
+        end
+        task.wait(0.25)
+    until os.clock() >= deadline or not running
+    local currentJobId = nil
+    pcall(function() currentJobId = game.JobId end)
+    return currentJobId ~= nil and currentJobId ~= "" and currentJobId ~= previousJobId
+end
+
 local function serverHopJoinLeastPopulatedSafeServer(maxPlayers)
     if not serverHopOpenBrowser() then return false, "In-game server browser is unavailable" end
     task.wait(0.25)
@@ -3724,8 +4012,10 @@ local function serverHopJoinLeastPopulatedSafeServer(maxPlayers)
     end
     local choice = leastPopulated[math.random(1, #leastPopulated)]
     print("[Hub Prison RP] Joining " .. choice.label .. " (" .. tostring(choice.population) .. " players)")
+    local previousJobId = game.JobId
     if not serverHopClick(choice.button) then return false, "Could not activate the Join button" end
-    return true
+    if serverHopWaitForJobChange(previousJobId, 20) then return true end
+    return false, "Join button activated, but the server did not change"
 end
 
 local function serverHopHttpGet(url)
@@ -3777,12 +4067,14 @@ local function serverHopJoinLeastPopulatedPublicServer(maxPlayers)
     end
     if not bestId then return false, maxPlayers and "No public server below the player limit was found" or "No other public server was found" end
     local teleportService = game:GetService("TeleportService")
+    local previousJobId = game.JobId
     local ok, err = pcall(function()
         teleportService:TeleportToPlaceInstance(game.PlaceId, bestId, LocalPlayer)
     end)
     if not ok then return false, tostring(err) end
     print("[Hub Prison RP] Joining least-populated public server (" .. tostring(bestPopulation) .. " players)")
-    return true
+    if serverHopWaitForJobChange(previousJobId, 20) then return true end
+    return false, "Teleport request was sent, but the server did not change"
 end
 
 local function autoChangeServerForStaff(player, reason, maxPlayers)
@@ -3805,7 +4097,7 @@ function staffLeave(player, reason)
     task.delay(StaffAutoLeaveDelay, function()
         if not running then return end
         if _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true then
-            local requiredMaxPlayers = _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true and 5 or nil
+            local requiredMaxPlayers = _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true and 10 or nil
             local changed, changeError = autoChangeServerForStaff(player, reason, requiredMaxPlayers)
             if changed then return end
             warn("[Hub Prison RP] Auto Change Server failed: " .. tostring(changeError))
@@ -8475,7 +8767,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             or btn == AutoPushupBtn
             or btn.Name == "PRISONRP_AutoChangeServerToggle"
             or btn.Name == "PRISONRP_AutoBlockToggle"
-            or btn.Name == "PRISONRP_AutoFishCycleToggle"
+            or btn.Name == "PRISONRP_HardFishToggle"
             or btn == FPSCounterBtn
             or btn == AutoArmWrestleState.Btn
             or btn == BlackMarketBtn
@@ -15151,7 +15443,7 @@ do
         local function inspectAutoFishCycleServer()
     local currentPlayers = Players:GetPlayers()
     local playerCount = #currentPlayers
-    if playerCount >= 5 then
+    if playerCount >= 10 then
         return true, "server has " .. tostring(playerCount) .. " players", playerCount
     end
     for _, player in ipairs(currentPlayers) do
@@ -15179,9 +15471,9 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
     local thisToken = cycleRunToken
 
     if enabled then
-        -- Le cycle ne réarme pas seul le script. Une file est mise à jour seulement
-        -- si Auto Reload ou Auto Change Server est activé séparément.
-        if _G.PRISONRP_AUTO_RELOAD_ENABLED == true or _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true then
+        -- Garder la relance en file pendant le cycle ou une autre option de téléportation.
+        -- Ainsi le cycle peut reprendre après son propre changement de serveur.
+        if enabled or _G.PRISONRP_AUTO_RELOAD_ENABLED == true or _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true then
             if type(_G.PRISONRP_REARM_AUTO_RELOAD_QUEUE) == "function" then
                 local queued, queueError = _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
                 if not queued then
@@ -15191,7 +15483,7 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
         elseif type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
             _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
         end
-        stats.status = "Auto Fish Cycle: checking server..."
+        stats.status = "Hard Fish: checking server..."
         syncAutoFishState()
 
         task.spawn(function()
@@ -15205,8 +15497,8 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
             if not running or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED ~= true
                 or thisToken ~= cycleRunToken then return end
             if _G.PRISONRP_AUTO_FISH_CYCLE_SETTINGS_READY ~= true then
-                stats.status = "Auto Fish Cycle: settings did not finish loading"
-                warn("[Hub Prison RP] Auto Fish Cycle: settings did not finish loading")
+                stats.status = "Hard Fish: settings did not finish loading"
+                warn("[Hub Prison RP] Hard Fish: settings did not finish loading")
                 syncAutoFishState()
                 return
             end
@@ -15217,16 +15509,16 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
                 local shouldHop, reason, playerCount = inspectAutoFishCycleServer()
                 if shouldHop then
                     fishingAtLake = false
-                    stats.status = "Auto Fish Cycle: " .. tostring(reason) .. "; changing server..."
+                    stats.status = "Hard Fish: " .. tostring(reason) .. "; changing server..."
                     syncAutoFishState()
 
                     -- Le serveur choisi doit lui aussi être libre et compter moins de 5 joueurs.
-                    local hopped, hopError = autoChangeServerForStaff(nil, reason, 5)
+                    local hopped, hopError = autoChangeServerForStaff(nil, reason, 10)
                     if hopped then return end
-                    warn("[Hub Prison RP] Auto Fish Cycle server change failed: " .. tostring(hopError))
+                    warn("[Hub Prison RP] Hard Fish server change failed: " .. tostring(hopError))
                     task.wait(AutoChangeServerCooldown or 12)
                 elseif not fishingAtLake then
-                    stats.status = "Auto Fish Cycle: clear server (" .. tostring(playerCount) .. "); going to lake..."
+                    stats.status = "Hard Fish: clear server (" .. tostring(playerCount) .. "); going to lake..."
                     syncAutoFishState()
                     local teleported = false
                     for attempt = 1, 3 do
@@ -15251,10 +15543,10 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
                         or thisToken ~= cycleRunToken then return end
                     if teleported then
                         fishingAtLake = true
-                        stats.status = "Auto Fish Cycle: at lake (Auto Fish unchanged)"
+                        stats.status = "Hard Fish: at lake (Auto Fish unchanged)"
                     else
-                        stats.status = "Auto Fish Cycle: lake teleport failed"
-                        warn("[Hub Prison RP] Auto Fish Cycle: could not return to the lake")
+                        stats.status = "Hard Fish: lake teleport failed"
+                        warn("[Hub Prison RP] Hard Fish: could not return to the lake")
                         task.wait(2)
                     end
                     syncAutoFishState()
@@ -15283,6 +15575,24 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
             _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE(not (_G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true))
         end
 
+        _G.PRISONRP_HARD_FISH_GET_STATE = function()
+            return _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
+                or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
+        end
+        _G.PRISONRP_HARD_FISH_SET_STATE = function(enabled)
+            enabled = enabled == true
+            if type(_G.PRISONRP_AUTO_CHANGE_SERVER_SET_STATE) == "function" then
+                _G.PRISONRP_AUTO_CHANGE_SERVER_SET_STATE(enabled)
+            end
+            if type(_G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE) == "function" then
+                _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE(enabled)
+            end
+        end
+        _G.PRISONRP_HARD_FISH_TOGGLE = function()
+            _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
+            local enabled = not (_G.PRISONRP_HARD_FISH_GET_STATE() == true)
+            _G.PRISONRP_HARD_FISH_SET_STATE(enabled)
+        end
         return {
             SetTextScale = setTextScale,
             SetHighContrast = setHighContrast,
@@ -15834,7 +16144,9 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
                 Toggles={
                     AutoFishing=_G.AutoFishingEnabled==true,
                     AutoBlock=false,
-                    AutoFishCycle=_G.PRISONRP_AUTO_FISH_CYCLE_ENABLED==true,
+                    AutoReload=_G.PRISONRP_AUTO_RELOAD_ENABLED==true,
+
+                    HardFish=(_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED==true or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED==true),
                     AutoSell=_G.AutoSellEnabled==true,
                     AutoEatDrink=AutoEatDrinkEnabled==true,
                     FPSCounter=_G.PRISONRP_FPS_COUNTER_ENABLED==true,
@@ -15968,6 +16280,46 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
                 end
             end
 
+            if t.AutoReload ~= nil then
+                restoreBool(
+                    function() return _G.PRISONRP_AUTO_RELOAD_ENABLED == true end,
+                    function()
+                        if type(_G.PRISONRP_AUTO_RELOAD_SET_STATE) == "function" then
+                            _G.PRISONRP_AUTO_RELOAD_SET_STATE(true)
+                        end
+                    end,
+                    function()
+                        if type(_G.PRISONRP_AUTO_RELOAD_SET_STATE) == "function" then
+                            _G.PRISONRP_AUTO_RELOAD_SET_STATE(false)
+                        end
+                    end,
+                    t.AutoReload
+                )
+            end
+            local savedHardFish = t.HardFish
+            if savedHardFish == nil and (t.AutoChangeServer ~= nil or t.AutoFishCycle ~= nil) then
+                -- Migration des anciens profils qui stockaient les deux options séparément.
+                savedHardFish = t.AutoChangeServer == true or t.AutoFishCycle == true
+            end
+            if savedHardFish ~= nil and not __PRISONRP_AUTO_RELOAD_FROM_QUEUE then
+                restoreBool(
+                    function()
+                        return type(_G.PRISONRP_HARD_FISH_GET_STATE) == "function"
+                            and _G.PRISONRP_HARD_FISH_GET_STATE() == true
+                    end,
+                    function()
+                        if type(_G.PRISONRP_HARD_FISH_SET_STATE) == "function" then
+                            _G.PRISONRP_HARD_FISH_SET_STATE(true)
+                        end
+                    end,
+                    function()
+                        if type(_G.PRISONRP_HARD_FISH_SET_STATE) == "function" then
+                            _G.PRISONRP_HARD_FISH_SET_STATE(false)
+                        end
+                    end,
+                    savedHardFish
+                )
+            end
             if t.AutoBlock ~= nil then
                 restoreBool(
                     function() return _G.PRISONRP_AUTO_BLOCK_ENABLED == true end,
@@ -19781,7 +20133,7 @@ do
         if not autoFishCycleBtn then
             autoFishCycleBtn = Instance.new("TextButton")
             autoFishCycleBtn.Name = "PRISONRP_AutoFishCycleToggle"
-            autoFishCycleBtn.Text = "Auto Fish Cycle"
+            autoFishCycleBtn.Text = "Hard Fish"
             autoFishCycleBtn.Size = UDim2.new(1, -5, 0, 34)
             autoFishCycleBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
             autoFishCycleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -19791,15 +20143,21 @@ do
             autoFishCycleBtn.Visible = true
             autoFishCycleBtn.Parent = autresPageRef
         end
+        autoFishCycleBtn.Name = "PRISONRP_HardFishToggle"
+        autoFishCycleBtn.Text = "Hard Fish"
         _G.PRISONRP_AUTO_FISH_CYCLE_BUTTON = autoFishCycleBtn
+        _G.PRISONRP_AUTO_CHANGE_SERVER_BUTTON = autoFishCycleBtn
+        if autoChangeServerBtn and autoChangeServerBtn ~= autoFishCycleBtn then
+            autoChangeServerBtn:Destroy()
+        end
 
         -- Ordre de haut en bas, regroupé par fonction.
         local items = {
             -- Automatisations
             {obj = AutoPushupBtn, label = "Auto Pushup"},
             {obj = autoBlockBtn, label = "Auto Block"},
-            {obj = autoChangeServerBtn, label = "Auto Change Server"},
-            {obj = autoFishCycleBtn, label = "Auto Fish Cycle"},
+            {obj = autoFishCycleBtn, label = "Hard Fish"},
+
             {obj = type(_G.PRISONRP_AUTO_ARM_WRESTLE_STATE) == "table" and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Btn or nil, label = "Auto Arm Wrestle"},
             {obj = autresPageRef:FindFirstChild("PRISONRP_AutoPurpleToggle"), label = "Auto Purple"},
 
@@ -19874,19 +20232,14 @@ do
 
             local unifiedCards = {
                 {
-                    name = "PRISONRP_AutoChangeServerToggle",
-                    getter = "PRISONRP_AUTO_CHANGE_SERVER_GET_STATE",
-                    toggle = "PRISONRP_AUTO_CHANGE_SERVER_TOGGLE",
+                    name = "PRISONRP_HardFishToggle",
+                    getter = "PRISONRP_HARD_FISH_GET_STATE",
+                    toggle = "PRISONRP_HARD_FISH_TOGGLE",
                 },
                 {
                     name = "PRISONRP_AutoBlockToggle",
                     getter = "PRISONRP_AUTO_BLOCK_GET_STATE",
                     toggle = "PRISONRP_AUTO_BLOCK_TOGGLE",
-                },
-                {
-                    name = "PRISONRP_AutoFishCycleToggle",
-                    getter = "PRISONRP_AUTO_FISH_CYCLE_GET_STATE",
-                    toggle = "PRISONRP_AUTO_FISH_CYCLE_TOGGLE",
                 },
                 {
                     name = "PRISONRP_AutoPurpleToggle",
