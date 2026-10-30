@@ -1,5 +1,8 @@
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 local __PRISONRP_SOURCE = [=[
+-- V257 : ajoute FPS Counter, Auto Purple et Auto Parry dans les Binds ; réattache le listener audio aux changements de caméra.
+-- V257 : SPEC aligne le groupe du listener sur celui de l’AudioEmitter ciblé et diagnostique l’autorisation locale.
+-- V257 : SPEC isole localement le seul AudioEmitter ciblé avec un groupe temporaire unique.
 -- V255 : Hard Fish confirme le changement de serveur et retente via l'API si le navigateur ne téléporte pas.
 -- V254 : Auto Change Server et Auto Fish Cycle fusionnés dans le switch Hard Fish.
 -- V249 : Auto Parry démarre OFF et son interrupteur répond au clic sur la carte.
@@ -7,7 +10,7 @@ local __PRISONRP_SOURCE = [=[
 -- V245 : Auto Parry tolère les IDs variables et revérifie la cible, la santé et la portée.
 -- V244 : Auto Parry intégré dans la case existante avec les animations repérées.
 -- V242 : profils et choix du chargement automatique séparés par UserId Roblox.
--- V241 : Auto Fish Cycle indépendant d'Auto Fish ; pas de relance autonome.
+-- V241 : ancien état Auto Fish Cycle migré vers Hard Fish ; plus de toggle séparé.
 -- V240 : reprise après téléportation et activation du bouton Play de l'écran d'accueil.
 -- V239 : TP Lake renommé ; TP Mine reprend le déplacement progressif à 60 vers la mine.
 -- V237 : emojis réservés aux onglets ; icônes distinctes pour les cinq onglets principaux.
@@ -76,13 +79,16 @@ end
 -- après téléportation conserve ON pour recharger le script et réarmer le prochain serveur.
 local __PRISONRP_AUTO_RELOAD_FROM_QUEUE = _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE == true
 local __PRISONRP_RELOAD_TOGGLE_FROM_QUEUE = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
-local __PRISONRP_CHANGE_SERVER_TOGGLE_FROM_QUEUE = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
-local __PRISONRP_FISH_CYCLE_FROM_QUEUE = _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
+-- Hard Fish is one persisted state; merge older server-hop/cycle flags on queue resume.
+local __PRISONRP_HARD_FISH_FROM_QUEUE = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
+    or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+    or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
 _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = nil
 _G.PRISONRP_AUTO_RELOAD_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_RELOAD_TOGGLE_FROM_QUEUE
-_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_CHANGE_SERVER_TOGGLE_FROM_QUEUE
-_G.PRISONRP_AUTO_FISH_CYCLE_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_FISH_CYCLE_FROM_QUEUE
-_G.PRISONRP_AUTO_FISH_CYCLE_SETTINGS_READY = false
+_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_HARD_FISH_FROM_QUEUE
+_G.PRISONRP_HARD_FISH_ENGINE_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_HARD_FISH_FROM_QUEUE
+_G.PRISONRP_AUTO_FISH_CYCLE_ENABLED = nil
+_G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY = false
 local running = false
 if _G.CombinedHubLoaded == true then
     _G.running = false -- arrête aussi les anciennes versions qui utilisaient la globale
@@ -216,6 +222,18 @@ do
         end
         return type(queueFunction) == "function" and queueFunction or nil
     end
+    local function getAutoReloadQueueEnvironment()
+        local env = _G
+        if type(getgenv) == "function" then
+            pcall(function()
+                local shared = getgenv()
+                if type(shared) == "table" then env = shared end
+            end)
+        end
+        return env
+    end
+    _G.PRISONRP_GET_AUTO_RELOAD_QUEUE_ENV = getAutoReloadQueueEnvironment
+
     _G.PRISONRP_QUEUE_AUTO_RELOAD = function()
         local source = _G.PRISONRP_AUTO_RELOAD_SOURCE
         if type(source) ~= "string" or source == "" then
@@ -225,28 +243,48 @@ do
         if type(queueFunction) ~= "function" then
             return false, "Unavailable in this executor"
         end
+        local env = getAutoReloadQueueEnvironment()
+        local token = env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN or _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN
+        if type(token) ~= "string" or token == "" then
+            return false, "Auto Reload queue token is unavailable"
+        end
         local ok, err = pcall(function()
             local encodedSource = string.format("%q", source)
+            local encodedToken = string.format("%q", token)
             local reloadEnabled = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
-            local changeServerEnabled = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
-            local cycleEnabled = _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
-            local queuedCode = "_G.PRISONRP_AUTO_RELOAD_ENABLED=" .. tostring(reloadEnabled) .. "; _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED=" .. tostring(changeServerEnabled) .. "; _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE=true; _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED=" .. tostring(cycleEnabled) .. "; _G.PRISONRP_AUTO_RELOAD_SOURCE=" .. encodedSource .. "; loadstring(_G.PRISONRP_AUTO_RELOAD_SOURCE)()"
+            local hardFishEnabled = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
+                or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+            local queuedCode =
+                "local queueEnv=_G; if type(getgenv)=='function' then pcall(function() local shared=getgenv(); if type(shared)=='table' then queueEnv=shared end end) end; "
+                .. "local queueToken=" .. encodedToken .. "; "
+                .. "if queueEnv.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN==queueToken and queueEnv.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN~=queueToken then "
+                .. "queueEnv.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN=queueToken; "
+                .. "_G.PRISONRP_AUTO_RELOAD_ENABLED=" .. tostring(reloadEnabled) .. "; "
+                .. "_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED=" .. tostring(hardFishEnabled) .. "; "
+                .. "_G.PRISONRP_HARD_FISH_ENGINE_ENABLED=" .. tostring(hardFishEnabled) .. "; "
+                .. "_G.PRISONRP_AUTO_RELOAD_FROM_QUEUE=true; "
+                .. "local queuedSource=" .. encodedSource .. "; "
+                .. "_G.PRISONRP_AUTO_RELOAD_SOURCE=queuedSource; "
+                .. "local queuedChunk,compileError=loadstring(queuedSource); "
+                .. "if not queuedChunk then error(compileError) end; queuedChunk() end"
             queueFunction(queuedCode)
         end)
         if not ok then return false, tostring(err) end
         return true
     end
-    _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE = function()
-        local env = _G
-        if type(getgenv) == "function" then pcall(function() env = getgenv() end) end
-        local clearFunction = clear_teleport_queue or clearqueueonteleport or clear_queue_on_teleport
-            or (type(env) == "table" and (env.clear_teleport_queue or env.clearqueueonteleport or env.clear_queue_on_teleport))
-        if type(clearFunction) == "function" then
-            local ok = pcall(clearFunction)
-            return ok
-        end
-        return false
+
+    _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE = function()
+        local env = getAutoReloadQueueEnvironment()
+        local hadToken = env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN ~= nil
+        env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = nil
+        env.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+        _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = nil
+        _G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+        return hadToken
     end
+    -- Compatibility alias; this invalidates only Hub entries and never clears the executor's whole queue.
+    _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE = _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE
+
     _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE = function()
         local source = _G.PRISONRP_AUTO_RELOAD_SOURCE
         if type(source) ~= "string" or source == "" then
@@ -259,15 +297,27 @@ do
         if type(_G.PRISONRP_QUEUE_AUTO_RELOAD) ~= "function" then
             return false, "Auto Reload queue helper is unavailable"
         end
-        if type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
-            _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
+
+        -- A fresh token makes older queued Hub copies inert without touching other scripts.
+        local token = tostring(os.time()) .. ":" .. tostring(os.clock())
+            .. ":" .. tostring(math.random(1, 2147483646)) .. ":" .. tostring({})
+        local env = getAutoReloadQueueEnvironment()
+        env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = token
+        env.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+        _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = token
+        _G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+
+        local queued, queueError = _G.PRISONRP_QUEUE_AUTO_RELOAD()
+        if not queued then
+            _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE()
+            return false, queueError
         end
-        return _G.PRISONRP_QUEUE_AUTO_RELOAD()
+        return true
     end
-    -- Purge stale executor queue entries after a queued teleport, when supported.
-    if __PRISONRP_AUTO_RELOAD_FROM_QUEUE and type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
-        local cleared = _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
-        if not cleared then warn("[Hub Prison RP] Executor could not clear the old teleport queue") end
+
+    -- Manual execution always invalidates a prior Hub queue; queued execution keeps its one-shot token.
+    if not __PRISONRP_AUTO_RELOAD_FROM_QUEUE then
+        _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE()
     end
 end
 
@@ -317,15 +367,29 @@ local function norm(s)
 end
 
 local function click(btn)
-    if not btn then return false end
-    pcall(function()
-        if typeof(firesignal) == "function" then
-            pcall(function() firesignal(btn.MouseButton1Click) end)
-            pcall(function() firesignal(btn.Activated) end)
+    if not btn or not btn.Parent then return false end
+    local isButton = false
+    pcall(function() isButton = btn:IsA("GuiButton") end)
+    if not isButton then return false end
+
+    -- Send one activation only; trying both signals and Activate() can run a handler twice.
+    local activate = nil
+    pcall(function() activate = btn.Activate end)
+    if type(activate) == "function" then
+        local ok = pcall(function() btn:Activate() end)
+        if ok then return true end
+    end
+
+    local fireSignal = firesignal
+    if type(fireSignal) == "function" then
+        local activatedSignal = nil
+        pcall(function() activatedSignal = btn.Activated end)
+        if activatedSignal then
+            local ok = pcall(fireSignal, activatedSignal)
+            return ok
         end
-        if btn.Activate then btn:Activate() end
-    end)
-    return true
+    end
+    return false
 end
 
 local function getCharacters()
@@ -375,8 +439,7 @@ local function selectFirstCharacter()
         return false
     end
 
-    click(best)
-    return true
+    return click(best)
 end
 
 local function clickContinue()
@@ -401,8 +464,7 @@ local function clickContinue()
         return false
     end
     print("[Lobby] Continue")
-    click(btn)
-    return true
+    return click(btn)
 end
 
 local function getServerScroll()
@@ -494,8 +556,7 @@ local function joinRandomSafe()
                 local btn = getJoinButton(row)
                 if btn then
                     print("[Lobby] join", entry.label, "via", row.Name)
-                    click(btn)
-                    return true
+                    if click(btn) then return true end
                 end
             end
         end
@@ -2334,19 +2395,19 @@ running = true
 
 -- Si le rechargement vient du cycle combiné, attendre la restauration du profil
 -- avant de retourner au lac et de reprendre Auto Fish.
-if _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true then
+if _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true then
     task.spawn(function()
         local deadline = os.clock() + 120
-        while running and _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
+        while running and _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
             and os.clock() < deadline
-            and (_G.PRISONRP_AUTO_FISH_CYCLE_SETTINGS_READY ~= true
-                or type(_G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE) ~= "function") do
+            and (_G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY ~= true
+                or type(_G.PRISONRP_HARD_FISH_ENGINE_SET_STATE) ~= "function") do
             task.wait(0.25)
         end
-        if running and _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
-            and _G.PRISONRP_AUTO_FISH_CYCLE_SETTINGS_READY == true
-            and type(_G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE) == "function" then
-            _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE(true)
+        if running and _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+            and _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY == true
+            and type(_G.PRISONRP_HARD_FISH_ENGINE_SET_STATE) == "function" then
+            _G.PRISONRP_HARD_FISH_ENGINE_SET_STATE(true)
         end
     end)
 end
@@ -4097,7 +4158,7 @@ function staffLeave(player, reason)
     task.delay(StaffAutoLeaveDelay, function()
         if not running then return end
         if _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true then
-            local requiredMaxPlayers = _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true and 10 or nil
+            local requiredMaxPlayers = _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true and 10 or nil
             local changed, changeError = autoChangeServerForStaff(player, reason, requiredMaxPlayers)
             if changed then return end
             warn("[Hub Prison RP] Auto Change Server failed: " .. tostring(changeError))
@@ -6746,215 +6807,231 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
 
     local function tpSpecVoiceStatus(targetRoot, listener)
         local parts = {}
-        local emitter = tpSpecFindEmitter(TPSpecSelectedPlayer)
+        local player = TPSpecSelectedPlayer
+        local emitter = tpSpecFindEmitter(player)
+        local input = nil
+        if player then
+            pcall(function() input = player:FindFirstChildWhichIsA("AudioDeviceInput") end)
+        end
+
         local voiceEnabled = nil
-        if TPSpecSelectedPlayer then
+        if player then
             pcall(function()
                 local VoiceChatService = game:GetService("VoiceChatService")
-                voiceEnabled = VoiceChatService:IsVoiceEnabledForUserIdAsync(TPSpecSelectedPlayer.UserId)
+                voiceEnabled = VoiceChatService:IsVoiceEnabledForUserIdAsync(player.UserId)
             end)
         end
+
+        local function safeProperty(object, property)
+            local value = nil
+            pcall(function() value = object and object[property] end)
+            return value
+        end
+
         local listenerFound = listener ~= nil
         local output = nil
         pcall(function()
             local SoundService = game:GetService("SoundService")
             output = SoundService:FindFirstChildOfClass("AudioDeviceOutput")
         end)
-        table.insert(parts, "Voice=" .. (voiceEnabled == true and "ON" or voiceEnabled == false and "OFF" or "?"))
-        table.insert(parts, "Emitter=" .. (emitter and "OK" or "NON"))
-        table.insert(parts, "Listener=" .. (listenerFound and "OK" or "NON"))
-        table.insert(parts, "Output=" .. (output and "OK" or "NON"))
+
+        table.insert(parts, "VoiceEligible=" .. (voiceEnabled == true and "YES" or voiceEnabled == false and "NO" or "UNKNOWN"))
+        table.insert(parts, "Input=" .. (input and "YES" or "NO"))
+        if input then
+            table.insert(parts, "InputActive=" .. tostring(safeProperty(input, "Active")))
+            table.insert(parts, "InputMuted=" .. tostring(safeProperty(input, "Muted")))
+            table.insert(parts, "InputReady=CLIENT_UNAVAILABLE")
+            local accessType = safeProperty(input, "AccessType")
+            table.insert(parts, "AccessType=" .. tostring(accessType))
+            local accessList = nil
+            pcall(function() accessList = input:GetUserIdAccessList() end)
+            table.insert(parts, "AccessListCount=" .. tostring(type(accessList) == "table" and #accessList or "?"))
+            if type(accessList) == "table" and LocalPlayer then
+                local localIdListed = false
+                for _, userId in ipairs(accessList) do
+                    if tonumber(userId) == LocalPlayer.UserId then
+                        localIdListed = true
+                        break
+                    end
+                end
+                local localAllowed = nil
+                if accessType == Enum.AccessModifierType.Allow then
+                    localAllowed = localIdListed
+                elseif accessType == Enum.AccessModifierType.Deny then
+                    localAllowed = not localIdListed
+                end
+                table.insert(parts, "LocalUserAllowed=" .. (localAllowed == nil and "UNKNOWN" or (localAllowed and "YES" or "NO")))
+            end
+        end
+
+        table.insert(parts, "Emitter=" .. (emitter and "YES" or "NO"))
+        if emitter then
+            table.insert(parts, "EmitterGroup=" .. tostring(safeProperty(emitter, "AudioInteractionGroup")))
+        end
+        table.insert(parts, "Listener=" .. (listenerFound and "YES" or "NO"))
         if listener then
-            local count = 0
-            pcall(function() count = #listener:GetInteractingEmitters() end)
-            table.insert(parts, "Audible=" .. tostring(count))
+            table.insert(parts, "ListenerGroup=" .. tostring(safeProperty(listener, "AudioInteractionGroup")))
+            local positionInstance = safeProperty(listener, "PositionInstance")
+            table.insert(parts, "ListenerPosition=" .. tostring(positionInstance and positionInstance.Name or "nil"))
+            local count, containsTarget, otherMatchingEmitters, targetAudibility = 0, false, 0, nil
+            pcall(function()
+                local interacting = listener:GetInteractingEmitters()
+                count = #interacting
+                for _, candidate in ipairs(interacting) do
+                    if candidate == emitter then
+                        containsTarget = true
+                    else
+                        otherMatchingEmitters = otherMatchingEmitters + 1
+                    end
+                end
+            end)
+            if emitter then
+                pcall(function() targetAudibility = listener:GetAudibilityFor(emitter) end)
+            end
+            table.insert(parts, "Interacting=" .. tostring(count))
+            table.insert(parts, "TargetInteracting=" .. tostring(containsTarget))
+            table.insert(parts, "OtherMatchingEmitters=" .. tostring(otherMatchingEmitters))
+            table.insert(parts, "GroupMatch=" .. tostring(
+                emitter ~= nil
+                and safeProperty(emitter, "AudioInteractionGroup") == safeProperty(listener, "AudioInteractionGroup")
+            ))
+            table.insert(parts, "TargetAudibility=" .. tostring(targetAudibility or "?"))
+        end
+        table.insert(parts, "Output=" .. (output and "YES" or "NO"))
+        if targetRoot then
+            table.insert(parts, "TargetRoot=" .. tostring(targetRoot.Parent ~= nil))
         end
         return table.concat(parts, " | ")
     end
 
-    -- SPEC VOICE :
-    -- Roblox peut avoir plusieurs AudioListener actifs (par exemple un listener
-    -- sous le personnage ET un listener sous la caméra). Si on ne désactive pas
-    -- les autres, on continue d'entendre les gens autour de notre personnage.
-    -- On garde donc un seul listener actif, positionné sur le joueur observé,
-    -- tout en conservant son AudioInteractionGroup natif pour entendre ce qui
-    -- l'entoure normalement.
+    -- SPEC VOICE V5 : isoler localement l'AudioEmitter du joueur sélectionné.
+    -- Le groupe MicrophoneGroup est partagé par plusieurs joueurs : le réutiliser
+    -- laisse passer leurs voix. On attribue donc un groupe temporaire unique à
+    -- l'émetteur ciblé ET au listener local. Aucune permission/access-list n'est modifiée.
     local TPSpecVoiceSavedListeners = {}
     local TPSpecVoiceActiveListener = nil
-    local TPSpecVoiceCreatedListener = false
-    local TPSpecVoiceCreatedOutput = false
-    local TPSpecVoiceCreatedWire = nil
-    local TPSpecVoiceMuteGroup = nil
+    local TPSpecVoiceSavedEmitters = {}
+    local TPSpecVoiceActiveEmitter = nil
+    local TPSpecVoiceActiveGroup = nil
 
-    local function tpSpecFindBestListener()
-        local camera = workspace.CurrentCamera
-        if camera then
-            local listener = camera:FindFirstChildOfClass("AudioListener")
-            if listener then return listener end
-        end
-
-        local char = LocalPlayer and LocalPlayer.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local listener = root:FindFirstChildOfClass("AudioListener")
-            if listener then return listener end
-        end
-
-        local soundService = game:GetService("SoundService")
-        return soundService:FindFirstChildOfClass("AudioListener")
+    local function tpSpecSaveVoiceListener(listener)
+        if not listener or TPSpecVoiceSavedListeners[listener] then return end
+        local saved = {
+            PositionType = nil,
+            PositionInstance = nil,
+            AudioInteractionGroup = nil,
+        }
+        pcall(function() saved.PositionType = listener.PositionType end)
+        pcall(function() saved.PositionInstance = listener.PositionInstance end)
+        pcall(function() saved.AudioInteractionGroup = listener.AudioInteractionGroup end)
+        TPSpecVoiceSavedListeners[listener] = saved
     end
 
-    local function tpSpecEnsureVoiceOutput(listener)
-        if not listener then return end
+    local function tpSpecRestoreVoiceListener(listener, saved)
+        if not listener or not listener.Parent or not saved then return end
         pcall(function()
-            local SoundService = game:GetService("SoundService")
-            local output = SoundService:FindFirstChildOfClass("AudioDeviceOutput")
-            if not output then
-                output = Instance.new("AudioDeviceOutput")
-                output.Name = "OmegaTP_VoiceOutput"
-                output.Parent = SoundService
-                TPSpecVoiceCreatedOutput = true
+            if saved.PositionType ~= nil then
+                listener.PositionType = saved.PositionType
             end
-
-            local connected = false
-            for _, child in ipairs(listener:GetChildren()) do
-                if child:IsA("Wire") and child.SourceInstance == listener and child.TargetInstance == output then
-                    connected = true
-                    break
-                end
-            end
-
-            if not connected then
-                local wire = Instance.new("Wire")
-                wire.Name = "OmegaTP_VoiceWire"
-                wire.SourceInstance = listener
-                wire.TargetInstance = output
-                wire.Parent = listener
-                TPSpecVoiceCreatedWire = wire
+            listener.PositionInstance = saved.PositionInstance
+            if saved.AudioInteractionGroup ~= nil then
+                listener.AudioInteractionGroup = saved.AudioInteractionGroup
             end
         end)
+    end
+
+    local function tpSpecSaveVoiceEmitter(emitter)
+        if not emitter or TPSpecVoiceSavedEmitters[emitter] then return end
+        local saved = {AudioInteractionGroup = nil}
+        pcall(function() saved.AudioInteractionGroup = emitter.AudioInteractionGroup end)
+        TPSpecVoiceSavedEmitters[emitter] = saved
+    end
+
+    local function tpSpecRestoreVoiceEmitter(emitter, saved)
+        if not emitter or not emitter.Parent or not saved then return end
+        if saved.AudioInteractionGroup == nil then return end
+        pcall(function()
+            emitter.AudioInteractionGroup = saved.AudioInteractionGroup
+        end)
+    end
+
+    local function tpSpecGetCameraVoiceListener(camera)
+        if not camera then return nil end
+        return camera:FindFirstChildOfClass("AudioListener")
     end
 
     local function tpSpecSetVoiceListener(targetRoot)
         local camera = workspace.CurrentCamera
-        if not camera or not targetRoot then return end
+        if not camera or not targetRoot or not targetRoot.Parent then return end
 
-        -- Toujours utiliser le listener principal de la caméra pour garder
-        -- le flux audio connecté à la sortie Roblox.
-        local listener = camera:FindFirstChildOfClass("AudioListener")
-        if not listener then
-            listener = tpSpecFindBestListener()
+        local listener = tpSpecGetCameraVoiceListener(camera)
+        if not listener then return end
+
+        if TPSpecVoiceActiveListener and TPSpecVoiceActiveListener ~= listener then
+            tpSpecRestoreVoiceListener(
+                TPSpecVoiceActiveListener,
+                TPSpecVoiceSavedListeners[TPSpecVoiceActiveListener]
+            )
         end
-
-        if not listener then
-            local ok, created = pcall(function()
-                local newListener = Instance.new("AudioListener")
-                newListener.Name = "OmegaTP_VoiceListener"
-                newListener.Parent = camera
-                return newListener
-            end)
-            if not ok or not created then return end
-            listener = created
-            TPSpecVoiceCreatedListener = true
-        end
-
-        -- Sauvegarde de tous les listeners existants une seule fois.
-        if next(TPSpecVoiceSavedListeners) == nil then
-            for _, item in ipairs(game:GetDescendants()) do
-                if item:IsA("AudioListener") then
-                    local saved = {
-                        Parent = item.Parent,
-                        PositionType = nil,
-                        PositionInstance = nil,
-                        AudioInteractionGroup = nil,
-                    }
-                    pcall(function() saved.PositionType = item.PositionType end)
-                    pcall(function() saved.PositionInstance = item.PositionInstance end)
-                    pcall(function() saved.AudioInteractionGroup = item.AudioInteractionGroup end)
-                    TPSpecVoiceSavedListeners[item] = saved
-                end
-            end
-            TPSpecVoiceMuteGroup = "PrisonRP_SPEC_MUTE_" .. tostring(LocalPlayer and LocalPlayer.UserId or 0)
-        end
-
+        tpSpecSaveVoiceListener(listener)
         TPSpecVoiceActiveListener = listener
 
-        -- Le point d'écoute devient le joueur choisi, sans déplacer le listener.
-        pcall(function()
-            listener.PositionType = Enum.ListenerPositionType.Instance
-            listener.PositionInstance = targetRoot
-        end)
+        local selectedPlayer = TPSpecSelectedPlayer
+        local targetEmitter = tpSpecFindEmitter(selectedPlayer)
 
-        -- Le chat vocal Roblox utilise la paire AudioEmitter/AudioListener et
-        -- leur AudioInteractionGroup. On reprend explicitement le groupe de
-        -- l'emitter du joueur choisi afin que sa voix soit réellement audible.
-        local targetEmitter = tpSpecFindEmitter(TPSpecSelectedPlayer)
-        local targetGroup = nil
-        if targetEmitter then
-            pcall(function() targetGroup = targetEmitter.AudioInteractionGroup end)
+        -- Restaurer l'ancien émetteur quand la cible change ou quand son personnage respawn.
+        if TPSpecVoiceActiveEmitter and TPSpecVoiceActiveEmitter ~= targetEmitter then
+            tpSpecRestoreVoiceEmitter(
+                TPSpecVoiceActiveEmitter,
+                TPSpecVoiceSavedEmitters[TPSpecVoiceActiveEmitter]
+            )
+            TPSpecVoiceActiveEmitter = nil
+            TPSpecVoiceActiveGroup = nil
         end
 
-        if targetGroup ~= nil then
-            pcall(function() listener.AudioInteractionGroup = targetGroup end)
+        if targetEmitter and selectedPlayer then
+            tpSpecSaveVoiceEmitter(targetEmitter)
+            -- Groupe distinct par paire observateur/cible : les autres microphones
+            -- qui restent dans MicrophoneGroup ne correspondent plus au listener.
+            local isolatedGroup = "PRISONRP_SPEC_ONLY_"
+                .. tostring(LocalPlayer and LocalPlayer.UserId or 0)
+                .. "_" .. tostring(selectedPlayer.UserId)
+            TPSpecVoiceActiveEmitter = targetEmitter
+            TPSpecVoiceActiveGroup = isolatedGroup
+
+            pcall(function()
+                targetEmitter.AudioInteractionGroup = isolatedGroup
+            end)
+            pcall(function()
+                listener.AudioInteractionGroup = isolatedGroup
+                listener.PositionType = Enum.ListenerPositionType.Instance
+                listener.PositionInstance = targetRoot
+            end)
         else
-            local saved = TPSpecVoiceSavedListeners[listener]
-            if saved then
-                pcall(function() listener.AudioInteractionGroup = saved.AudioInteractionGroup or "" end)
-            end
+            -- Groupe sans émetteur correspondant : ne pas retomber sur toutes les voix.
+            TPSpecVoiceActiveGroup = "PRISONRP_SPEC_NO_TARGET_"
+                .. tostring(LocalPlayer and LocalPlayer.UserId or 0)
+            pcall(function()
+                listener.AudioInteractionGroup = TPSpecVoiceActiveGroup
+                listener.PositionType = Enum.ListenerPositionType.Instance
+                listener.PositionInstance = targetRoot
+            end)
         end
-
-        -- Désactive les autres listeners : aucune écoute autour de notre propre
-        -- personnage pendant le SPEC.
-        for other, _ in pairs(TPSpecVoiceSavedListeners) do
-            if other ~= listener and other.Parent then
-                pcall(function()
-                    other.AudioInteractionGroup = TPSpecVoiceMuteGroup
-                end)
-            end
-        end
-
-        -- S'assure que le listener actif possède bien une sortie audio.
-        tpSpecEnsureVoiceOutput(listener)
     end
 
     local function tpSpecRestoreVoice()
-        for listener, saved in pairs(TPSpecVoiceSavedListeners) do
-            if listener and listener.Parent then
-                pcall(function()
-                    if saved.Parent and saved.Parent.Parent then
-                        listener.Parent = saved.Parent
-                    end
-                    if saved.PositionType ~= nil then
-                        listener.PositionType = saved.PositionType
-                    end
-                    listener.PositionInstance = saved.PositionInstance
-                    listener.AudioInteractionGroup = saved.AudioInteractionGroup or ""
-                end)
-            end
+        for emitter, saved in pairs(TPSpecVoiceSavedEmitters) do
+            tpSpecRestoreVoiceEmitter(emitter, saved)
         end
+        TPSpecVoiceSavedEmitters = {}
+        TPSpecVoiceActiveEmitter = nil
+        TPSpecVoiceActiveGroup = nil
 
-        pcall(function()
-            if TPSpecVoiceCreatedWire and TPSpecVoiceCreatedWire.Parent then
-                TPSpecVoiceCreatedWire:Destroy()
-            end
-        end)
-        pcall(function()
-            if TPSpecVoiceCreatedListener and TPSpecVoiceActiveListener and TPSpecVoiceActiveListener.Parent then
-                TPSpecVoiceActiveListener:Destroy()
-            end
-        end)
-        pcall(function()
-            if TPSpecVoiceCreatedOutput and game:GetService("SoundService"):FindFirstChild("OmegaTP_VoiceOutput") then
-                game:GetService("SoundService").OmegaTP_VoiceOutput:Destroy()
-            end
-        end)
-
+        for listener, saved in pairs(TPSpecVoiceSavedListeners) do
+            tpSpecRestoreVoiceListener(listener, saved)
+        end
         TPSpecVoiceSavedListeners = {}
         TPSpecVoiceActiveListener = nil
-        TPSpecVoiceCreatedListener = false
-        TPSpecVoiceCreatedOutput = false
-        TPSpecVoiceCreatedWire = nil
-        TPSpecVoiceMuteGroup = nil
     end
 
     local function tpSpecUpdateInfo()
@@ -6997,6 +7074,48 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         tpSpecUpdateInfo()
     end
 
+    -- Envoie les diagnostics dans la console de l'exécuteur (et non dans la console F9 de Roblox).
+    -- rconsoleprint est disponible dans la plupart des exécuteurs ; print sert de secours
+    -- pour ceux qui redirigent leur sortie standard vers leur propre onglet Console.
+    -- Writer conservé dans la forme de la version diagnostic qui avait déjà affiché les logs.
+    -- Priorité aux fonctions console de l’exécuteur ; print sert de dernier recours.
+    local function tpSpecWriteExecutorConsole(message)
+        local line = tostring(message) .. "\n"
+        local env = _G
+        pcall(function()
+            if type(getgenv) == "function" then
+                local shared = getgenv()
+                if type(shared) == "table" then env = shared end
+            end
+        end)
+
+        -- Utilise exactement le chemin console de la version précédente
+        -- qui avait bien envoyé les lignes SPEC dans la console de l'exécuteur.
+        local writerNames = {"rconsoleprint", "consoleprint", "printconsole"}
+        for _, name in ipairs(writerNames) do
+            local writer = nil
+            pcall(function()
+                if type(env) == "table" then writer = rawget(env, name) end
+                if type(writer) ~= "function" and type(_G) == "table" then
+                    writer = rawget(_G, name)
+                end
+            end)
+            if type(writer) == "function" then
+                local ok = pcall(writer, line)
+                if ok then return true end
+            end
+        end
+
+        -- Ne pas utiliser warn() : il envoie le message dans la Developer Console Roblox.
+        return pcall(print, line)
+    end
+
+    -- Test unique au chargement : permet de distinguer un logger inactif
+    -- d'un SPEC qui ne déclenche pas tpSpecStart().
+    tpSpecWriteExecutorConsole("[SPEC VOICE DEBUG] logger chargé | active SPEC sur une cible pour commencer le diagnostic")
+
+    local lastTPSpecVoiceDebugAt = 0
+
     local function tpSpecStart()
         local selected = TPSpecSelectedPlayer
         if not selected or selected == LocalPlayer then
@@ -7020,6 +7139,11 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         TPSpecDistance = 8
         camera.CameraType = Enum.CameraType.Scriptable
 
+        -- Confirme immédiatement que le bloc SPEC et son logger sont actifs.
+        tpSpecWriteExecutorConsole(
+            "[SPEC VOICE DEBUG] diagnostic actif | target=@" .. tostring(selected.Name)
+        )
+
         TPSpecConnection = RunService.RenderStepped:Connect(function()
             if not TPSpecEnabled then return end
             if not TPSpecSelectedPlayer or not TPSpecSelectedPlayer.Parent then
@@ -7039,8 +7163,32 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             end
 
             -- Déplace l'écouteur audio sur le joueur observé.
-            -- Les voix autour du joueur observé restent audibles selon la spatialisation native.
-            tpSpecSetVoiceListener(rootNow or part)
+            -- Intercepter toute erreur pour que le diagnostic continue même si une propriété audio est refusée.
+            local listenerSetupOk, listenerSetupError = pcall(tpSpecSetVoiceListener, rootNow or part)
+
+            -- Diagnostic uniquement : aucun réglage de permission ou de micro n'est modifié.
+            -- Affiché dans la console toutes les 3 secondes pour identifier le blocage réel.
+            if os.clock() - lastTPSpecVoiceDebugAt >= 3 then
+                lastTPSpecVoiceDebugAt = os.clock()
+                local debugPlayer = TPSpecSelectedPlayer
+                local debugTargetRoot = rootNow or part
+                task.spawn(function()
+                    local debugOk, status = pcall(function()
+                        local debugCamera = workspace.CurrentCamera
+                        local debugListener = tpSpecGetCameraVoiceListener(debugCamera)
+                        return tpSpecVoiceStatus(debugTargetRoot, debugListener)
+                    end)
+                    local prefix = "[SPEC VOICE DEBUG] target=@" .. tostring(debugPlayer and debugPlayer.Name or "?")
+                    if debugOk then
+                        tpSpecWriteExecutorConsole(prefix .. " | " .. tostring(status))
+                    else
+                        tpSpecWriteExecutorConsole(prefix .. " | DIAGNOSTIC_ERROR=" .. tostring(status))
+                    end
+                    if not listenerSetupOk then
+                        tpSpecWriteExecutorConsole(prefix .. " | LISTENER_SETUP_ERROR=" .. tostring(listenerSetupError))
+                    end
+                end)
+            end
 
             -- La caméra suit la POSITION du joueur, pas son orientation.
             local focus = (rootNow or part).Position + Vector3.new(0, 1.5, 0)
@@ -9011,71 +9159,60 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         end
     end
 
-    -- AUDIO FREECAM :
-    -- Même principe que le SPEC joueur : s'il existe plusieurs AudioListener,
-    -- le listener du personnage local peut continuer à faire entendre les gens
-    -- autour du vrai personnage. On n'en garde donc qu'un actif, positionné sur
-    -- la caméra Freecam, et on restaure tous les autres à la sortie.
+    -- AUDIO FREECAM : déplacer seulement le listener de CurrentCamera.
+    -- Ne pas changer le groupe des autres listeners : cela peut couper les voix vocales.
     local SpecAudioListener = nil
     local SpecAudioCreatedListener = false
-    local SpecAudioCreatedOutput = false
-    local SpecAudioCreatedWire = nil
-    local SpecAudioSavedListeners = {}
-    local SpecAudioMuteGroup = nil
+    local SpecAudioCreatedOutput = nil
+    local SpecAudioCreatedWires = {}
+    local SpecAudioSavedListener = nil
 
-    local function specFindAudioListener()
-        local camera = workspace.CurrentCamera
-        if camera then
-            local listener = camera:FindFirstChildOfClass("AudioListener")
-            if listener then return listener end
-        end
-
-        local char = specGetCharacter()
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            local listener = root:FindFirstChildOfClass("AudioListener")
-            if listener then return listener end
-        end
-
-        local soundService = game:GetService("SoundService")
-        return soundService:FindFirstChildOfClass("AudioListener")
+    local function specSaveAudioListener(listener)
+        if SpecAudioSavedListener or not listener then return end
+        local saved = {
+            PositionType = nil,
+            PositionInstance = nil,
+            AudioInteractionGroup = nil,
+        }
+        pcall(function() saved.PositionType = listener.PositionType end)
+        pcall(function() saved.PositionInstance = listener.PositionInstance end)
+        pcall(function() saved.AudioInteractionGroup = listener.AudioInteractionGroup end)
+        SpecAudioSavedListener = saved
     end
 
     local function specRestoreAudio()
-        for listener, saved in pairs(SpecAudioSavedListeners) do
-            if listener and listener.Parent then
-                pcall(function()
-                    if saved.PositionType ~= nil then
-                        listener.PositionType = saved.PositionType
-                    end
-                    listener.PositionInstance = saved.PositionInstance
-                    listener.AudioInteractionGroup = saved.AudioInteractionGroup or ""
-                end)
-            end
+        if SpecAudioListener and SpecAudioListener.Parent and SpecAudioSavedListener then
+            pcall(function()
+                if SpecAudioSavedListener.PositionType ~= nil then
+                    SpecAudioListener.PositionType = SpecAudioSavedListener.PositionType
+                end
+                SpecAudioListener.PositionInstance = SpecAudioSavedListener.PositionInstance
+                SpecAudioListener.AudioInteractionGroup = SpecAudioSavedListener.AudioInteractionGroup or ""
+            end)
         end
 
-        pcall(function()
-            if SpecAudioCreatedWire and SpecAudioCreatedWire.Parent then
-                SpecAudioCreatedWire:Destroy()
-            end
-        end)
-        pcall(function()
-            if SpecAudioCreatedListener and SpecAudioListener and SpecAudioListener.Parent then
-                SpecAudioListener:Destroy()
-            end
-        end)
-        pcall(function()
-            if SpecAudioCreatedOutput and game:GetService("SoundService"):FindFirstChild("PrisonRP_FreecamVoiceOutput") then
-                game:GetService("SoundService").PrisonRP_FreecamVoiceOutput:Destroy()
-            end
-        end)
+        for _, wire in ipairs(SpecAudioCreatedWires) do
+            pcall(function()
+                if wire and wire.Parent then wire:Destroy() end
+            end)
+        end
+        if SpecAudioCreatedListener and SpecAudioListener and SpecAudioListener.Parent then
+            pcall(function() SpecAudioListener:Destroy() end)
+        end
+        if SpecAudioCreatedOutput then
+            pcall(function()
+                local wires = SpecAudioCreatedOutput:GetConnectedWires("Input")
+                if #wires == 0 and SpecAudioCreatedOutput.Parent then
+                    SpecAudioCreatedOutput:Destroy()
+                end
+            end)
+        end
 
         SpecAudioListener = nil
         SpecAudioCreatedListener = false
-        SpecAudioCreatedOutput = false
-        SpecAudioCreatedWire = nil
-        SpecAudioSavedListeners = {}
-        SpecAudioMuteGroup = nil
+        SpecAudioCreatedOutput = nil
+        SpecAudioCreatedWires = {}
+        SpecAudioSavedListener = nil
     end
 
     local function specEnsureAudio()
@@ -9083,8 +9220,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         if not camera then return end
 
         pcall(function()
-            local listener = specFindAudioListener()
-
+            local listener = camera:FindFirstChildOfClass("AudioListener")
             if not listener then
                 listener = Instance.new("AudioListener")
                 listener.Name = "PrisonRP_FreecamVoiceListener"
@@ -9092,63 +9228,52 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
                 SpecAudioCreatedListener = true
             end
 
-            if next(SpecAudioSavedListeners) == nil then
-                SpecAudioMuteGroup = "PrisonRP_FREECAM_MUTE_" .. tostring(LocalPlayer and LocalPlayer.UserId or 0)
-
-                for _, obj in ipairs(game:GetDescendants()) do
-                    if obj:IsA("AudioListener") then
-                        local saved = {
-                            PositionType = nil,
-                            PositionInstance = nil,
-                            AudioInteractionGroup = nil,
-                        }
-                        pcall(function() saved.PositionType = obj.PositionType end)
-                        pcall(function() saved.PositionInstance = obj.PositionInstance end)
-                        pcall(function() saved.AudioInteractionGroup = obj.AudioInteractionGroup end)
-                        SpecAudioSavedListeners[obj] = saved
-                    end
-                end
+            if SpecAudioListener and SpecAudioListener ~= listener then
+                return
             end
-
             SpecAudioListener = listener
+            specSaveAudioListener(listener)
 
-            -- Point d'écoute = caméra Freecam.
             listener.PositionType = Enum.ListenerPositionType.Instance
             listener.PositionInstance = camera
 
-            -- Coupe les autres listeners (notamment celui du personnage local)
-            -- sans toucher aux AudioEmitter des joueurs.
-            for other, _ in pairs(SpecAudioSavedListeners) do
-                if other ~= listener and other.Parent then
-                    pcall(function()
-                        other.AudioInteractionGroup = SpecAudioMuteGroup
-                    end)
-                end
+            local soundService = game:GetService("SoundService")
+            local output = soundService:FindFirstChildOfClass("AudioDeviceOutput")
+            if not output then
+                output = Instance.new("AudioDeviceOutput")
+                output.Name = "PrisonRP_FreecamVoiceOutput"
+                pcall(function() output.Player = LocalPlayer end)
+                output.Parent = soundService
+                SpecAudioCreatedOutput = output
             end
 
-            local saved = SpecAudioSavedListeners[listener]
-            if saved then
-                pcall(function()
-                    listener.AudioInteractionGroup = saved.AudioInteractionGroup or ""
-                end)
-            end
-
-            if SpecAudioCreatedListener then
-                local output = game:GetService("SoundService"):FindFirstChildOfClass("AudioDeviceOutput")
-
-                if not output then
-                    output = Instance.new("AudioDeviceOutput")
-                    output.Name = "PrisonRP_FreecamVoiceOutput"
-                    output.Parent = game:GetService("SoundService")
-                    SpecAudioCreatedOutput = true
+            local connected = false
+            local wireOk, wires = pcall(function()
+                return listener:GetConnectedWires("Output")
+            end)
+            if wireOk then
+                for _, wire in ipairs(wires) do
+                    if wire.TargetInstance == output then
+                        connected = true
+                        break
+                    end
                 end
-
+            end
+            if not connected then
+                for _, child in ipairs(listener:GetChildren()) do
+                    if child:IsA("Wire") and child.SourceInstance == listener and child.TargetInstance == output then
+                        connected = true
+                        break
+                    end
+                end
+            end
+            if not connected then
                 local wire = Instance.new("Wire")
                 wire.Name = "PrisonRP_FreecamVoiceWire"
                 wire.SourceInstance = listener
                 wire.TargetInstance = output
                 wire.Parent = listener
-                SpecAudioCreatedWire = wire
+                table.insert(SpecAudioCreatedWires, wire)
             end
         end)
     end
@@ -15120,8 +15245,8 @@ do
                 autoReloadHint.Text = queued and "Other automation keeps reload queued" or tostring(queueError):sub(1, 38)
                 autoReloadHint.TextColor3 = queued and Color3.fromRGB(145, 235, 170) or Color3.fromRGB(235, 175, 120)
             else
-                if type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
-                    _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
+                if type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
+                    _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE()
                 end
                 autoReloadHint.Text = "Reload after server teleport"
                 autoReloadHint.TextColor3 = Color3.fromRGB(170, 178, 190)
@@ -15151,8 +15276,8 @@ do
                     local queued, queueError = _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
                     if not queued then warn("[Hub Prison RP] Auto Change Server queue unavailable: " .. tostring(queueError)) end
                 end
-            elseif type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
-                _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
+            elseif type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
+                _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE()
             end
         end
         _G.PRISONRP_AUTO_CHANGE_SERVER_GET_STATE = function()
@@ -15422,9 +15547,9 @@ do
         _G.PRISONRP_AUTO_BLOCK_TOGGLE = function()
             _G.PRISONRP_AUTO_BLOCK_SET_STATE(not (_G.PRISONRP_AUTO_BLOCK_ENABLED == true))
         end
-        local cycleRunToken = tonumber(_G.PRISONRP_AUTO_FISH_CYCLE_RUN_TOKEN) or 0
-        local function refreshFishCycleSwitch()
-            local button = _G.PRISONRP_AUTO_FISH_CYCLE_BUTTON
+        local hardFishRunToken = tonumber(_G.PRISONRP_HARD_FISH_ENGINE_RUN_TOKEN) or 0
+        local function refreshHardFishSwitch()
+            local button = _G.PRISONRP_HARD_FISH_ENGINE_BUTTON
             if button and type(_G.PRISONRP_REFRESH_GDP_TOGGLE) == "function" then
                 pcall(_G.PRISONRP_REFRESH_GDP_TOGGLE, button, false)
             end
@@ -15434,13 +15559,13 @@ do
             if ToggleFishBtn and type(_G.PRISONRP_REFRESH_GDP_TOGGLE) == "function" then
                 pcall(_G.PRISONRP_REFRESH_GDP_TOGGLE, ToggleFishBtn, false)
             end
-            refreshFishCycleSwitch()
+            refreshHardFishSwitch()
         end
 
-        _G.PRISONRP_AUTO_FISH_CYCLE_GET_STATE = function()
-            return _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
+        _G.PRISONRP_HARD_FISH_ENGINE_GET_STATE = function()
+            return _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
         end
-        local function inspectAutoFishCycleServer()
+        local function inspectHardFishServer()
     local currentPlayers = Players:GetPlayers()
     local playerCount = #currentPlayers
     if playerCount >= 10 then
@@ -15463,40 +15588,35 @@ do
     return false, nil, playerCount
 end
 
-_G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
+_G.PRISONRP_HARD_FISH_ENGINE_SET_STATE = function(enabled)
     enabled = enabled == true
-    _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED = enabled
-    cycleRunToken = cycleRunToken + 1
-    _G.PRISONRP_AUTO_FISH_CYCLE_RUN_TOKEN = cycleRunToken
-    local thisToken = cycleRunToken
+    _G.PRISONRP_HARD_FISH_ENGINE_ENABLED = enabled
+    hardFishRunToken = hardFishRunToken + 1
+    _G.PRISONRP_HARD_FISH_ENGINE_RUN_TOKEN = hardFishRunToken
+    local thisToken = hardFishRunToken
 
     if enabled then
-        -- Garder la relance en file pendant le cycle ou une autre option de téléportation.
-        -- Ainsi le cycle peut reprendre après son propre changement de serveur.
-        if enabled or _G.PRISONRP_AUTO_RELOAD_ENABLED == true or _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true then
-            if type(_G.PRISONRP_REARM_AUTO_RELOAD_QUEUE) == "function" then
-                local queued, queueError = _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
-                if not queued then
-                    warn("[Hub Prison RP] Existing reload option could not update its queue: " .. tostring(queueError))
-                end
+        -- Hard Fish doit se réarmer après son propre changement de serveur.
+        if type(_G.PRISONRP_REARM_AUTO_RELOAD_QUEUE) == "function" then
+            local queued, queueError = _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
+            if not queued then
+                warn("[Hub Prison RP] Hard Fish could not update its teleport queue: " .. tostring(queueError))
             end
-        elseif type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
-            _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
         end
         stats.status = "Hard Fish: checking server..."
         syncAutoFishState()
 
         task.spawn(function()
             local settingsDeadline = os.clock() + 90
-            while running and _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
-                and thisToken == cycleRunToken
+            while running and _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+                and thisToken == hardFishRunToken
                 and os.clock() < settingsDeadline
-                and _G.PRISONRP_AUTO_FISH_CYCLE_SETTINGS_READY ~= true do
+                and _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY ~= true do
                 task.wait(0.25)
             end
-            if not running or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED ~= true
-                or thisToken ~= cycleRunToken then return end
-            if _G.PRISONRP_AUTO_FISH_CYCLE_SETTINGS_READY ~= true then
+            if not running or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED ~= true
+                or thisToken ~= hardFishRunToken then return end
+            if _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY ~= true then
                 stats.status = "Hard Fish: settings did not finish loading"
                 warn("[Hub Prison RP] Hard Fish: settings did not finish loading")
                 syncAutoFishState()
@@ -15504,15 +15624,15 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
             end
 
             local fishingAtLake = false
-            while running and _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
-                and thisToken == cycleRunToken do
-                local shouldHop, reason, playerCount = inspectAutoFishCycleServer()
+            while running and _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+                and thisToken == hardFishRunToken do
+                local shouldHop, reason, playerCount = inspectHardFishServer()
                 if shouldHop then
                     fishingAtLake = false
                     stats.status = "Hard Fish: " .. tostring(reason) .. "; changing server..."
                     syncAutoFishState()
 
-                    -- Le serveur choisi doit lui aussi être libre et compter moins de 5 joueurs.
+                    -- Le serveur choisi doit lui aussi être libre et compter moins de 10 joueurs.
                     local hopped, hopError = autoChangeServerForStaff(nil, reason, 10)
                     if hopped then return end
                     warn("[Hub Prison RP] Hard Fish server change failed: " .. tostring(hopError))
@@ -15522,16 +15642,16 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
                     syncAutoFishState()
                     local teleported = false
                     for attempt = 1, 3 do
-                        if not running or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED ~= true
-                            or thisToken ~= cycleRunToken then return end
+                        if not running or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED ~= true
+                            or thisToken ~= hardFishRunToken then return end
                         local character = LocalPlayer and LocalPlayer.Character
                         local root = character and character:FindFirstChild("HumanoidRootPart")
                         if root then
                             if type(stopMoveToTarget) == "function" then pcall(stopMoveToTarget) end
                             local okTeleport, result = pcall(function()
                                 return robustTeleportTo(POND_GROUND_CFRAME, 60, function()
-                                    return not running or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED ~= true
-                                        or thisToken ~= cycleRunToken
+                                    return not running or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED ~= true
+                                        or thisToken ~= hardFishRunToken
                                 end)
                             end)
                             teleported = okTeleport and result == true
@@ -15539,8 +15659,8 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
                         end
                         task.wait(1)
                     end
-                    if not running or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED ~= true
-                        or thisToken ~= cycleRunToken then return end
+                    if not running or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED ~= true
+                        or thisToken ~= hardFishRunToken then return end
                     if teleported then
                         fishingAtLake = true
                         stats.status = "Hard Fish: at lake (Auto Fish unchanged)"
@@ -15560,32 +15680,32 @@ _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE = function(enabled)
             if type(_G.PRISONRP_REARM_AUTO_RELOAD_QUEUE) == "function" then
                 _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
             end
-        elseif type(_G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE) == "function" then
-            _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE()
+        elseif type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
+            _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE()
         end
         stats.status = AutoEatDrinkEnabled
             and "Auto Eat / Drink: ON (threshold 50)"
             or (_G.AutoFishingEnabled and "Running..." or "Stopped")
         syncAutoFishState()
     end
-    refreshFishCycleSwitch()
+    refreshHardFishSwitch()
 end
-_G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
+_G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
-            _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE(not (_G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true))
+            _G.PRISONRP_HARD_FISH_ENGINE_SET_STATE(not (_G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true))
         end
 
         _G.PRISONRP_HARD_FISH_GET_STATE = function()
             return _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
-                or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
+                or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
         end
         _G.PRISONRP_HARD_FISH_SET_STATE = function(enabled)
             enabled = enabled == true
             if type(_G.PRISONRP_AUTO_CHANGE_SERVER_SET_STATE) == "function" then
                 _G.PRISONRP_AUTO_CHANGE_SERVER_SET_STATE(enabled)
             end
-            if type(_G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE) == "function" then
-                _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE(enabled)
+            if type(_G.PRISONRP_HARD_FISH_ENGINE_SET_STATE) == "function" then
+                _G.PRISONRP_HARD_FISH_ENGINE_SET_STATE(enabled)
             end
         end
         _G.PRISONRP_HARD_FISH_TOGGLE = function()
@@ -15855,6 +15975,17 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
         -- FREECAM n'a plus de touche F native : elle se contrôle uniquement
         -- par son switch ou son bind défini ici.
         --==============================================================
+        local function refreshBoundToggle(buttonName, directButton)
+            local button = directButton
+            if not (button and button.Parent) and buttonName and MainFrame then
+                button = MainFrame:FindFirstChild(buttonName, true)
+            end
+            local refresh = _G.PRISONRP_REFRESH_GDP_TOGGLE
+            if button and type(refresh) == "function" then
+                pcall(refresh, button, true)
+            end
+        end
+
         local BindConfig = {
             AutoFishing = {label="START AUTO FISH", key=nil, button=ToggleFishBtn},
             AutoEatDrink = {label="AUTO DRINK / EAT", key=nil, button=AutoEatDrinkBtn},
@@ -15897,6 +16028,42 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
                     if type(toggle) == "function" then pcall(toggle) end
                 end,
             },
+            FPSCounter = {
+                label="FPS COUNTER",
+                key=nil,
+                callback=function()
+                    _G.PRISONRP_FPS_COUNTER_ENABLED = not (_G.PRISONRP_FPS_COUNTER_ENABLED == true)
+                    if FPSOverlayGui then
+                        FPSOverlayGui.Enabled = _G.PRISONRP_FPS_COUNTER_ENABLED
+                    end
+                    if FPSCounterLabel then
+                        FPSCounterLabel.Text = formatFPSCounterText()
+                    end
+                    refreshBoundToggle(nil, FPSCounterBtn)
+                end,
+            },
+            AutoPurple = {
+                label="AUTO PURPLE",
+                key=nil,
+                callback=function()
+                    local toggle = _G.PRISONRP_AUTO_PURPLE_TOGGLE
+                    if type(toggle) == "function" then
+                        pcall(toggle)
+                        refreshBoundToggle("PRISONRP_AutoPurpleToggle")
+                    end
+                end,
+            },
+            AutoParry = {
+                label="AUTO PARRY",
+                key=nil,
+                callback=function()
+                    local toggle = _G.PRISONRP_AUTO_BLOCK_TOGGLE
+                    if type(toggle) == "function" then
+                        pcall(toggle)
+                        refreshBoundToggle("PRISONRP_AutoBlockToggle")
+                    end
+                end,
+            },
             AimEnabled = {label="AIMBOT", key=nil, aimControl="AIMBOT"},
             ESPCheckedButtons = {
                 label="ESP: ENABLE CHECKED BUTTONS",
@@ -15910,7 +16077,7 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
 
         local BindOrder = {
             "AutoFishing", "AutoEatDrink", "AutoMine", "SpeedHack", "Fly", "Noclip", "Freecam", "Invisible", "ChatDock",
-            "AimEnabled", "ESPCheckedButtons"
+            "FPSCounter", "AutoPurple", "AutoParry", "AimEnabled", "ESPCheckedButtons"
         }
 
         local BindKeys = {
@@ -16146,7 +16313,7 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
                     AutoBlock=false,
                     AutoReload=_G.PRISONRP_AUTO_RELOAD_ENABLED==true,
 
-                    HardFish=(_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED==true or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED==true),
+                    HardFish=(_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED==true or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED==true),
                     AutoSell=_G.AutoSellEnabled==true,
                     AutoEatDrink=AutoEatDrinkEnabled==true,
                     FPSCounter=_G.PRISONRP_FPS_COUNTER_ENABLED==true,
@@ -16337,26 +16504,9 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
                 )
             end
 
-            -- Un cycle déjà repris par la file de téléportation garde priorité sur
-            -- le profil chargé. Sinon, restaurer l’état Auto Fish Cycle du profil.
-            if t.AutoFishCycle ~= nil and not __PRISONRP_FISH_CYCLE_FROM_QUEUE then
-                restoreBool(
-                    function() return _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true end,
-                    function()
-                        if type(_G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE) == "function" then
-                            _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE(true)
-                        end
-                    end,
-                    function()
-                        if type(_G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE) == "function" then
-                            _G.PRISONRP_AUTO_FISH_CYCLE_SET_STATE(false)
-                        end
-                    end,
-                    t.AutoFishCycle
-                )
-            end
+            -- Les anciens champs AutoChangeServer/AutoFishCycle migrent vers Hard Fish ci-dessus.
 
-            -- Auto Fish reste indépendant d'Auto Fish Cycle.
+            -- Auto Fish reste indépendant de Hard Fish.
             _G.AutoFishingEnabled = t.AutoFishing == true
             _G.AutoSellEnabled = t.AutoSell == true
             AutoEatDrinkEnabled = t.AutoEatDrink == true
@@ -17855,7 +18005,7 @@ _G.PRISONRP_AUTO_FISH_CYCLE_TOGGLE = function()
             task.wait()
             fitSettingsPage()
             local loadedDefaultSlot, loadedLegacyFile, loadError = loadSettings()
-            _G.PRISONRP_AUTO_FISH_CYCLE_SETTINGS_READY = true
+            _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY = true
 
             -- Après le chargement, certaines fonctions finissent leur initialisation
             -- un peu plus tard. On resynchronise donc les switches plusieurs fois.
@@ -20103,7 +20253,7 @@ do
         leftScroll.ZIndex = (autresPageRef.ZIndex or 91) + 1
         leftScroll.Parent = autresPageRef
 
-        -- Case Auto Change Server : relance le script après un changement de serveur.
+        -- Contrôle unique Hard Fish : serveur et pêche restent sous le même interrupteur.
         local autoChangeServerBtn = autresPageRef:FindFirstChild("PRISONRP_AutoChangeServerToggle")
         if not autoChangeServerBtn then
             autoChangeServerBtn = Instance.new("TextButton")
@@ -20129,25 +20279,24 @@ do
             autoBlockBtn.AutoButtonColor = true
             autoBlockBtn.Parent = autresPageRef
         end
-        local autoFishCycleBtn = autresPageRef:FindFirstChild("PRISONRP_AutoFishCycleToggle")
-        if not autoFishCycleBtn then
-            autoFishCycleBtn = Instance.new("TextButton")
-            autoFishCycleBtn.Name = "PRISONRP_AutoFishCycleToggle"
-            autoFishCycleBtn.Text = "Hard Fish"
-            autoFishCycleBtn.Size = UDim2.new(1, -5, 0, 34)
-            autoFishCycleBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
-            autoFishCycleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            autoFishCycleBtn.BorderSizePixel = 0
-            autoFishCycleBtn.AutoButtonColor = true
-            autoFishCycleBtn.Active = true
-            autoFishCycleBtn.Visible = true
-            autoFishCycleBtn.Parent = autresPageRef
+        local hardFishBtn = autresPageRef:FindFirstChild("PRISONRP_HardFishToggle")
+            or autresPageRef:FindFirstChild("PRISONRP_AutoFishCycleToggle")
+        if not hardFishBtn then
+            hardFishBtn = Instance.new("TextButton")
+            hardFishBtn.Size = UDim2.new(1, -5, 0, 34)
+            hardFishBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            hardFishBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            hardFishBtn.BorderSizePixel = 0
+            hardFishBtn.AutoButtonColor = true
+            hardFishBtn.Active = true
+            hardFishBtn.Visible = true
+            hardFishBtn.Parent = autresPageRef
         end
-        autoFishCycleBtn.Name = "PRISONRP_HardFishToggle"
-        autoFishCycleBtn.Text = "Hard Fish"
-        _G.PRISONRP_AUTO_FISH_CYCLE_BUTTON = autoFishCycleBtn
-        _G.PRISONRP_AUTO_CHANGE_SERVER_BUTTON = autoFishCycleBtn
-        if autoChangeServerBtn and autoChangeServerBtn ~= autoFishCycleBtn then
+        hardFishBtn.Name = "PRISONRP_HardFishToggle"
+        hardFishBtn.Text = "Hard Fish"
+        _G.PRISONRP_HARD_FISH_ENGINE_BUTTON = hardFishBtn
+        _G.PRISONRP_AUTO_CHANGE_SERVER_BUTTON = hardFishBtn
+        if autoChangeServerBtn and autoChangeServerBtn ~= hardFishBtn then
             autoChangeServerBtn:Destroy()
         end
 
@@ -20156,7 +20305,7 @@ do
             -- Automatisations
             {obj = AutoPushupBtn, label = "Auto Pushup"},
             {obj = autoBlockBtn, label = "Auto Block"},
-            {obj = autoFishCycleBtn, label = "Hard Fish"},
+            {obj = hardFishBtn, label = "Hard Fish"},
 
             {obj = type(_G.PRISONRP_AUTO_ARM_WRESTLE_STATE) == "table" and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Btn or nil, label = "Auto Arm Wrestle"},
             {obj = autresPageRef:FindFirstChild("PRISONRP_AutoPurpleToggle"), label = "Auto Purple"},
@@ -20277,7 +20426,7 @@ do
 
         leftScroll.CanvasSize = UDim2.fromOffset(0, math.max(0, top))
         leftScroll.CanvasPosition = Vector2.zero
-        print("[OTHER] Auto Fish Cycle switch is visible.")
+        print("[OTHER] Hard Fish switch is visible.")
 
         -- Le panneau Give Money reste fixé à droite et ne défile pas avec les cases.
         local giveMoneyPanel = autresPageRef:FindFirstChild("GiveMoneyPanel")
