@@ -1,8 +1,12 @@
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 local __PRISONRP_SOURCE = [=[
+-- V265 : SPEC staff écoute depuis la position du joueur observé et conserve toutes les voix spatiales proches (sans groupe audio exclusif).
+-- V260 : stabilise Auto Fish avec un trio de fonctions cohérent et vérifie le démarrage du cast avant de continuer.
+-- V261 : isole la création des cartes de profils pour éviter la limite de 200 registres locaux Luau.
+-- V263 : fiabilise Auto Reload, annule la file au vrai UNLOAD et attend CatchPrompt s'il apparaît tardivement.
 -- V257 : ajoute FPS Counter, Auto Purple et Auto Parry dans les Binds ; réattache le listener audio aux changements de caméra.
--- V257 : SPEC aligne le groupe du listener sur celui de l’AudioEmitter ciblé et diagnostique l’autorisation locale.
--- V257 : SPEC isole localement le seul AudioEmitter ciblé avec un groupe temporaire unique.
+-- V258 : suppression de l’analyseur SPEC VOICE et des sorties console automatiques ; isolation audio SPEC conservée.
+-- V259 : fiabilisation du Lobby Auto-Join : gestion du bouton Home/Play et vérification de l’entrée serveur.
 -- V255 : Hard Fish confirme le changement de serveur et retente via l'API si le navigateur ne téléporte pas.
 -- V254 : Auto Change Server et Auto Fish Cycle fusionnés dans le switch Hard Fish.
 -- V249 : Auto Parry démarre OFF et son interrupteur répond au clic sur la carte.
@@ -75,19 +79,45 @@ do
     end
 end
 
--- Une activation manuelle repart toujours OFF. Seule une vraie exécution de la file
--- après téléportation conserve ON pour recharger le script et réarmer le prochain serveur.
-local __PRISONRP_AUTO_RELOAD_FROM_QUEUE = _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE == true
-local __PRISONRP_RELOAD_TOGGLE_FROM_QUEUE = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
+-- L'etat d'Auto Reload peut etre expose soit dans _G, soit dans getgenv()
+-- selon l'executor. Lire les deux environnements avant de reinitialiser les flags.
+local __PRISONRP_QUEUE_STATE_ENV = _G
+if type(getgenv) == "function" then
+    pcall(function()
+        local shared = getgenv()
+        if type(shared) == "table" then __PRISONRP_QUEUE_STATE_ENV = shared end
+    end)
+end
+local __PRISONRP_AUTO_RELOAD_CANCELLED_FROM_QUEUE =
+    (_G.PRISONRP_AUTO_RELOAD_CANCELLED == true)
+    or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_RELOAD_CANCELLED == true)
+local __PRISONRP_AUTO_RELOAD_FROM_QUEUE = not __PRISONRP_AUTO_RELOAD_CANCELLED_FROM_QUEUE and (
+    (_G.PRISONRP_AUTO_RELOAD_FROM_QUEUE == true)
+    or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_RELOAD_FROM_QUEUE == true)
+)
+local __PRISONRP_RELOAD_TOGGLE_FROM_QUEUE =
+    (_G.PRISONRP_AUTO_RELOAD_ENABLED == true)
+    or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_RELOAD_ENABLED == true)
 -- Hard Fish is one persisted state; merge older server-hop/cycle flags on queue resume.
-local __PRISONRP_HARD_FISH_FROM_QUEUE = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
-    or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
-    or _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true
+local __PRISONRP_HARD_FISH_FROM_QUEUE =
+    (_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true)
+    or (_G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true)
+    or (_G.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true)
+    or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true)
+    or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_HARD_FISH_ENGINE_ENABLED == true)
+    or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true)
 _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = nil
 _G.PRISONRP_AUTO_RELOAD_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_RELOAD_TOGGLE_FROM_QUEUE
 _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_HARD_FISH_FROM_QUEUE
 _G.PRISONRP_HARD_FISH_ENGINE_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_HARD_FISH_FROM_QUEUE
 _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED = nil
+if __PRISONRP_QUEUE_STATE_ENV ~= _G then
+    __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_RELOAD_FROM_QUEUE = nil
+    __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_RELOAD_ENABLED = _G.PRISONRP_AUTO_RELOAD_ENABLED
+    __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED
+    __PRISONRP_QUEUE_STATE_ENV.PRISONRP_HARD_FISH_ENGINE_ENABLED = _G.PRISONRP_HARD_FISH_ENGINE_ENABLED
+    __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_FISH_CYCLE_ENABLED = nil
+end
 _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY = false
 local running = false
 if _G.CombinedHubLoaded == true then
@@ -235,61 +265,81 @@ do
     _G.PRISONRP_GET_AUTO_RELOAD_QUEUE_ENV = getAutoReloadQueueEnvironment
 
     _G.PRISONRP_QUEUE_AUTO_RELOAD = function()
-        local source = _G.PRISONRP_AUTO_RELOAD_SOURCE
+        local env = getAutoReloadQueueEnvironment()
+        local source = _G.PRISONRP_AUTO_RELOAD_SOURCE or env.PRISONRP_AUTO_RELOAD_SOURCE
         if type(source) ~= "string" or source == "" then
-            return false, "Use the packaged launcher"
+            return false, "Auto Reload source is not registered"
+        end
+        if _G.PRISONRP_AUTO_RELOAD_CANCELLED == true
+            or env.PRISONRP_AUTO_RELOAD_CANCELLED == true then
+            return false, "Auto Reload was cancelled by UNLOAD"
         end
         local queueFunction = _G.PRISONRP_GET_QUEUE_ON_TELEPORT()
         if type(queueFunction) ~= "function" then
             return false, "Unavailable in this executor"
         end
-        local env = getAutoReloadQueueEnvironment()
-        local token = env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN or _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN
+        local token = env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN
+        if type(token) ~= "string" or token == "" then
+            token = _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN
+        end
         if type(token) ~= "string" or token == "" then
             return false, "Auto Reload queue token is unavailable"
         end
         local ok, err = pcall(function()
-            local encodedSource = string.format("%q", source)
             local encodedToken = string.format("%q", token)
-            local reloadEnabled = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
-            local hardFishEnabled = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
-                or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+            -- Garder la charge en file très courte : la source (près de 1 Mo) est
+            -- déjà publiée dans getgenv/_G par le lanceur avant l'exécution du hub.
             local queuedCode =
                 "local queueEnv=_G; if type(getgenv)=='function' then pcall(function() local shared=getgenv(); if type(shared)=='table' then queueEnv=shared end end) end; "
                 .. "local queueToken=" .. encodedToken .. "; "
-                .. "if queueEnv.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN==queueToken and queueEnv.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN~=queueToken then "
-                .. "queueEnv.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN=queueToken; "
-                .. "_G.PRISONRP_AUTO_RELOAD_ENABLED=" .. tostring(reloadEnabled) .. "; "
-                .. "_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED=" .. tostring(hardFishEnabled) .. "; "
-                .. "_G.PRISONRP_HARD_FISH_ENGINE_ENABLED=" .. tostring(hardFishEnabled) .. "; "
-                .. "_G.PRISONRP_AUTO_RELOAD_FROM_QUEUE=true; "
-                .. "local queuedSource=" .. encodedSource .. "; "
-                .. "_G.PRISONRP_AUTO_RELOAD_SOURCE=queuedSource; "
-                .. "local queuedChunk,compileError=loadstring(queuedSource); "
-                .. "if not queuedChunk then error(compileError) end; queuedChunk() end"
-            queueFunction(queuedCode)
+                .. "local cancelled=(queueEnv.PRISONRP_AUTO_RELOAD_CANCELLED==true) or (_G.PRISONRP_AUTO_RELOAD_CANCELLED==true); "
+                .. "if cancelled then return end; "
+                .. "local tokenMatches=(queueEnv.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN==queueToken) or (_G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN==queueToken); "
+                .. "local alreadyExecuted=(queueEnv.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN==queueToken) or (_G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN==queueToken); "
+                .. "if not tokenMatches or alreadyExecuted then return end; "
+                .. "local reloadEnabled=(queueEnv.PRISONRP_AUTO_RELOAD_ENABLED==true) or (_G.PRISONRP_AUTO_RELOAD_ENABLED==true); "
+                .. "local hardFishEnabled=(queueEnv.PRISONRP_AUTO_CHANGE_SERVER_ENABLED==true) or (_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED==true) or (queueEnv.PRISONRP_HARD_FISH_ENGINE_ENABLED==true) or (_G.PRISONRP_HARD_FISH_ENGINE_ENABLED==true); "
+                .. "if not (reloadEnabled or hardFishEnabled) then return end; "
+                .. "local queuedSource=queueEnv.PRISONRP_AUTO_RELOAD_SOURCE or _G.PRISONRP_AUTO_RELOAD_SOURCE; "
+                .. "if type(queuedSource)~='string' or queuedSource=='' then error('[PRISON RP Auto Reload] Stored source is missing after teleport') end; "
+                .. "queueEnv.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN=queueToken; _G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN=queueToken; "
+                .. "queueEnv.PRISONRP_AUTO_RELOAD_FROM_QUEUE=true; _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE=true; "
+                .. "local compileOk,queuedChunk,compileError=pcall(function() return loadstring(queuedSource) end); "
+                .. "if not compileOk then error('[PRISON RP Auto Reload] loadstring failed: '..tostring(queuedChunk)) end; "
+                .. "if type(queuedChunk)~='function' then error('[PRISON RP Auto Reload] compile error: '..tostring(compileError)) end; "
+                .. "local runOk,runError=pcall(queuedChunk); "
+                .. "if not runOk then error('[PRISON RP Auto Reload] hub startup failed: '..tostring(runError)) end; "
+            local queueResult = queueFunction(queuedCode)
+            if queueResult == false then error("queue_on_teleport returned false") end
         end)
         if not ok then return false, tostring(err) end
         return true
     end
 
-    _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE = function()
+    _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE = function(cancelQueued)
         local env = getAutoReloadQueueEnvironment()
         local hadToken = env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN ~= nil
+            or _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN ~= nil
         env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = nil
         env.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
         _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = nil
         _G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+        local cancelled = cancelQueued ~= false
+        env.PRISONRP_AUTO_RELOAD_CANCELLED = cancelled
+        _G.PRISONRP_AUTO_RELOAD_CANCELLED = cancelled
         return hadToken
     end
     -- Compatibility alias; this invalidates only Hub entries and never clears the executor's whole queue.
     _G.PRISONRP_CLEAR_AUTO_RELOAD_QUEUE = _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE
 
     _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE = function()
-        local source = _G.PRISONRP_AUTO_RELOAD_SOURCE
+        local env = getAutoReloadQueueEnvironment()
+        local source = _G.PRISONRP_AUTO_RELOAD_SOURCE or env.PRISONRP_AUTO_RELOAD_SOURCE
         if type(source) ~= "string" or source == "" then
-            return false, "Use the packaged launcher"
+            return false, "Auto Reload source is not registered"
         end
+        env.PRISONRP_AUTO_RELOAD_CANCELLED = false
+        _G.PRISONRP_AUTO_RELOAD_CANCELLED = false
         if type(_G.PRISONRP_GET_QUEUE_ON_TELEPORT) ~= "function"
             or type(_G.PRISONRP_GET_QUEUE_ON_TELEPORT()) ~= "function" then
             return false, "Unavailable in this executor"
@@ -301,9 +351,11 @@ do
         -- A fresh token makes older queued Hub copies inert without touching other scripts.
         local token = tostring(os.time()) .. ":" .. tostring(os.clock())
             .. ":" .. tostring(math.random(1, 2147483646)) .. ":" .. tostring({})
-        local env = getAutoReloadQueueEnvironment()
         env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = token
         env.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+        env.PRISONRP_AUTO_RELOAD_ENABLED = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
+        env.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
+        env.PRISONRP_HARD_FISH_ENGINE_ENABLED = _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
         _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = token
         _G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
 
@@ -317,7 +369,7 @@ do
 
     -- Manual execution always invalidates a prior Hub queue; queued execution keeps its one-shot token.
     if not __PRISONRP_AUTO_RELOAD_FROM_QUEUE then
-        _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE()
+        _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE(false)
     end
 end
 
@@ -335,266 +387,343 @@ if not guiParent then
     error("[Hub Prison RP] PlayerGui not found")
 end
 
--- Auto-run the user-provided lobby flow on script execution.
+-- LOBBY AUTO-JOIN : indépendant de Hard Fish.
+-- Exécuté depuis le menu : Home/Play (si présent), personnage, Continue, puis serveur sûr.
 do
---[[
-  Prison RP | Select Character + Continue + Safe Join (LOBBY)
-]]
-
-local Players = game:GetService("Players")
-local lp = Players.LocalPlayer
-local pg = lp:WaitForChild("PlayerGui")
-
-local SAFE_SERVERS = {
-    { label = "Penjara Johor Bahru",  keys = {"penjara johor bahru", "johor bahru", "johor"} },
-    { label = "Penjara George Town",  keys = {"penjara george town", "george town", "georgetown"} },
-    { label = "Gevangenis Rotterdam", keys = {"gevangenis rotterdam", "rotterdam"} },
-    { label = "Gevangenis Amsterdam", keys = {"gevangenis amsterdam", "amsterdam"} },
-    { label = "Wiezienie Warszawa",   keys = {"wiezienie warszawa", "więzienie warszawa", "warszawa", "warsaw"} },
-    { label = "Wiezienie Lodz",       keys = {"wiezienie lodz", "więzienie łódź", "więzienie lodz", "lodz", "łódź"} },
-    { label = "Wiezienie Krakow",     keys = {"wiezienie krakow", "więzienie kraków", "więzienie krakow", "krakow", "kraków"} },
-    { label = "Taipei Prison",        keys = {"chinese1", "台北監獄", "taipei"} },
-    { label = "New Taipei Prison",    keys = {"chinese2", "新北監獄", "new taipei"} },
-    { label = "Taoyuan Prison",       keys = {"chinese3", "桃園監獄", "taoyuan"} },
-}
-
-local function norm(s)
-    s = tostring(s or ""):lower()
-    s = s:gsub("ę","e"):gsub("ż","z"):gsub("ź","z"):gsub("ń","n")
-    s = s:gsub("ó","o"):gsub("ł","l"):gsub("ą","a"):gsub("ć","c"):gsub("ś","s")
-    s = s:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-    return s
-end
-
-local function click(btn)
-    if not btn or not btn.Parent then return false end
-    local isButton = false
-    pcall(function() isButton = btn:IsA("GuiButton") end)
-    if not isButton then return false end
-
-    -- Send one activation only; trying both signals and Activate() can run a handler twice.
-    local activate = nil
-    pcall(function() activate = btn.Activate end)
-    if type(activate) == "function" then
-        local ok = pcall(function() btn:Activate() end)
-        if ok then return true end
+    -- Pas de sortie console automatique : l'état reste consultable dans l'environnement.
+    local function lobbySetStatus(status)
+        _G.PRISONRP_LOBBY_AUTOJOIN_STATUS = tostring(status or "")
+        _G.PRISONRP_LOBBY_AUTOJOIN_UPDATED_AT = os.clock()
     end
 
-    local fireSignal = firesignal
-    if type(fireSignal) == "function" then
-        local activatedSignal = nil
-        pcall(function() activatedSignal = btn.Activated end)
-        if activatedSignal then
-            local ok = pcall(fireSignal, activatedSignal)
-            return ok
+    local Players = game:GetService("Players")
+    local lp = Players.LocalPlayer
+    local pg = lp and lp:WaitForChild("PlayerGui", 20)
+
+    local SAFE_SERVERS = {
+        { label = "Penjara Johor Bahru",  keys = {"penjara johor bahru", "johor bahru", "johor"} },
+        { label = "Penjara George Town",  keys = {"penjara george town", "george town", "georgetown"} },
+        { label = "Gevangenis Rotterdam", keys = {"gevangenis rotterdam", "rotterdam"} },
+        { label = "Gevangenis Amsterdam", keys = {"gevangenis amsterdam", "amsterdam"} },
+        { label = "Wiezienie Warszawa",   keys = {"wiezienie warszawa", "więzienie warszawa", "warszawa", "warsaw"} },
+        { label = "Wiezienie Lodz",       keys = {"wiezienie lodz", "więzienie łódź", "więzienie lodz", "lodz", "łódź"} },
+        { label = "Wiezienie Krakow",     keys = {"wiezienie krakow", "więzienie kraków", "więzienie krakow", "krakow", "kraków"} },
+        { label = "Taipei Prison",        keys = {"chinese1", "台北監獄", "taipei"} },
+        { label = "New Taipei Prison",    keys = {"chinese2", "新北監獄", "new taipei"} },
+        { label = "Taoyuan Prison",       keys = {"chinese3", "桃園監獄", "taoyuan"} },
+    }
+
+    local function norm(value)
+        local text = tostring(value or ""):lower()
+        text = text:gsub("ę", "e"):gsub("ż", "z"):gsub("ź", "z"):gsub("ń", "n")
+        text = text:gsub("ó", "o"):gsub("ł", "l"):gsub("ą", "a"):gsub("ć", "c"):gsub("ś", "s")
+        return text:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    end
+
+    local function click(btn)
+        if not btn or not btn.Parent then return false end
+        if btn:IsA("GuiButton") then
+            local ok = pcall(function() btn:Activate() end)
+            if ok then return true end
         end
-    end
-    return false
-end
-
-local function getCharacters()
-    local menu = pg:FindFirstChild("MainMenuGui")
-    return menu and menu:FindFirstChild("Characters")
-end
-
-local function selectFirstCharacter()
-    local chars = getCharacters()
-    if not chars then
-        warn("[Lobby] Characters missing")
+        local fireSignal = firesignal
+        if type(fireSignal) == "function" then
+            for _, signalName in ipairs({"Activated", "MouseButton1Click"}) do
+                local signal = nil
+                local signalOk = pcall(function() signal = btn[signalName] end)
+                if signalOk and signal then
+                    local firedOk = pcall(fireSignal, signal)
+                    if firedOk then return true end
+                end
+            end
+        end
         return false
     end
 
-    local scroll = chars:FindFirstChild("Scroll")
-    if not scroll then return false end
+    local function getCharacters()
+        local menu = pg and pg:FindFirstChild("MainMenuGui")
+        return menu and menu:FindFirstChild("Characters")
+    end
 
-    -- priorité: slot numérique avec un vrai titre (pas New Character / +1 Slot)
-    local best = nil
-    for _, row in ipairs(scroll:GetChildren()) do
-        if row:IsA("ImageButton") or row:IsA("TextButton") then
-            local name = row.Name
-            if tonumber(name) then
+    local function getHomePlayButton()
+        local homeGui = pg and pg:FindFirstChild("HomeGui")
+        local container = homeGui and homeGui:FindFirstChild("Container")
+        local pages = container and container:FindFirstChild("Pages")
+        local homePage = pages and pages:FindFirstChild("Home")
+        local frame = homePage and homePage:FindFirstChild("Frame")
+        local playButton = frame and frame:FindFirstChild("Play")
+        if not homeGui or not playButton or not playButton:IsA("GuiButton") then return nil end
+        local enabled = true
+        pcall(function()
+            if homeGui:IsA("ScreenGui") then enabled = homeGui.Enabled end
+        end)
+        if not enabled or not playButton.Visible then return nil end
+        return playButton
+    end
+
+    local function startFromHomeIfNeeded()
+        -- Après Auto Reload, le bloc dédié plus bas gère déjà Play. Éviter un double clic.
+        if __PRISONRP_AUTO_RELOAD_FROM_QUEUE then return true end
+        local deadline = os.clock() + 18
+        local attempted = false
+        while os.clock() < deadline do
+            if getCharacters() then return true end
+            local playButton = getHomePlayButton()
+            if playButton and not attempted then
+                local active = true
+                pcall(function() active = playButton.Active end)
+                if active and click(playButton) then
+                    attempted = true
+                    lobbySetStatus("Home: Play pressed; waiting for character menu")
+                end
+            end
+            if attempted then
+                local waitDeadline = os.clock() + 25
+                repeat
+                    if getCharacters() then return true end
+                    task.wait(0.25)
+                until os.clock() >= waitDeadline
+                return getCharacters() ~= nil
+            end
+            task.wait(0.25)
+        end
+        -- Si aucun écran Home n'est affiché, le joueur peut déjà être sur le menu Character.
+        return getCharacters() ~= nil
+    end
+
+    local function selectFirstCharacter()
+        local chars = getCharacters()
+        local scroll = chars and chars:FindFirstChild("Scroll")
+        if not scroll then
+            lobbySetStatus("Waiting for character slots")
+            return false
+        end
+
+        local best = nil
+        for _, row in ipairs(scroll:GetChildren()) do
+            if (row:IsA("ImageButton") or row:IsA("TextButton")) and tonumber(row.Name) then
                 local title = row:FindFirstChild("Title")
                 local titleText = ""
                 pcall(function() titleText = tostring(title and title.Text or "") end)
-                local t = norm(titleText)
-                if t ~= ""
-                    and not t:find("new character", 1, true)
-                    and not t:find("+1 slot", 1, true)
-                    and not t:find("unknown", 1, true) then
+                local text = norm(titleText)
+                if text ~= "" and not text:find("new character", 1, true)
+                    and not text:find("+1 slot", 1, true) and not text:find("unknown", 1, true) then
                     best = row
-                    print("[Lobby] select character", name, titleText)
                     break
                 end
             end
         end
+        if not best then best = scroll:FindFirstChild("1") end
+        if not best then
+            lobbySetStatus("No character slot found")
+            return false
+        end
+        local selected = click(best)
+        if selected then lobbySetStatus("Character selected") end
+        return selected
     end
 
-    -- fallback slot 1
-    if not best then
-        best = scroll:FindFirstChild("1")
-    end
-
-    if not best then
-        warn("[Lobby] no character slot found")
-        return false
-    end
-
-    return click(best)
-end
-
-local function clickContinue()
-    local chars = getCharacters()
-    local btn = chars and chars:FindFirstChild("Bottom")
-    btn = btn and btn:FindFirstChild("Continue")
-    if not btn then
-        -- fallback search
-        for _, obj in ipairs(pg:GetDescendants()) do
-            if obj:IsA("TextButton") then
-                local t = ""
-                pcall(function() t = norm(obj.Text) end)
-                if t == "continue" or t == "continuer" then
-                    btn = obj
-                    break
+    local function clickContinue()
+        local chars = getCharacters()
+        local btn = chars and chars:FindFirstChild("Bottom")
+        btn = btn and btn:FindFirstChild("Continue")
+        if not btn and pg then
+            for _, obj in ipairs(pg:GetDescendants()) do
+                if obj:IsA("TextButton") then
+                    local label = ""
+                    pcall(function() label = norm(obj.Text) end)
+                    if label == "continue" or label == "continuer" then
+                        btn = obj
+                        break
+                    end
                 end
             end
         end
-    end
-    if not btn then
-        warn("[Lobby] Continue missing")
-        return false
-    end
-    print("[Lobby] Continue")
-    return click(btn)
-end
-
-local function getServerScroll()
-    local menu = pg:FindFirstChild("MainMenuGui")
-    local servers = menu and menu:FindFirstChild("Servers")
-    return servers and servers:FindFirstChild("Scroll")
-end
-
-local function waitServerScroll(timeout)
-    local t = os.clock() + (timeout or 10)
-    while os.clock() < t do
-        local scroll = getServerScroll()
-        if scroll and #scroll:GetChildren() > 1 then
-            return scroll
+        if not btn then
+            lobbySetStatus("Continue button not found")
+            return false
         end
-        task.wait(0.2)
+        local pressed = click(btn)
+        if pressed then lobbySetStatus("Continue pressed; waiting for server list") end
+        return pressed
     end
-    return getServerScroll()
-end
 
-local function rowBlob(row)
-    local blob = norm(row.Name)
-    for _, d in ipairs(row:GetDescendants()) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-            local ok, text = pcall(function() return d.Text end)
-            if ok and text and text ~= "" then
-                blob ..= " " .. norm(text)
+    local function getServerScroll()
+        local menu = pg and pg:FindFirstChild("MainMenuGui")
+        local servers = menu and menu:FindFirstChild("Servers")
+        return servers and servers:FindFirstChild("Scroll")
+    end
+
+    local function hasServerRows(scroll)
+        if not scroll then return false end
+        for _, child in ipairs(scroll:GetChildren()) do
+            if child.Name ~= "Template" and not child:IsA("UIListLayout")
+                and not child:IsA("UIPadding") then
+                return true
             end
         end
-    end
-    return blob
-end
-
-local function rowMatches(row, entry)
-    local blob = rowBlob(row)
-    if norm(row.Name) == norm(entry.keys[1]) then return true end
-    for _, key in ipairs(entry.keys) do
-        if blob:find(norm(key), 1, true) then return true end
-    end
-    return false
-end
-
-local function isJoinable(row)
-    for _, d in ipairs(row:GetDescendants()) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-            local ok, text = pcall(function() return d.Text end)
-            if ok and text then
-                local t = norm(text)
-                if t:find("offline", 1, true) then return false end
-                local cur, max = t:match("(%d+)%s*/%s*(%d+)")
-                if cur and max then
-                    cur, max = tonumber(cur), tonumber(max)
-                    if cur and max and cur >= max then return false end
-                end
-            end
-        end
-    end
-    return true
-end
-
-local function getJoinButton(row)
-    local btn = row:FindFirstChild("Info")
-    btn = btn and btn:FindFirstChild("Right")
-    btn = btn and btn:FindFirstChild("Join")
-    if btn then return btn end
-    for _, d in ipairs(row:GetDescendants()) do
-        if d:IsA("TextButton") or d:IsA("ImageButton") then
-            local n = norm(d.Name)
-            local t = ""
-            pcall(function() t = norm(d.Text) end)
-            if n:find("join", 1, true) or t:find("join", 1, true) then
-                return d
-            end
-        end
-    end
-    return nil
-end
-
-local function joinRandomSafe()
-    local scroll = waitServerScroll(10)
-    if not scroll then
-        warn("[Lobby] server list missing")
         return false
     end
 
-    for _, entry in ipairs(SAFE_SERVERS) do
-        for _, row in ipairs(scroll:GetChildren()) do
-            if row.Name ~= "Template" and rowMatches(row, entry) and isJoinable(row) then
-                local btn = getJoinButton(row)
-                if btn then
-                    print("[Lobby] join", entry.label, "via", row.Name)
-                    if click(btn) then return true end
+    local function waitServerScroll(timeout)
+        local deadline = os.clock() + (timeout or 15)
+        repeat
+            local scroll = getServerScroll()
+            if hasServerRows(scroll) then return scroll end
+            task.wait(0.2)
+        until os.clock() >= deadline
+        return nil
+    end
+
+    local function rowBlob(row)
+        local parts = {norm(row.Name)}
+        for _, descendant in ipairs(row:GetDescendants()) do
+            if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+                local ok, value = pcall(function() return descendant.Text end)
+                if ok and value and value ~= "" then
+                    parts[#parts + 1] = norm(value)
                 end
             end
         end
+        return table.concat(parts, " ")
     end
 
-    warn("[Lobby] no safe server joinable")
-    return false
-end
-
--- FLOW
-task.spawn(function()
-    print("[Lobby] character -> continue -> safe server")
-
-    local lobbyDeadline = os.clock() + 120
-    repeat
-        if getCharacters() then break end
-        task.wait(0.25)
-    until os.clock() >= lobbyDeadline
-    if not getCharacters() then
-        warn("[Lobby] character menu did not appear within 120 seconds")
-        return
+    local function rowMatches(row, entry)
+        local blob = rowBlob(row)
+        if norm(row.Name) == norm(entry.keys[1]) then return true end
+        for _, key in ipairs(entry.keys) do
+            local normalized = norm(key)
+            if normalized ~= "" and blob:find(normalized, 1, true) then return true end
+        end
+        return false
     end
 
-    if not selectFirstCharacter() then return end
-    task.wait(0.35)
-
-    if not clickContinue() then return end
-    task.wait(1.0)
-
-    -- si toujours sur characters, re-tente continue
-    if not getServerScroll() then
-        clickContinue()
-        task.wait(1.0)
+    local function isJoinable(row)
+        for _, descendant in ipairs(row:GetDescendants()) do
+            if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+                local ok, value = pcall(function() return descendant.Text end)
+                if ok and value then
+                    local label = norm(value)
+                    if label:find("offline", 1, true) then return false end
+                    local current, maximum = label:match("(%d+)%s*/%s*(%d+)")
+                    if current and maximum and tonumber(current) >= tonumber(maximum) then
+                        return false
+                    end
+                end
+            end
+        end
+        return true
     end
 
-    local ok = joinRandomSafe()
-    print("[Lobby] finished =", ok)
-end)
+    local function getJoinButton(row)
+        local btn = row:FindFirstChild("Info")
+        btn = btn and btn:FindFirstChild("Right")
+        btn = btn and btn:FindFirstChild("Join")
+        if btn and btn:IsA("GuiButton") then return btn end
+        for _, descendant in ipairs(row:GetDescendants()) do
+            if descendant:IsA("TextButton") or descendant:IsA("ImageButton") then
+                local name = norm(descendant.Name)
+                local label = ""
+                pcall(function() label = norm(descendant.Text) end)
+                if name:find("join", 1, true) or label:find("join", 1, true) then
+                    return descendant
+                end
+            end
+        end
+        return nil
+    end
+
+    local function waitForJoin(previousJobId, timeout)
+        local deadline = os.clock() + (timeout or 18)
+        repeat
+            local currentJobId = nil
+            pcall(function() currentJobId = game.JobId end)
+            if currentJobId and currentJobId ~= "" and currentJobId ~= previousJobId then
+                return true
+            end
+            local menu = pg and pg:FindFirstChild("MainMenuGui")
+            local servers = menu and menu:FindFirstChild("Servers")
+            local visible = true
+            if servers then pcall(function() visible = servers.Visible end) end
+            if not menu or not servers or not visible then return true end
+            task.wait(0.25)
+        until os.clock() >= deadline
+        return false
+    end
+
+    local function joinRandomSafe()
+        local scroll = waitServerScroll(18)
+        if not scroll then
+            lobbySetStatus("Server list did not load")
+            return false
+        end
+
+        for _, entry in ipairs(SAFE_SERVERS) do
+            for _, row in ipairs(scroll:GetChildren()) do
+                if row.Name ~= "Template" and rowMatches(row, entry) and isJoinable(row) then
+                    local btn = getJoinButton(row)
+                    if btn then
+                        local previousJobId = game.JobId
+                        lobbySetStatus("Joining " .. entry.label)
+                        if not click(btn) then
+                            lobbySetStatus("Join button could not be activated")
+                            return false
+                        end
+                        if waitForJoin(previousJobId, 18) then
+                            lobbySetStatus("Joined " .. entry.label)
+                            return true
+                        end
+                        lobbySetStatus("Join was pressed but the server did not change")
+                        return false
+                    end
+                end
+            end
+        end
+        lobbySetStatus("No available server matched the safe-server list")
+        return false
+    end
+
+    task.spawn(function()
+        if not pg then
+            lobbySetStatus("PlayerGui not found")
+            return
+        end
+
+        lobbySetStatus("Checking game menu")
+        if not startFromHomeIfNeeded() then
+            lobbySetStatus("Home/character menu was not detected")
+            return
+        end
+
+        local menuDeadline = os.clock() + 120
+        repeat
+            if getCharacters() then break end
+            task.wait(0.25)
+        until os.clock() >= menuDeadline
+        if not getCharacters() then
+            lobbySetStatus("Character menu did not appear")
+            return
+        end
+
+        if not selectFirstCharacter() then return end
+        task.wait(0.35)
+        if not clickContinue() then return end
+
+        -- Certains chargements conservent temporairement le Scroll vide. Attendre de vraies lignes.
+        local scroll = waitServerScroll(8)
+        if not scroll and getCharacters() then
+            lobbySetStatus("Retrying Continue")
+            if clickContinue() then
+                scroll = waitServerScroll(15)
+            end
+        end
+        if not scroll then
+            lobbySetStatus("Server list is empty or unavailable")
+            return
+        end
+
+        joinRandomSafe()
+    end)
 end
 
 -- Après une téléportation, Prison RP peut afficher son écran d'accueil et attendre
@@ -687,7 +816,8 @@ end
 -- Ainsi un WaitForChild lent/absent ne peut plus empêcher le menu de s'afficher.
 FishingSystem, FishingModules, MinigameSystem, SoundManager, GUIManager = nil, nil, nil, nil, nil
 InventoryEvents, Inventory_SellAll = nil, nil
-ToolEvent, vendingMachine, foodEvent, drinkEvent = nil, nil, nil, nil
+ToolEvent, vendingMachine = nil, nil
+vendingOpenUiRemote, vendingBuyRemote, vendingOpenPrompt = nil, nil, nil
 POND_GROUND_CFRAME = CFrame.new(Vector3.new(-585, 0.5, -100), Vector3.new(-615, 0.5, -85))
 -- Point d'arrivée utilisé par le bouton TP Mine.
 AUTO_MINE_START_CFRAME = CFrame.new(
@@ -2227,6 +2357,8 @@ task.spawn(function()
         Inventory_SellAll = InventoryEvents and InventoryEvents:FindFirstChild("Inventory_SellAll")
         local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
         if remotes then
+            vendingOpenUiRemote = remotes:WaitForChild("OpenCenterUi", 20)
+            vendingBuyRemote = remotes:WaitForChild("BuyVending", 20)
             local toolFolder = remotes:WaitForChild("Tool", 20)
             if toolFolder then ToolEvent = toolFolder:WaitForChild("Event", 20) end
         end
@@ -2236,9 +2368,7 @@ task.spawn(function()
         vendingMachine = props and props:FindFirstChild("Red Vending Machine")
         if vendingMachine then
             local money = vendingMachine:FindFirstChild("Money")
-            local prompt = money and money:FindFirstChild("Prompt")
-            foodEvent = prompt and prompt:FindFirstChild("Food") and prompt.Food:FindFirstChild("Event")
-            drinkEvent = prompt and prompt:FindFirstChild("Drink") and prompt.Drink:FindFirstChild("Event")
+            vendingOpenPrompt = money and money:WaitForChild("OpenPrompt", 10)
         end
     end)
     if ok then
@@ -3876,28 +4006,32 @@ end
 local function serverHopClick(button)
     if not button or not button.Parent then return false end
 
-    -- Match the activation path used by the standalone hop script.
-    local fired = false
-    local fireSignal = firesignal
-    if type(fireSignal) == "function" then
-        local activatedSignal = nil
-        local clickedSignal = nil
-        pcall(function() activatedSignal = button.Activated end)
-        pcall(function() clickedSignal = button.MouseButton1Click end)
-        if activatedSignal then
-            local ok = pcall(fireSignal, activatedSignal)
-            fired = fired or ok
+    -- Un seul chemin d'activation par tentative : évite les doubles clics.
+    local activatedOk, activated = pcall(function()
+        if button:IsA("GuiButton") then
+            button:Activate()
+            return true
         end
-        if clickedSignal then
-            local ok = pcall(fireSignal, clickedSignal)
-            fired = fired or ok
-        end
+        return false
+    end)
+    if activatedOk and activated == true then
+        return true
     end
 
-    local activated = pcall(function()
-        if button.Activate then button:Activate() end
-    end)
-    return fired or activated
+    local fireSignal = firesignal
+    if type(fireSignal) == "function" then
+        for _, signalName in ipairs({"Activated", "MouseButton1Click"}) do
+            local signal = nil
+            local signalOk = pcall(function()
+                signal = button[signalName]
+            end)
+            if signalOk and signal then
+                local firedOk = pcall(fireSignal, signal)
+                if firedOk then return true end
+            end
+        end
+    end
+    return false
 end
 
 local function serverHopMainGui()
@@ -4011,6 +4145,22 @@ local function serverHopJoinButton(row)
     return nil
 end
 
+local function serverHopPrepareAutoReloadQueue()
+    local reloadNeeded = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
+        or _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
+        or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+    if not reloadNeeded then
+        if type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
+            _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE(true)
+        end
+        return true
+    end
+    if type(_G.PRISONRP_REARM_AUTO_RELOAD_QUEUE) ~= "function" then
+        return false, "Auto Reload queue helper is unavailable"
+    end
+    return _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
+end
+
 local function serverHopWaitForJobChange(previousJobId, timeoutSeconds)
     local deadline = os.clock() + (tonumber(timeoutSeconds) or 20)
     repeat
@@ -4073,8 +4223,17 @@ local function serverHopJoinLeastPopulatedSafeServer(maxPlayers)
     end
     local choice = leastPopulated[math.random(1, #leastPopulated)]
     print("[Hub Prison RP] Joining " .. choice.label .. " (" .. tostring(choice.population) .. " players)")
+    local queueReady, queueError = serverHopPrepareAutoReloadQueue()
+    if not queueReady then
+        warn("[Hub Prison RP] Auto Reload could not be queued before server hop: " .. tostring(queueError))
+    end
     local previousJobId = game.JobId
-    if not serverHopClick(choice.button) then return false, "Could not activate the Join button" end
+    if not serverHopClick(choice.button) then
+        if type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
+            _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE(true)
+        end
+        return false, "Could not activate the Join button"
+    end
     if serverHopWaitForJobChange(previousJobId, 20) then return true end
     return false, "Join button activated, but the server did not change"
 end
@@ -4128,11 +4287,20 @@ local function serverHopJoinLeastPopulatedPublicServer(maxPlayers)
     end
     if not bestId then return false, maxPlayers and "No public server below the player limit was found" or "No other public server was found" end
     local teleportService = game:GetService("TeleportService")
+    local queueReady, queueError = serverHopPrepareAutoReloadQueue()
+    if not queueReady then
+        warn("[Hub Prison RP] Auto Reload could not be queued before server hop: " .. tostring(queueError))
+    end
     local previousJobId = game.JobId
     local ok, err = pcall(function()
         teleportService:TeleportToPlaceInstance(game.PlaceId, bestId, LocalPlayer)
     end)
-    if not ok then return false, tostring(err) end
+    if not ok then
+        if type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
+            _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE(true)
+        end
+        return false, tostring(err)
+    end
     print("[Hub Prison RP] Joining least-populated public server (" .. tostring(bestPopulation) .. " players)")
     if serverHopWaitForJobChange(previousJobId, 20) then return true end
     return false, "Teleport request was sent, but the server did not change"
@@ -4722,21 +4890,75 @@ function getActiveRodFunctions()
         return nil, nil, nil
     end
 
-    local onActionBeganFunc, onActionEndedFunc, performCastFunc
+    -- Ne jamais mélanger des fonctions homonymes venant de scripts différents.
+    -- L'ancien scan gardait simplement le dernier résultat de chaque nom : selon
+    -- l'ordre renvoyé par get_gc(), le trio pouvait appartenir à des modules distincts.
+    local groups = {}
+    local ungrouped = {OnActionBegan = {}, OnActionEnded = {}, PerformCast = {}}
+
     for _, obj in ipairs(gcObjects) do
         if typeof(obj) == "function" then
             local closureOk, isClosure = pcall(islclosure, obj)
             if closureOk and isClosure then
                 local infoOk, info = pcall(debug.getinfo, obj)
-                if infoOk and info then
-                    if info.name == "OnActionBegan" then onActionBeganFunc = obj
-                    elseif info.name == "OnActionEnded" then onActionEndedFunc = obj
-                    elseif info.name == "PerformCast" then performCastFunc = obj end
+                if infoOk and type(info) == "table" then
+                    local name = info.name
+                    if name == "OnActionBegan" or name == "OnActionEnded" or name == "PerformCast" then
+                        local source = info.source
+                        if type(source) ~= "string" or source == "" then
+                            source = info.short_src
+                        end
+                        if type(source) == "string" and source ~= "" then
+                            local group = groups[source]
+                            if not group then
+                                group = {}
+                                groups[source] = group
+                            end
+                            -- Le premier candidat d'une même source est conservé :
+                            -- évite que l'ordre de get_gc() remplace aléatoirement le trio.
+                            if group[name] == nil then
+                                group[name] = obj
+                            end
+                        else
+                            table.insert(ungrouped[name], obj)
+                        end
+                    end
                 end
             end
         end
     end
-    return onActionBeganFunc, onActionEndedFunc, performCastFunc
+
+    local sources = {}
+    for source, group in pairs(groups) do
+        if group.OnActionBegan and group.OnActionEnded and group.PerformCast then
+            table.insert(sources, source)
+        end
+    end
+    table.sort(sources)
+
+    if #sources > 0 then
+        -- Si plusieurs modules portent les mêmes noms, privilégier une source
+        -- dont PerformCast expose bien une table d'état exploitable.
+        for _, source in ipairs(sources) do
+            local group = groups[source]
+            if type(get_upvalues) == "function" then
+                local upOk, upvalues = pcall(get_upvalues, group.PerformCast)
+                if upOk and type(upvalues) == "table" and type(upvalues[1]) == "table" then
+                    return group.OnActionBegan, group.OnActionEnded, group.PerformCast
+                end
+            end
+        end
+        local selected = groups[sources[1]]
+        return selected.OnActionBegan, selected.OnActionEnded, selected.PerformCast
+    end
+
+    -- Repli prudent pour les exécuteurs qui ne fournissent pas source/short_src :
+    -- accepter uniquement un candidat unique pour chacun des trois noms.
+    if #ungrouped.OnActionBegan == 1 and #ungrouped.OnActionEnded == 1 and #ungrouped.PerformCast == 1 then
+        return ungrouped.OnActionBegan[1], ungrouped.OnActionEnded[1], ungrouped.PerformCast[1]
+    end
+
+    return nil, nil, nil
 end
 
 function getRarityIndex(rarityName)
@@ -4765,38 +4987,14 @@ function getRarityIndex(rarityName)
     return #RarityList
 end
 
--- Auto Buy Food : TP progressif au distributeur, sans retour automatique.
--- Cycle en boucle : 15 secondes de barre de céréales, puis 15 secondes de boisson.
+-- Auto Buy Food : déplacement progressif à 60 studs/s, ouverture de la boutique,
+-- puis un achat unique de 1 barre de céréales et 1 bouteille d'eau.
+-- Aucun cycle répété, aucune interface supplémentaire et aucun retour automatique.
 isBuying = false
 buyRequest = false
-cooldown = 1.0
-local remoteBuyBusy = false
--- Invalide les anciennes boucles lors d'un stop/restart rapide.
 remoteBuyRunToken = tonumber(remoteBuyRunToken) or 0
 
 local AUTO_BUY_TP_SPEED = 60
-local AUTO_BUY_PHASE_SECONDS = 15
-
-local function findPurchasePrompt(kind)
-    if not vendingMachine then return nil end
-    local wanted = string.lower(kind)
-
-    local candidates = {}
-    for _, obj in ipairs(vendingMachine:GetDescendants()) do
-        if obj:IsA("ProximityPrompt") then
-            local n = string.lower(obj.Name)
-            local pn = obj.Parent and string.lower(obj.Parent.Name) or ""
-            if string.find(n, wanted, 1, true) or string.find(pn, wanted, 1, true) then
-                table.insert(candidates, obj)
-            end
-        end
-    end
-
-    if #candidates > 0 then
-        return candidates[1]
-    end
-    return nil
-end
 
 local function getVendingTargetCFrame()
     if not vendingMachine then return nil end
@@ -4811,115 +5009,125 @@ local function getVendingTargetCFrame()
     return nil
 end
 
-local function fireRemoteDirect(remote)
-    if not remote or not remote:IsA("RemoteEvent") then
-        return false
-    end
-    local ok = pcall(function()
-        remote:FireServer()
-    end)
-    return ok
+local function setAutoBuyStatus(message)
+    if FoodText then FoodText.Text = tostring(message) end
+    if DrinkText then DrinkText.Text = tostring(message) end
 end
 
-local function createVisualPresence(char, savedCFrame)
-    if not char or not savedCFrame then return nil end
-
-    local oldArchivable = char.Archivable
-    local clone = nil
-
-    pcall(function()
-        char.Archivable = true
-        clone = char:Clone()
-        char.Archivable = oldArchivable
-    end)
-
-    if not clone then
-        pcall(function() char.Archivable = oldArchivable end)
-        return nil
-    end
-
-    clone.Name = "PRISONRP_AutoBuyVisualPresence"
-
-    for _, obj in ipairs(clone:GetDescendants()) do
-        if obj:IsA("BasePart") then
-            obj.Anchored = true
-            obj.CanCollide = false
-            obj.CanTouch = false
-            obj.CanQuery = false
-            obj.CastShadow = false
-        elseif obj:IsA("Script") or obj:IsA("LocalScript") then
-            obj.Disabled = true
-        elseif obj:IsA("Humanoid") then
-            pcall(function() obj.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end)
-        end
-    end
-
-    clone:PivotTo(savedCFrame)
-    clone.Parent = workspace
-    return clone
-end
-
-local function setRealCharacterInvisibleLocal(char, enabled)
-    if not char then return end
-    for _, obj in ipairs(char:GetDescendants()) do
-        if obj:IsA("BasePart") then
-            pcall(function() obj.LocalTransparencyModifier = enabled and 1 or 0 end)
-        end
+local function finishAutoBuy(token, message)
+    if token ~= remoteBuyRunToken then return end
+    if message then setAutoBuyStatus(message) end
+    buyRequest = false
+    isBuying = false
+    if StartBtn then
+        StartBtn.Text = "Auto Buy Food"
+        StartBtn.BackgroundColor3 = Color3.fromRGB(120, 55, 55)
     end
 end
 
-local function firePurchaseAtVending(kind, remote, runToken)
-    if runToken ~= nil and (not buyRequest or runToken ~= remoteBuyRunToken) then
-        return false, "stopped"
-    end
-    if not remote or not remote:IsA("RemoteEvent") then
-        return false, "none"
-    end
-
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then
-        return false, "none"
-    end
-
-    local target = getVendingTargetCFrame()
-    if not target then
-        return false, "none"
-    end
-
-    -- Si le joueur s'est éloigné, rejoindre de nouveau le distributeur à 60 studs/s.
-    -- L'annulation vérifie le token pour que le bouton OFF reste réactif.
-    local distance = (hrp.Position - target.Position).Magnitude
-    if distance > 7 then
-        local destination = target * CFrame.new(0, 0, -3)
-        local moved = robustTeleportTo(destination, AUTO_BUY_TP_SPEED, function()
-            return not running or not buyRequest or runToken ~= remoteBuyRunToken
-        end)
-        if not moved then
-            return false, (not buyRequest or runToken ~= remoteBuyRunToken) and "stopped" or "tp-failed"
+-- Détecte l'ouverture réelle de la fenêtre vendeur dans PlayerGui.
+-- On compare l'état visible avant/après OpenCenterUi : cela fonctionne aussi
+-- si le jeu réutilise une fenêtre déjà créée et ne fait que la rendre visible.
+local function autoBuyGuiObjectIsVisible(object)
+    local current = object
+    while current and current ~= guiParent do
+        if current:IsA("GuiObject") and current.Visible ~= true then
+            return false
         end
-        if not buyRequest or runToken ~= remoteBuyRunToken then
-            return false, "stopped"
+        if current:IsA("ScreenGui") and current.Enabled ~= true then
+            return false
+        end
+        current = current.Parent
+    end
+    return current == guiParent
+end
+
+local function snapshotVisibleAutoBuyGui()
+    local snapshot = {}
+    for _, object in ipairs(guiParent:GetDescendants()) do
+        if object:IsA("GuiObject") and autoBuyGuiObjectIsVisible(object) then
+            snapshot[object] = true
         end
     end
+    return snapshot
+end
 
-    -- Le RemoteEvent Food correspond à l'achat de nourriture du distributeur,
-    -- utilisé ici pendant la phase barre de céréales. Drink est utilisé pendant la phase boisson.
-    local ok = pcall(function()
-        remote:FireServer()
-    end)
+local function scanForOpenedVendingWindow(beforeSnapshot)
+    local newlyVisibleCount = 0
+    local hasNewButton = false
+    local hasNewShopText = false
 
-    return ok, ok and "tp-buy" or "none"
+    for _, object in ipairs(guiParent:GetDescendants()) do
+        if object:IsA("GuiObject") and autoBuyGuiObjectIsVisible(object) then
+            local isNewlyVisible = beforeSnapshot[object] ~= true
+            if isNewlyVisible then
+                newlyVisibleCount += 1
+                if object:IsA("GuiButton") then
+                    hasNewButton = true
+                end
+
+                if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+                    local visibleText = ""
+                    pcall(function() visibleText = tostring(object.Text or "") end)
+                    local searchable = string.lower(tostring(object.Name) .. " " .. visibleText)
+                    if string.find(searchable, "vending", 1, true)
+                        or string.find(searchable, "machine", 1, true)
+                        or string.find(searchable, "cereal", 1, true)
+                        or string.find(searchable, "feclets", 1, true)
+                        or string.find(searchable, "water bottle", 1, true)
+                        or string.find(searchable, "waterbottle", 1, true)
+                        or string.find(searchable, "purchase", 1, true)
+                        or string.find(searchable, "shop", 1, true)
+                        or string.find(searchable, "buy", 1, true) then
+                        hasNewShopText = true
+                    end
+                end
+            end
+        end
+    end
+
+    -- Priorité au texte identifiable de la boutique. Sinon, demander plusieurs
+    -- éléments visibles nouveaux, dont un bouton, pour éviter un faux positif HUD.
+    return hasNewShopText or (newlyVisibleCount >= 5 and hasNewButton)
+end
+
+local function waitForVendingWindow(beforeSnapshot, timeoutSeconds, runToken)
+    local deadline = os.clock() + (timeoutSeconds or 12)
+    local readyStreak = 0
+
+    while os.clock() < deadline do
+        if not running or not isBuying or runToken ~= remoteBuyRunToken then
+            return false, "cancelled"
+        end
+
+        if scanForOpenedVendingWindow(beforeSnapshot) then
+            readyStreak += 1
+            if readyStreak >= 3 then
+                -- La fenêtre est visible de façon stable ; laisser finir son animation.
+                task.wait(0.8)
+                if not running or not isBuying or runToken ~= remoteBuyRunToken then
+                    return false, "cancelled"
+                end
+                return true
+            end
+        else
+            readyStreak = 0
+        end
+
+        task.wait(0.15)
+    end
+
+    return false, "timeout"
 end
 
 function stopRemoteBuy()
-    -- Invalide immédiatement l'ancienne boucle et annule tout TP Auto Buy en cours.
+    -- Invalide immédiatement le déplacement ou les étapes qui n'ont pas encore démarré.
     remoteBuyRunToken = (tonumber(remoteBuyRunToken) or 0) + 1
     buyRequest = false
     isBuying = false
+    setAutoBuyStatus("Auto Buy cancelled.")
 
-    -- Intentionnellement : ne pas ramener le personnage à sa position précédente.
-
+    -- Aucun retour à la position précédente.
     if StartBtn then
         StartBtn.Text = "Auto Buy Food"
         StartBtn.BackgroundColor3 = Color3.fromRGB(120, 55, 55)
@@ -4928,126 +5136,116 @@ end
 
 function startRemoteBuy()
     if isBuying or not running then return end
-    if not foodEvent or not drinkEvent then
-        if FoodText then FoodText.Text = "Purchase: food event not found" end
-        if DrinkText then DrinkText.Text = "Purchase: drink event not found" end
-        return
-    end
-    if not vendingMachine then
-        if FoodText then FoodText.Text = "Purchase: vending machine not found" end
-        if DrinkText then DrinkText.Text = "Purchase: vending machine not found" end
-        return
-    end
 
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
+    if not vendingMachine then
+        setAutoBuyStatus("Purchase: vending machine not found")
+        return
+    end
+    if not vendingOpenUiRemote or not vendingOpenPrompt then
+        setAutoBuyStatus("Purchase: OpenCenterUi / OpenPrompt not found")
+        return
+    end
+    if not vendingBuyRemote then
+        setAutoBuyStatus("Purchase: BuyVending remote not found")
+        return
+    end
 
     local vendorTarget = getVendingTargetCFrame()
     if not vendorTarget then
-        if FoodText then FoodText.Text = "Purchase: vending machine position not found" end
-        if DrinkText then DrinkText.Text = "Purchase: vending machine position not found" end
+        setAutoBuyStatus("Purchase: vending machine position not found")
         return
     end
 
     remoteBuyRunToken = (tonumber(remoteBuyRunToken) or 0) + 1
     local thisRunToken = remoteBuyRunToken
     isBuying = true
-    buyRequest = false
+    buyRequest = true
 
     if StartBtn then
         StartBtn.Text = "Moving to vending machine (60)..."
         StartBtn.BackgroundColor3 = Color3.fromRGB(40, 125, 170)
     end
+    setAutoBuyStatus("Moving to vending machine at 60 studs/s...")
 
-    -- Déplacement progressif comme TP Lake, à 60 studs/s. On ne sauvegarde pas
-    -- la position de départ : l'arrêt d'Auto Buy ne ramènera pas le joueur.
-    local vendorDestination = vendorTarget * CFrame.new(0, 0, -3)
-    local moved = robustTeleportTo(vendorDestination, AUTO_BUY_TP_SPEED, function()
-        return not running or not isBuying or thisRunToken ~= remoteBuyRunToken
-    end)
-
-    if not moved then
-        if thisRunToken == remoteBuyRunToken then
-            stopRemoteBuy()
-            if FoodText then FoodText.Text = "Purchase: move to vending machine failed" end
-            if DrinkText then DrinkText.Text = "Purchase: move to vending machine failed" end
-        end
-        return
-    end
-
-    if thisRunToken ~= remoteBuyRunToken or not running or not isBuying then
-        return
-    end
-
-    buyRequest = true
-    if StartBtn then
-        StartBtn.Text = "Auto Buy: BARS 15s"
-        StartBtn.BackgroundColor3 = Color3.fromRGB(40, 160, 80)
-    end
-
-    -- Un seul worker : 15 s de Food (barres de céréales), puis 15 s de Drink,
-    -- puis recommence tant que l'utilisateur laisse Auto Buy activé.
     task.spawn(function()
-        local phase = "food"
-        local phaseEndsAt = os.clock() + AUTO_BUY_PHASE_SECONDS
-        local requestCount = 0
+        -- Même déplacement progressif qu'avant : vitesse demandée de 60 studs/s.
+        local vendorDestination = vendorTarget * CFrame.new(0, 0, -3)
+        local moved = robustTeleportTo(vendorDestination, AUTO_BUY_TP_SPEED, function()
+            return not running or not isBuying or thisRunToken ~= remoteBuyRunToken
+        end)
 
-        while running and buyRequest and thisRunToken == remoteBuyRunToken do
-            if os.clock() >= phaseEndsAt then
-                if phase == "food" then
-                    phase = "drink"
-                    if StartBtn then StartBtn.Text = "Auto Buy: DRINKS 15s" end
-                    if FoodText then FoodText.Text = "Cereal bars: paused" end
-                    if DrinkText then DrinkText.Text = "Drink phase: 15 seconds" end
-                else
-                    phase = "food"
-                    if StartBtn then StartBtn.Text = "Auto Buy: BARS 15s" end
-                    if DrinkText then DrinkText.Text = "Drinks: paused" end
-                    if FoodText then FoodText.Text = "Cereal bar phase: 15 seconds" end
-                end
-                phaseEndsAt = os.clock() + AUTO_BUY_PHASE_SECONDS
-                requestCount = 0
-            end
-
-            while running and AutoEatDrinkBusy and buyRequest and thisRunToken == remoteBuyRunToken do
-                task.wait(0.1)
-            end
-            if not running or not buyRequest or thisRunToken ~= remoteBuyRunToken then break end
-
-            -- Si la pause a duré jusqu'à la fin de la phase, passe immédiatement à la suivante.
-            if os.clock() >= phaseEndsAt then
-                continue
-            end
-
-            requestCount += 1
-            local selectedRemote = phase == "food" and foodEvent or drinkEvent
-            local sent = firePurchaseAtVending(phase, selectedRemote, thisRunToken)
-            if phase == "food" then
-                if FoodText then
-                    FoodText.Text = sent
-                        and string.format("Bar purchase requests sent: %d", requestCount)
-                        or string.format("Purchase failed: %d", requestCount)
-                end
-            else
-                if DrinkText then
-                    DrinkText.Text = sent
-                        and string.format("Drink purchase requests sent: %d", requestCount)
-                        or string.format("Purchase failed: %d", requestCount)
-                end
-            end
-
-            local remaining = math.max(0, phaseEndsAt - os.clock())
-            if remaining > 0 then task.wait(math.min(cooldown, remaining)) end
+        if thisRunToken ~= remoteBuyRunToken or not running or not isBuying then
+            return
+        end
+        if not moved then
+            finishAutoBuy(thisRunToken, "Purchase: move to vending machine failed")
+            return
         end
 
-        if thisRunToken == remoteBuyRunToken then
-            buyRequest = false
-            isBuying = false
-            if StartBtn then
-                StartBtn.Text = "Auto Buy Food"
-                StartBtn.BackgroundColor3 = Color3.fromRGB(120, 55, 55)
+        -- Prendre une photo de l'interface AVANT l'ouverture afin de ne pas
+        -- confondre la fenêtre vendeur avec les éléments HUD déjà affichés.
+        local guiBeforeOpen = snapshotVisibleAutoBuyGui()
+
+        -- Ouvre la boutique avec le même signal client que le script autonome.
+        if type(firesignal) ~= "function" then
+            finishAutoBuy(thisRunToken, "Purchase: firesignal is unavailable")
+            return
+        end
+
+        if StartBtn then StartBtn.Text = "Opening vending shop..." end
+        setAutoBuyStatus("Opening vending shop...")
+        local opened, openError = pcall(function()
+            firesignal(
+                vendingOpenUiRemote.OnClientEvent,
+                "VendingMachine",
+                vendingOpenPrompt
+            )
+        end)
+        if not opened then
+            finishAutoBuy(thisRunToken, "Open shop failed: " .. tostring(openError))
+            return
+        end
+
+        -- L'ancienne détection de fenêtre était trop stricte : elle pouvait
+        -- annuler l'achat même lorsque le signal d'ouverture avait bien été envoyé.
+        -- On attend brièvement l'animation, puis on envoie directement BuyVending.
+        -- Le serveur reste responsable de valider l'achat et la proximité.
+        if StartBtn then StartBtn.Text = "Preparing purchase..." end
+        setAutoBuyStatus("Shop opening requested. Preparing automatic purchase...")
+        task.wait(0.6)
+
+        if thisRunToken ~= remoteBuyRunToken or not running or not isBuying then
+            return
+        end
+
+        if not vendingBuyRemote:IsA("RemoteFunction") then
+            finishAutoBuy(thisRunToken, "Purchase: BuyVending is not a RemoteFunction")
+            return
+        end
+
+        if StartBtn then StartBtn.Text = "Buying 1 + 1..." end
+        setAutoBuyStatus("Sending purchase: 1 cereal bar + 1 water bottle...")
+
+        -- Même requête que le snippet validé : une seule demande, 1 de chaque.
+        local result = table.pack(pcall(function()
+            return vendingBuyRemote:InvokeServer({
+                FecletsCerealBar = 1,
+                WaterBottle = 1,
+            })
+        end))
+
+        if not result[1] then
+            finishAutoBuy(thisRunToken, "BuyVending error: " .. tostring(result[2]))
+        elseif result[2] == true then
+            finishAutoBuy(thisRunToken, "Server accepted: 1 cereal bar + 1 water bottle.")
+        elseif result[2] == nil then
+            finishAutoBuy(thisRunToken, "Purchase request sent; server returned no confirmation (nil).")
+        else
+            local response = tostring(result[2])
+            if result[3] ~= nil then
+                response = response .. " | " .. tostring(result[3])
             end
+            finishAutoBuy(thisRunToken, "Server response: " .. response)
         end
     end)
 end
@@ -5784,6 +5982,35 @@ UnloadNoBtn.MouseButton1Click:Connect(closeUnloadConfirmation)
 UnloadYesBtn.MouseButton1Click:Connect(function()
     if not UnloadConfirmOpen then return end
     UnloadConfirmOpen = false
+    -- UNLOAD est une demande explicite de ne plus relancer le Hub au prochain changement de serveur.
+    -- Le token est invalidé dans _G et getgenv ; toute ancienne entrée de queue devient inerte.
+    pcall(function()
+        _G.PRISONRP_AUTO_RELOAD_ENABLED = false
+        _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = false
+        _G.PRISONRP_HARD_FISH_ENGINE_ENABLED = false
+        _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED = nil
+        _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
+        if type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
+            _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE(true)
+        else
+            _G.PRISONRP_AUTO_RELOAD_CANCELLED = true
+            _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = nil
+            _G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+        end
+    end)
+    pcall(function()
+        local env = type(_G.PRISONRP_GET_AUTO_RELOAD_QUEUE_ENV) == "function"
+            and _G.PRISONRP_GET_AUTO_RELOAD_QUEUE_ENV() or nil
+        if type(env) == "table" then
+            env.PRISONRP_AUTO_RELOAD_ENABLED = false
+            env.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = false
+            env.PRISONRP_HARD_FISH_ENGINE_ENABLED = false
+            env.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
+            env.PRISONRP_AUTO_RELOAD_CANCELLED = true
+            env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = nil
+            env.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
+        end
+    end)
     pcall(function()
         if type(_G.CombinedHubCleanup) == "function" then
             _G.CombinedHubCleanup()
@@ -5825,6 +6052,14 @@ _G.CombinedHubCleanup = function()
     end)
     -- Coupe immédiatement les boucles principales du hub.
     running = false
+    -- Déconnecte aussi l'écouteur InputBegan global du menu Binds.
+    pcall(function()
+        local bindConnection = _G.PRISONRP_BINDS_INPUT_CONNECTION
+        if bindConnection then
+            bindConnection:Disconnect()
+        end
+        _G.PRISONRP_BINDS_INPUT_CONNECTION = nil
+    end)
     pcall(function()
         if type(_G.PRISONRP_HUB_RESIZE_CLEANUP) == "function" then
             _G.PRISONRP_HUB_RESIZE_CLEANUP()
@@ -6011,8 +6246,20 @@ local function getFishingState()
         return nil
     end
 
-    -- Dans MinigameSystem, SetHolding ferme sur le state u55.
-    return holdingUvs[1]
+    -- La table d'upvalues peut évoluer selon la version du module.
+    -- Chercher le state par sa structure au lieu de supposer qu'il est toujours [1].
+    for _, candidate in pairs(holdingUvs) do
+        if type(candidate) == "table" and type(candidate.simulation) == "table" then
+            return candidate
+        end
+    end
+
+    -- Compatibilité avec les anciennes versions du module.
+    local first = holdingUvs[1]
+    if type(first) == "table" and type(first.simulation) == "table" then
+        return first
+    end
+    return nil
 end
 
 local function autoFishApplyHolding()
@@ -6044,11 +6291,11 @@ local function autoFishApplyHolding()
     -- holding = zonePos + zoneVel * 0.2 < fishPos
     local shouldHold = (zonePos + zoneVel * 0.2) < fishPos
 
-    pcall(function()
+    local appliedOk = pcall(function()
         MinigameSystem:SetHolding(shouldHold, "autofish")
     end)
 
-    return true
+    return appliedOk
 end
 
 local function autoFishRelease()
@@ -6060,6 +6307,26 @@ local function autoFishRelease()
 end
 
 _G.PRISONRP_FISHING_MOUSE_RELEASE = autoFishRelease
+
+-- Lecture protégée de l'état du mini-jeu : une erreur ponctuelle du module
+-- ne doit jamais tuer la boucle principale et laisser le statut bloqué sur Reeling.
+local function autoFishReadMinigameState()
+    if not MinigameSystem then
+        return false, nil, true
+    end
+    local ok, active, phase = pcall(function()
+        local isActive = MinigameSystem:IsActive()
+        local currentPhase = nil
+        if isActive then
+            currentPhase = MinigameSystem:GetPhase()
+        end
+        return isActive == true, currentPhase
+    end)
+    if not ok then
+        return nil, nil, false
+    end
+    return active == true, phase, true
+end
 
 -- Auto Fish V28 : boucle de contrôle rapide.
 -- Le moteur de jeu reste responsable du déplacement de la zone blanche ;
@@ -6088,15 +6355,9 @@ task.spawn(function()
             continue
         end
 
-        local active, phase = false, nil
-        pcall(function()
-            active = MinigameSystem:IsActive()
-            if active then
-                phase = MinigameSystem:GetPhase()
-            end
-        end)
+        local active, phase, stateReadOk = autoFishReadMinigameState()
 
-        if active and phase == "reel" then
+        if stateReadOk and active and phase == "reel" then
             autoFishApplyHolding()
             releaseSentSinceActive = false
         elseif not releaseSentSinceActive then
@@ -6124,12 +6385,36 @@ pcall(function()
 end)
 _G.PRISONRP_FISHING_CATCH_CONNECTION = nil
 
-local catchPromptFolder = ReplicatedStorage:FindFirstChild("FishingSystem")
-local catchPromptEvent = catchPromptFolder and catchPromptFolder:FindFirstChild("CatchPrompt")
-if catchPromptEvent then
+-- CatchPrompt peut être ajouté après l'initialisation du hub : attendre son apparition
+-- au lieu d'abandonner définitivement la connexion lors d'un FindFirstChild trop tôt.
+task.spawn(function()
+    local deadline = os.clock() + 90
+    local catchPromptFolder = ReplicatedStorage:FindFirstChild("FishingSystem")
+    while running and not catchPromptFolder and os.clock() < deadline do
+        task.wait(0.25)
+        catchPromptFolder = ReplicatedStorage:FindFirstChild("FishingSystem")
+    end
+
+    local catchPromptEvent = catchPromptFolder and catchPromptFolder:FindFirstChild("CatchPrompt")
+    while running and catchPromptFolder and not catchPromptEvent and os.clock() < deadline do
+        task.wait(0.25)
+        catchPromptEvent = catchPromptFolder:FindFirstChild("CatchPrompt")
+    end
+
+    if not running then return end
+    if not catchPromptEvent then
+        warn("[Auto-Fish] FishingSystem.CatchPrompt did not appear within 90 seconds; catch confirmation is unavailable.")
+        return
+    end
+    if not catchPromptEvent:IsA("RemoteEvent") then
+        warn("[Auto-Fish] FishingSystem.CatchPrompt exists but is not a RemoteEvent.")
+        return
+    end
+
     local connectOk, connection = pcall(function()
         return catchPromptEvent.OnClientEvent:Connect(function(data)
-            if type(data) ~= "table" or type(data.Name) ~= "string" or type(data.Rarity) ~= "string" then
+            if not running or type(data) ~= "table"
+                or type(data.Name) ~= "string" or type(data.Rarity) ~= "string" then
                 return
             end
 
@@ -6151,13 +6436,14 @@ if catchPromptEvent then
     if connectOk then
         _G.PRISONRP_FISHING_CATCH_CONNECTION = connection
     else
-        warn("[Auto-Fish] CatchPrompt unavailable: " .. tostring(connection))
+        warn("[Auto-Fish] CatchPrompt connection failed: " .. tostring(connection))
     end
-else
-    warn("[Auto-Fish] FishingSystem.CatchPrompt RemoteEvent not found; catch confirmation is unavailable.")
-end
+end)
 local lastAutoSellCatchCount = 0
 task.spawn(function()
+    local stuckReelSince = nil
+    local stuckReelRecoveryAttempts = 0
+
     while running and ScreenGui and ScreenGui.Parent do
         task.wait(0.1)
         if _G.AutoFishingEnabled and not AutoEatDrinkBusy and MinigameSystem and SoundManager and GUIManager then
@@ -6179,6 +6465,67 @@ task.spawn(function()
                 end
             end
 
+            -- Si une phase shake est déjà active, la traiter au lieu de bloquer
+            -- le worker : le blocage de toute phase active empêchait HandleClick()
+            -- de faire avancer le mini-jeu et pouvait empêcher le lancer suivant.
+            local previousActive, previousPhase, previousStateOk = autoFishReadMinigameState()
+            local resumeExistingShake = previousStateOk and previousActive and previousPhase == "shake"
+            if previousStateOk and previousActive and previousPhase == "reel" then
+                stuckReelSince = stuckReelSince or os.clock()
+                if os.clock() - stuckReelSince >= 25 then
+                    stats.status = "Recovering Fishing..."
+                    updateUI()
+                    autoFishRelease()
+                    pcall(resetRod)
+                    stuckReelRecoveryAttempts = stuckReelRecoveryAttempts + 1
+
+                    local recoveryDeadline = os.clock() + 5
+                    local recovered = false
+                    while running and _G.AutoFishingEnabled and os.clock() < recoveryDeadline do
+                        task.wait(0.1)
+                        local activeNow, phaseNow, readOkNow = autoFishReadMinigameState()
+                        if readOkNow and (not activeNow or phaseNow ~= "reel") then
+                            recovered = true
+                            break
+                        end
+                    end
+
+                    if recovered then
+                        stuckReelSince = nil
+                        stuckReelRecoveryAttempts = 0
+                    elseif stuckReelRecoveryAttempts >= 2 then
+                        -- Arrêt sûr plutôt que relancer indéfiniment une canne bloquée.
+                        _G.AutoFishingEnabled = false
+                        AutoFishingCatchWindow = false
+                        stats.status = "Auto-Fish paused: reel stuck"
+                        updateUI()
+                        autoFishRelease()
+                        while running and ScreenGui and ScreenGui.Parent and not _G.AutoFishingEnabled do
+                            task.wait(0.2)
+                        end
+                        stuckReelSince = nil
+                        stuckReelRecoveryAttempts = 0
+                    else
+                        stuckReelSince = os.clock() - 20
+                    end
+                else
+                    stats.status = "Waiting for Reel..."
+                    updateUI()
+                end
+                task.wait(0.15)
+                continue
+            elseif previousStateOk and previousActive and not resumeExistingShake then
+                -- Autre phase transitoire : attendre sa fin, mais ne pas bloquer la
+                -- phase shake qui doit être traitée dans la boucle principale.
+                stats.status = "Finishing Fishing..."
+                updateUI()
+                task.wait(0.15)
+                continue
+            elseif previousStateOk then
+                stuckReelSince = nil
+                stuckReelRecoveryAttempts = 0
+            end
+
             -- Ferme la fenêtre au début d'un nouveau cycle de pêche.
             AutoFishingCatchWindow = false
             local fishCaughtThisCycle = false
@@ -6193,43 +6540,98 @@ task.spawn(function()
                 continue
             end
 
-            local onActionBegan, onActionEnded, performCast = getActiveRodFunctions()
-            if not onActionBegan or not onActionEnded or not performCast then
-                stats.status = "Finding Scripts..."
+            local onActionBegan, onActionEnded, performCast
+            local rodState = nil
+            local castStarted = resumeExistingShake
+
+            if not resumeExistingShake then
+                -- Le cast n'est considéré comme réussi que si le mini-jeu devient
+                -- réellement actif. En cas d'échec, on rescane le trio et on retente.
+                for castAttempt = 1, 3 do
+                    onActionBegan, onActionEnded, performCast = getActiveRodFunctions()
+                    if not onActionBegan or not onActionEnded or not performCast then
+                        stats.status = "Finding Scripts..."
+                        updateUI()
+                        task.wait(0.35)
+                    else
+                        stats.status = castAttempt == 1 and "Casting Rod..."
+                            or ("Retrying Cast " .. tostring(castAttempt) .. "/3...")
+                        updateUI()
+
+                        pcall(onActionBegan)
+                        task.wait(0.80)
+                        -- Toujours envoyer l'action de fin : elle libère l'état de
+                        -- maintien même si OnActionBegan a échoué ou a été interrompu.
+                        pcall(onActionEnded)
+
+                        if AutoEatDrinkBusy then
+                            autoFishRelease()
+                            task.wait(0.1)
+                            break
+                        end
+
+                        local confirmDeadline = os.clock() + 1.75
+                        while running and _G.AutoFishingEnabled and not AutoEatDrinkBusy
+                            and os.clock() < confirmDeadline do
+                            local activeNow, _, readOkNow = autoFishReadMinigameState()
+                            if readOkNow and activeNow then
+                                castStarted = true
+                                break
+                            end
+                            task.wait(0.05)
+                        end
+
+                        if castStarted then
+                            break
+                        end
+
+                        autoFishRelease()
+                        if castAttempt < 3 then
+                            stats.status = "Cast Not Started - Retrying..."
+                            updateUI()
+                            pcall(resetRod)
+                            task.wait(0.25)
+                        end
+                    end
+                end
+
+                if AutoEatDrinkBusy then
+                    task.wait(0.1)
+                    continue
+                end
+
+                if not castStarted then
+                    stats.status = "Cast Failed - Retrying..."
+                    updateUI()
+                    autoFishRelease()
+                    task.wait(0.5)
+                    continue
+                end
+            else
+                stats.status = "Luring Fish..."
                 updateUI()
-                task.wait(0.5)
-                continue
             end
 
-            local rodState = nil
-            if type(get_upvalues) == "function" then
+            -- Lire les données de rareté à partir de la fonction PerformCast du
+            -- même module que les fonctions de début/fin d'action sélectionnées.
+            if performCast and type(get_upvalues) == "function" then
                 local upvaluesOk, upvalues = pcall(get_upvalues, performCast)
                 if upvaluesOk and type(upvalues) == "table" then
                     rodState = upvalues[1]
                 end
             end
-            local miniState = getFishingState()
-
-            stats.status = "Casting Rod..."
-            updateUI()
-            local actionBeganOk = pcall(onActionBegan)
-            task.wait(0.80)
-            -- Ne jamais sauter l’événement de fin : même si la consommation démarre
-            -- durant l’attente, la canne doit libérer son état d’action.
-            if actionBeganOk then pcall(onActionEnded) end
-            if AutoEatDrinkBusy then
-                task.wait(0.1)
-                continue
-            end
-
             local castTime = tick()
             local loopTimeout = 15
+            local reelDeadline = nil
+            -- Le délai initial couvre le lancer et l'attente ; la phase reel dispose
+            -- de son propre délai, afin de ne pas couper une récupération commencée tard.
             -- V30 : accélère les clics de la phase de lancement / shake.
             local lastShakeClick = -math.huge
             local shakeClickInterval = 0.08
             local shouldSkip = false
 
-            while running and _G.AutoFishingEnabled and not AutoEatDrinkBusy and (tick() - castTime < loopTimeout) do
+            while running and _G.AutoFishingEnabled and not AutoEatDrinkBusy
+                and (tick() - castTime < loopTimeout or (reelDeadline and os.clock() < reelDeadline)) do
                 task.wait(0.02)
                 
                 if rodState and rodState.PreRolledFish and rodState.PreRolledFish.name then
@@ -6246,9 +6648,15 @@ task.spawn(function()
                     end
                 end
 
-                if MinigameSystem:IsActive() then
-                    local phase = MinigameSystem:GetPhase()
+                local minigameActive, phase, phaseReadOk = autoFishReadMinigameState()
+                if not phaseReadOk then
+                    -- Ne pas laisser une erreur temporaire du module arrêter le worker.
+                    autoFishRelease()
+                    stats.status = "Syncing Fishing..."
+                    updateUI()
+                elseif minigameActive then
                     if phase == "shake" then
+                        reelDeadline = nil
                         stats.status = "Luring Fish..."
                         updateUI()
                         if tick() - lastShakeClick >= shakeClickInterval then
@@ -6258,13 +6666,18 @@ task.spawn(function()
                             end)
                         end
                     elseif phase == "reel" then
+                        reelDeadline = reelDeadline or (os.clock() + 25)
                         stats.status = "Reeling..."
                         updateUI()
 
                         -- V28 : reproduit la décision native du moteur.
                         -- Aucun déplacement/téléport de la zone blanche.
                         autoFishApplyHolding()
+                    else
+                        reelDeadline = nil
                     end
+                else
+                    reelDeadline = nil
                 end
 
                 if (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) > catchCountAtCycleStart then
@@ -6288,6 +6701,49 @@ task.spawn(function()
 
             if AutoEatDrinkBusy then
                 task.wait(0.1)
+                continue
+            end
+
+            local finalActive, finalPhase, finalStateOk = autoFishReadMinigameState()
+            if running and _G.AutoFishingEnabled and not fishCaughtThisCycle
+                and finalStateOk and finalActive and finalPhase == "reel"
+                and reelDeadline and os.clock() >= reelDeadline then
+                stuckReelSince = stuckReelSince or os.clock() - 25
+                stats.status = "Recovering Fishing..."
+                updateUI()
+                autoFishRelease()
+                pcall(resetRod)
+                stuckReelRecoveryAttempts = stuckReelRecoveryAttempts + 1
+
+                local recoveryDeadline = os.clock() + 5
+                local recovered = false
+                while running and _G.AutoFishingEnabled and os.clock() < recoveryDeadline do
+                    task.wait(0.1)
+                    local activeNow, phaseNow, readOkNow = autoFishReadMinigameState()
+                    if readOkNow and (not activeNow or phaseNow ~= "reel") then
+                        recovered = true
+                        break
+                    end
+                end
+
+                if recovered then
+                    stuckReelSince = nil
+                    stuckReelRecoveryAttempts = 0
+                elseif stuckReelRecoveryAttempts >= 2 then
+                    _G.AutoFishingEnabled = false
+                    AutoFishingCatchWindow = false
+                    stats.status = "Auto-Fish paused: reel stuck"
+                    updateUI()
+                    autoFishRelease()
+                    while running and ScreenGui and ScreenGui.Parent and not _G.AutoFishingEnabled do
+                        task.wait(0.2)
+                    end
+                    stuckReelSince = nil
+                    stuckReelRecoveryAttempts = 0
+                else
+                    stuckReelSince = os.clock() - 20
+                end
+                task.wait(0.15)
                 continue
             end
 
@@ -6494,10 +6950,8 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     staffJoinNotifCorner.Parent = StaffJoinNotificationBtn
 
     --==============================================================
-    -- TP JOUEUR + SPEC — éléments conservés en interne
-    -- Compact : liste défilante avec NOM RP + @USERNAME.
-    -- Le système reprend la caméra 3e personne libre du standalone.
-    --==============================================================
+    -- TP JOUEUR + SPEC — moteur repris du script autonome fourni.
+    -- Interface du Hub conservée sans modification.
     local TPSpecSelectedPlayer = nil
     local TPSpecEnabled = false
     local TPSpecConnection = nil
@@ -6573,7 +7027,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     end
 
     local function tpSpecGetRPPseudo(player)
-        if not player then return "Unknown" end
+        if not player then return "Inconnu" end
         if TPSpecRPcache[player] and TPSpecRPcache[player] ~= "" then
             return TPSpecRPcache[player]
         end
@@ -6807,231 +7261,215 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
 
     local function tpSpecVoiceStatus(targetRoot, listener)
         local parts = {}
-        local player = TPSpecSelectedPlayer
-        local emitter = tpSpecFindEmitter(player)
-        local input = nil
-        if player then
-            pcall(function() input = player:FindFirstChildWhichIsA("AudioDeviceInput") end)
-        end
-
+        local emitter = tpSpecFindEmitter(TPSpecSelectedPlayer)
         local voiceEnabled = nil
-        if player then
+        if TPSpecSelectedPlayer then
             pcall(function()
                 local VoiceChatService = game:GetService("VoiceChatService")
-                voiceEnabled = VoiceChatService:IsVoiceEnabledForUserIdAsync(player.UserId)
+                voiceEnabled = VoiceChatService:IsVoiceEnabledForUserIdAsync(TPSpecSelectedPlayer.UserId)
             end)
         end
-
-        local function safeProperty(object, property)
-            local value = nil
-            pcall(function() value = object and object[property] end)
-            return value
-        end
-
         local listenerFound = listener ~= nil
         local output = nil
         pcall(function()
             local SoundService = game:GetService("SoundService")
             output = SoundService:FindFirstChildOfClass("AudioDeviceOutput")
         end)
-
-        table.insert(parts, "VoiceEligible=" .. (voiceEnabled == true and "YES" or voiceEnabled == false and "NO" or "UNKNOWN"))
-        table.insert(parts, "Input=" .. (input and "YES" or "NO"))
-        if input then
-            table.insert(parts, "InputActive=" .. tostring(safeProperty(input, "Active")))
-            table.insert(parts, "InputMuted=" .. tostring(safeProperty(input, "Muted")))
-            table.insert(parts, "InputReady=CLIENT_UNAVAILABLE")
-            local accessType = safeProperty(input, "AccessType")
-            table.insert(parts, "AccessType=" .. tostring(accessType))
-            local accessList = nil
-            pcall(function() accessList = input:GetUserIdAccessList() end)
-            table.insert(parts, "AccessListCount=" .. tostring(type(accessList) == "table" and #accessList or "?"))
-            if type(accessList) == "table" and LocalPlayer then
-                local localIdListed = false
-                for _, userId in ipairs(accessList) do
-                    if tonumber(userId) == LocalPlayer.UserId then
-                        localIdListed = true
-                        break
-                    end
-                end
-                local localAllowed = nil
-                if accessType == Enum.AccessModifierType.Allow then
-                    localAllowed = localIdListed
-                elseif accessType == Enum.AccessModifierType.Deny then
-                    localAllowed = not localIdListed
-                end
-                table.insert(parts, "LocalUserAllowed=" .. (localAllowed == nil and "UNKNOWN" or (localAllowed and "YES" or "NO")))
-            end
-        end
-
-        table.insert(parts, "Emitter=" .. (emitter and "YES" or "NO"))
-        if emitter then
-            table.insert(parts, "EmitterGroup=" .. tostring(safeProperty(emitter, "AudioInteractionGroup")))
-        end
-        table.insert(parts, "Listener=" .. (listenerFound and "YES" or "NO"))
+        table.insert(parts, "Voice=" .. (voiceEnabled == true and "ON" or voiceEnabled == false and "OFF" or "?"))
+        table.insert(parts, "Emitter=" .. (emitter and "OK" or "NON"))
+        table.insert(parts, "Listener=" .. (listenerFound and "OK" or "NON"))
+        table.insert(parts, "Output=" .. (output and "OK" or "NON"))
         if listener then
-            table.insert(parts, "ListenerGroup=" .. tostring(safeProperty(listener, "AudioInteractionGroup")))
-            local positionInstance = safeProperty(listener, "PositionInstance")
-            table.insert(parts, "ListenerPosition=" .. tostring(positionInstance and positionInstance.Name or "nil"))
-            local count, containsTarget, otherMatchingEmitters, targetAudibility = 0, false, 0, nil
-            pcall(function()
-                local interacting = listener:GetInteractingEmitters()
-                count = #interacting
-                for _, candidate in ipairs(interacting) do
-                    if candidate == emitter then
-                        containsTarget = true
-                    else
-                        otherMatchingEmitters = otherMatchingEmitters + 1
-                    end
-                end
-            end)
-            if emitter then
-                pcall(function() targetAudibility = listener:GetAudibilityFor(emitter) end)
-            end
-            table.insert(parts, "Interacting=" .. tostring(count))
-            table.insert(parts, "TargetInteracting=" .. tostring(containsTarget))
-            table.insert(parts, "OtherMatchingEmitters=" .. tostring(otherMatchingEmitters))
-            table.insert(parts, "GroupMatch=" .. tostring(
-                emitter ~= nil
-                and safeProperty(emitter, "AudioInteractionGroup") == safeProperty(listener, "AudioInteractionGroup")
-            ))
-            table.insert(parts, "TargetAudibility=" .. tostring(targetAudibility or "?"))
-        end
-        table.insert(parts, "Output=" .. (output and "YES" or "NO"))
-        if targetRoot then
-            table.insert(parts, "TargetRoot=" .. tostring(targetRoot.Parent ~= nil))
+            local count = 0
+            pcall(function() count = #listener:GetInteractingEmitters() end)
+            table.insert(parts, "Audible=" .. tostring(count))
         end
         return table.concat(parts, " | ")
     end
 
-    -- SPEC VOICE V5 : isoler localement l'AudioEmitter du joueur sélectionné.
-    -- Le groupe MicrophoneGroup est partagé par plusieurs joueurs : le réutiliser
-    -- laisse passer leurs voix. On attribue donc un groupe temporaire unique à
-    -- l'émetteur ciblé ET au listener local. Aucune permission/access-list n'est modifiée.
+    -- SPEC VOICE :
+    -- Roblox peut avoir plusieurs AudioListener actifs (par exemple un listener
+    -- sous le personnage ET un listener sous la caméra). Si on ne désactive pas
+    -- les autres, on continue d'entendre les gens autour de notre personnage.
+    -- On garde donc un seul listener actif, positionné sur le joueur observé,
+    -- tout en conservant son AudioInteractionGroup natif pour entendre ce qui
+    -- l'entoure normalement.
     local TPSpecVoiceSavedListeners = {}
     local TPSpecVoiceActiveListener = nil
-    local TPSpecVoiceSavedEmitters = {}
-    local TPSpecVoiceActiveEmitter = nil
-    local TPSpecVoiceActiveGroup = nil
+    local TPSpecVoiceCreatedListener = false
+    local TPSpecVoiceCreatedOutput = false
+    local TPSpecVoiceCreatedWire = nil
+    local TPSpecVoiceMuteGroup = nil
 
-    local function tpSpecSaveVoiceListener(listener)
-        if not listener or TPSpecVoiceSavedListeners[listener] then return end
-        local saved = {
-            PositionType = nil,
-            PositionInstance = nil,
-            AudioInteractionGroup = nil,
-        }
-        pcall(function() saved.PositionType = listener.PositionType end)
-        pcall(function() saved.PositionInstance = listener.PositionInstance end)
-        pcall(function() saved.AudioInteractionGroup = listener.AudioInteractionGroup end)
-        TPSpecVoiceSavedListeners[listener] = saved
+    local function tpSpecFindBestListener()
+        local camera = workspace.CurrentCamera
+        if camera then
+            local listener = camera:FindFirstChildOfClass("AudioListener")
+            if listener then return listener end
+        end
+
+        local char = LocalPlayer and LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            local listener = root:FindFirstChildOfClass("AudioListener")
+            if listener then return listener end
+        end
+
+        local soundService = game:GetService("SoundService")
+        return soundService:FindFirstChildOfClass("AudioListener")
     end
 
-    local function tpSpecRestoreVoiceListener(listener, saved)
-        if not listener or not listener.Parent or not saved then return end
+    local function tpSpecEnsureVoiceOutput(listener)
+        if not listener then return end
         pcall(function()
-            if saved.PositionType ~= nil then
-                listener.PositionType = saved.PositionType
+            local SoundService = game:GetService("SoundService")
+            local output = SoundService:FindFirstChildOfClass("AudioDeviceOutput")
+            if not output then
+                output = Instance.new("AudioDeviceOutput")
+                output.Name = "OmegaTP_VoiceOutput"
+                output.Parent = SoundService
+                TPSpecVoiceCreatedOutput = true
             end
-            listener.PositionInstance = saved.PositionInstance
-            if saved.AudioInteractionGroup ~= nil then
-                listener.AudioInteractionGroup = saved.AudioInteractionGroup
+
+            local connected = false
+            for _, child in ipairs(listener:GetChildren()) do
+                if child:IsA("Wire") and child.SourceInstance == listener and child.TargetInstance == output then
+                    connected = true
+                    break
+                end
+            end
+
+            if not connected then
+                local wire = Instance.new("Wire")
+                wire.Name = "OmegaTP_VoiceWire"
+                wire.SourceInstance = listener
+                wire.TargetInstance = output
+                wire.Parent = listener
+                TPSpecVoiceCreatedWire = wire
             end
         end)
-    end
-
-    local function tpSpecSaveVoiceEmitter(emitter)
-        if not emitter or TPSpecVoiceSavedEmitters[emitter] then return end
-        local saved = {AudioInteractionGroup = nil}
-        pcall(function() saved.AudioInteractionGroup = emitter.AudioInteractionGroup end)
-        TPSpecVoiceSavedEmitters[emitter] = saved
-    end
-
-    local function tpSpecRestoreVoiceEmitter(emitter, saved)
-        if not emitter or not emitter.Parent or not saved then return end
-        if saved.AudioInteractionGroup == nil then return end
-        pcall(function()
-            emitter.AudioInteractionGroup = saved.AudioInteractionGroup
-        end)
-    end
-
-    local function tpSpecGetCameraVoiceListener(camera)
-        if not camera then return nil end
-        return camera:FindFirstChildOfClass("AudioListener")
     end
 
     local function tpSpecSetVoiceListener(targetRoot)
         local camera = workspace.CurrentCamera
-        if not camera or not targetRoot or not targetRoot.Parent then return end
+        if not camera or not targetRoot then return end
 
-        local listener = tpSpecGetCameraVoiceListener(camera)
-        if not listener then return end
-
-        if TPSpecVoiceActiveListener and TPSpecVoiceActiveListener ~= listener then
-            tpSpecRestoreVoiceListener(
-                TPSpecVoiceActiveListener,
-                TPSpecVoiceSavedListeners[TPSpecVoiceActiveListener]
-            )
+        -- Toujours utiliser le listener principal de la caméra pour garder
+        -- le flux audio connecté à la sortie Roblox.
+        local listener = camera:FindFirstChildOfClass("AudioListener")
+        if not listener then
+            listener = tpSpecFindBestListener()
         end
-        tpSpecSaveVoiceListener(listener)
+
+        if not listener then
+            local ok, created = pcall(function()
+                local newListener = Instance.new("AudioListener")
+                newListener.Name = "OmegaTP_VoiceListener"
+                newListener.Parent = camera
+                return newListener
+            end)
+            if not ok or not created then return end
+            listener = created
+            TPSpecVoiceCreatedListener = true
+        end
+
+        -- Sauvegarde de tous les listeners existants une seule fois.
+        if next(TPSpecVoiceSavedListeners) == nil then
+            for _, item in ipairs(game:GetDescendants()) do
+                if item:IsA("AudioListener") then
+                    local saved = {
+                        Parent = item.Parent,
+                        PositionType = nil,
+                        PositionInstance = nil,
+                        AudioInteractionGroup = nil,
+                    }
+                    pcall(function() saved.PositionType = item.PositionType end)
+                    pcall(function() saved.PositionInstance = item.PositionInstance end)
+                    pcall(function() saved.AudioInteractionGroup = item.AudioInteractionGroup end)
+                    TPSpecVoiceSavedListeners[item] = saved
+                end
+            end
+            TPSpecVoiceMuteGroup = "PrisonRP_SPEC_MUTE_" .. tostring(LocalPlayer and LocalPlayer.UserId or 0)
+        end
+
         TPSpecVoiceActiveListener = listener
 
-        local selectedPlayer = TPSpecSelectedPlayer
-        local targetEmitter = tpSpecFindEmitter(selectedPlayer)
+        -- Le point d'écoute devient le joueur choisi, sans déplacer le listener.
+        pcall(function()
+            listener.PositionType = Enum.ListenerPositionType.Instance
+            listener.PositionInstance = targetRoot
+        end)
 
-        -- Restaurer l'ancien émetteur quand la cible change ou quand son personnage respawn.
-        if TPSpecVoiceActiveEmitter and TPSpecVoiceActiveEmitter ~= targetEmitter then
-            tpSpecRestoreVoiceEmitter(
-                TPSpecVoiceActiveEmitter,
-                TPSpecVoiceSavedEmitters[TPSpecVoiceActiveEmitter]
-            )
-            TPSpecVoiceActiveEmitter = nil
-            TPSpecVoiceActiveGroup = nil
+        -- Le chat vocal Roblox utilise la paire AudioEmitter/AudioListener et
+        -- leur AudioInteractionGroup. On reprend explicitement le groupe de
+        -- l'emitter du joueur choisi afin que sa voix soit réellement audible.
+        local targetEmitter = tpSpecFindEmitter(TPSpecSelectedPlayer)
+        local targetGroup = nil
+        if targetEmitter then
+            pcall(function() targetGroup = targetEmitter.AudioInteractionGroup end)
         end
 
-        if targetEmitter and selectedPlayer then
-            tpSpecSaveVoiceEmitter(targetEmitter)
-            -- Groupe distinct par paire observateur/cible : les autres microphones
-            -- qui restent dans MicrophoneGroup ne correspondent plus au listener.
-            local isolatedGroup = "PRISONRP_SPEC_ONLY_"
-                .. tostring(LocalPlayer and LocalPlayer.UserId or 0)
-                .. "_" .. tostring(selectedPlayer.UserId)
-            TPSpecVoiceActiveEmitter = targetEmitter
-            TPSpecVoiceActiveGroup = isolatedGroup
-
-            pcall(function()
-                targetEmitter.AudioInteractionGroup = isolatedGroup
-            end)
-            pcall(function()
-                listener.AudioInteractionGroup = isolatedGroup
-                listener.PositionType = Enum.ListenerPositionType.Instance
-                listener.PositionInstance = targetRoot
-            end)
+        if targetGroup ~= nil then
+            pcall(function() listener.AudioInteractionGroup = targetGroup end)
         else
-            -- Groupe sans émetteur correspondant : ne pas retomber sur toutes les voix.
-            TPSpecVoiceActiveGroup = "PRISONRP_SPEC_NO_TARGET_"
-                .. tostring(LocalPlayer and LocalPlayer.UserId or 0)
-            pcall(function()
-                listener.AudioInteractionGroup = TPSpecVoiceActiveGroup
-                listener.PositionType = Enum.ListenerPositionType.Instance
-                listener.PositionInstance = targetRoot
-            end)
+            local saved = TPSpecVoiceSavedListeners[listener]
+            if saved then
+                pcall(function() listener.AudioInteractionGroup = saved.AudioInteractionGroup or "" end)
+            end
         end
+
+        -- Désactive les autres listeners : aucune écoute autour de notre propre
+        -- personnage pendant le SPEC.
+        for other, _ in pairs(TPSpecVoiceSavedListeners) do
+            if other ~= listener and other.Parent then
+                pcall(function()
+                    other.AudioInteractionGroup = TPSpecVoiceMuteGroup
+                end)
+            end
+        end
+
+        -- S'assure que le listener actif possède bien une sortie audio.
+        tpSpecEnsureVoiceOutput(listener)
     end
 
     local function tpSpecRestoreVoice()
-        for emitter, saved in pairs(TPSpecVoiceSavedEmitters) do
-            tpSpecRestoreVoiceEmitter(emitter, saved)
-        end
-        TPSpecVoiceSavedEmitters = {}
-        TPSpecVoiceActiveEmitter = nil
-        TPSpecVoiceActiveGroup = nil
-
         for listener, saved in pairs(TPSpecVoiceSavedListeners) do
-            tpSpecRestoreVoiceListener(listener, saved)
+            if listener and listener.Parent then
+                pcall(function()
+                    if saved.Parent and saved.Parent.Parent then
+                        listener.Parent = saved.Parent
+                    end
+                    if saved.PositionType ~= nil then
+                        listener.PositionType = saved.PositionType
+                    end
+                    listener.PositionInstance = saved.PositionInstance
+                    listener.AudioInteractionGroup = saved.AudioInteractionGroup or ""
+                end)
+            end
         end
+
+        pcall(function()
+            if TPSpecVoiceCreatedWire and TPSpecVoiceCreatedWire.Parent then
+                TPSpecVoiceCreatedWire:Destroy()
+            end
+        end)
+        pcall(function()
+            if TPSpecVoiceCreatedListener and TPSpecVoiceActiveListener and TPSpecVoiceActiveListener.Parent then
+                TPSpecVoiceActiveListener:Destroy()
+            end
+        end)
+        pcall(function()
+            if TPSpecVoiceCreatedOutput and game:GetService("SoundService"):FindFirstChild("OmegaTP_VoiceOutput") then
+                game:GetService("SoundService").OmegaTP_VoiceOutput:Destroy()
+            end
+        end)
+
         TPSpecVoiceSavedListeners = {}
         TPSpecVoiceActiveListener = nil
+        TPSpecVoiceCreatedListener = false
+        TPSpecVoiceCreatedOutput = false
+        TPSpecVoiceCreatedWire = nil
+        TPSpecVoiceMuteGroup = nil
     end
 
     local function tpSpecUpdateInfo()
@@ -7069,52 +7507,10 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             local humanoid = character and character:FindFirstChildOfClass("Humanoid")
             camera.CameraSubject = TPSpecSavedCameraSubject or humanoid
         end
-        tpSpecButton.Text = "SPEC"
+        if tpSpecButton and tpSpecButton.Parent then tpSpecButton.Text = "SPEC" end
         updateTpSpecSwitch(true)
         tpSpecUpdateInfo()
     end
-
-    -- Envoie les diagnostics dans la console de l'exécuteur (et non dans la console F9 de Roblox).
-    -- rconsoleprint est disponible dans la plupart des exécuteurs ; print sert de secours
-    -- pour ceux qui redirigent leur sortie standard vers leur propre onglet Console.
-    -- Writer conservé dans la forme de la version diagnostic qui avait déjà affiché les logs.
-    -- Priorité aux fonctions console de l’exécuteur ; print sert de dernier recours.
-    local function tpSpecWriteExecutorConsole(message)
-        local line = tostring(message) .. "\n"
-        local env = _G
-        pcall(function()
-            if type(getgenv) == "function" then
-                local shared = getgenv()
-                if type(shared) == "table" then env = shared end
-            end
-        end)
-
-        -- Utilise exactement le chemin console de la version précédente
-        -- qui avait bien envoyé les lignes SPEC dans la console de l'exécuteur.
-        local writerNames = {"rconsoleprint", "consoleprint", "printconsole"}
-        for _, name in ipairs(writerNames) do
-            local writer = nil
-            pcall(function()
-                if type(env) == "table" then writer = rawget(env, name) end
-                if type(writer) ~= "function" and type(_G) == "table" then
-                    writer = rawget(_G, name)
-                end
-            end)
-            if type(writer) == "function" then
-                local ok = pcall(writer, line)
-                if ok then return true end
-            end
-        end
-
-        -- Ne pas utiliser warn() : il envoie le message dans la Developer Console Roblox.
-        return pcall(print, line)
-    end
-
-    -- Test unique au chargement : permet de distinguer un logger inactif
-    -- d'un SPEC qui ne déclenche pas tpSpecStart().
-    tpSpecWriteExecutorConsole("[SPEC VOICE DEBUG] logger chargé | active SPEC sur une cible pour commencer le diagnostic")
-
-    local lastTPSpecVoiceDebugAt = 0
 
     local function tpSpecStart()
         local selected = TPSpecSelectedPlayer
@@ -7139,11 +7535,6 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         TPSpecDistance = 8
         camera.CameraType = Enum.CameraType.Scriptable
 
-        -- Confirme immédiatement que le bloc SPEC et son logger sont actifs.
-        tpSpecWriteExecutorConsole(
-            "[SPEC VOICE DEBUG] diagnostic actif | target=@" .. tostring(selected.Name)
-        )
-
         TPSpecConnection = RunService.RenderStepped:Connect(function()
             if not TPSpecEnabled then return end
             if not TPSpecSelectedPlayer or not TPSpecSelectedPlayer.Parent then
@@ -7163,32 +7554,8 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             end
 
             -- Déplace l'écouteur audio sur le joueur observé.
-            -- Intercepter toute erreur pour que le diagnostic continue même si une propriété audio est refusée.
-            local listenerSetupOk, listenerSetupError = pcall(tpSpecSetVoiceListener, rootNow or part)
-
-            -- Diagnostic uniquement : aucun réglage de permission ou de micro n'est modifié.
-            -- Affiché dans la console toutes les 3 secondes pour identifier le blocage réel.
-            if os.clock() - lastTPSpecVoiceDebugAt >= 3 then
-                lastTPSpecVoiceDebugAt = os.clock()
-                local debugPlayer = TPSpecSelectedPlayer
-                local debugTargetRoot = rootNow or part
-                task.spawn(function()
-                    local debugOk, status = pcall(function()
-                        local debugCamera = workspace.CurrentCamera
-                        local debugListener = tpSpecGetCameraVoiceListener(debugCamera)
-                        return tpSpecVoiceStatus(debugTargetRoot, debugListener)
-                    end)
-                    local prefix = "[SPEC VOICE DEBUG] target=@" .. tostring(debugPlayer and debugPlayer.Name or "?")
-                    if debugOk then
-                        tpSpecWriteExecutorConsole(prefix .. " | " .. tostring(status))
-                    else
-                        tpSpecWriteExecutorConsole(prefix .. " | DIAGNOSTIC_ERROR=" .. tostring(status))
-                    end
-                    if not listenerSetupOk then
-                        tpSpecWriteExecutorConsole(prefix .. " | LISTENER_SETUP_ERROR=" .. tostring(listenerSetupError))
-                    end
-                end)
-            end
+            -- Les voix autour du joueur observé restent audibles selon la spatialisation native.
+            tpSpecSetVoiceListener(rootNow or part)
 
             -- La caméra suit la POSITION du joueur, pas son orientation.
             local focus = (rootNow or part).Position + Vector3.new(0, 1.5, 0)
@@ -7200,7 +7567,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             tpSpecUpdateInfo()
         end)
 
-        tpSpecButton.Text = "SPEC"
+        if tpSpecButton and tpSpecButton.Parent then tpSpecButton.Text = "SPEC" end
         updateTpSpecSwitch(true)
         tpSpecUpdateInfo()
     end
@@ -7313,17 +7680,17 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpButton.Activated:Connect(function()
         local player = TPSpecSelectedPlayer
         if not player then
-            tpSelected.Text = "Selected: none"
+            tpSelected.Text = "Sélection : aucune"
             return
         end
         local localRoot = tpSpecGetRoot(LocalPlayer)
         local targetRoot = tpSpecGetRoot(player)
         if not localRoot then
-            tpSelected.Text = "Error: your character was not found"
+            tpSelected.Text = "Erreur : ton personnage est introuvable"
             return
         end
         if not targetRoot then
-            tpSelected.Text = "Error: character not loaded"
+            tpSelected.Text = "Erreur : personnage non chargé"
             return
         end
         pcall(function()
@@ -7382,7 +7749,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             if TPSpecEnabled then tpSpecStop() end
             TPSpecSelectedPlayer = nil
             if tpSelected and tpSelected.Parent then
-                tpSelected.Text = "Selected: none"
+                tpSelected.Text = "Sélection : aucune"
             end
             tpSpecUpdateInfo()
         end
@@ -7412,7 +7779,6 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         end))
     end
 
-    --==============================================================
     -- MONEY VIEW INTÉGRÉ À L'ONGLET ESP
     -- Affiche l'argent détecté au-dessus des autres joueurs.
     -- Aucun RemoteEvent d'achat/modification d'argent n'est utilisé.
@@ -9159,123 +9525,85 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         end
     end
 
-    -- AUDIO FREECAM : déplacer seulement le listener de CurrentCamera.
-    -- Ne pas changer le groupe des autres listeners : cela peut couper les voix vocales.
+    -- AUDIO FREECAM : garder la position d'écoute sur le personnage local.
+    -- Roblox crée déjà le graphe voice-chat (AudioListener/AudioDeviceOutput)
+    -- lorsque le chat vocal Audio API de l'expérience est actif. Ne pas créer
+    -- un deuxième output ni un listener non filtré qui laisserait repasser
+    -- les voix ambiantes ou entrerait en conflit avec TP SPEC.
     local SpecAudioListener = nil
-    local SpecAudioCreatedListener = false
-    local SpecAudioCreatedOutput = nil
-    local SpecAudioCreatedWires = {}
     local SpecAudioSavedListener = nil
-
-    local function specSaveAudioListener(listener)
-        if SpecAudioSavedListener or not listener then return end
-        local saved = {
-            PositionType = nil,
-            PositionInstance = nil,
-            AudioInteractionGroup = nil,
-        }
-        pcall(function() saved.PositionType = listener.PositionType end)
-        pcall(function() saved.PositionInstance = listener.PositionInstance end)
-        pcall(function() saved.AudioInteractionGroup = listener.AudioInteractionGroup end)
-        SpecAudioSavedListener = saved
-    end
+    local SpecAudioCamera = nil
 
     local function specRestoreAudio()
+        -- Si TP SPEC est toujours actif, c'est lui qui possède le filtrage :
+        -- réappliquer son groupe au lieu de restaurer l'ancien groupe vocal.
+        if TPSpecEnabled and TPSpecSelectedPlayer then
+            pcall(function()
+                tpSpecSetVoiceListener(tpSpecGetRoot(TPSpecSelectedPlayer))
+            end)
+            SpecAudioListener = nil
+            SpecAudioSavedListener = nil
+            return
+        end
+
         if SpecAudioListener and SpecAudioListener.Parent and SpecAudioSavedListener then
             pcall(function()
                 if SpecAudioSavedListener.PositionType ~= nil then
                     SpecAudioListener.PositionType = SpecAudioSavedListener.PositionType
                 end
                 SpecAudioListener.PositionInstance = SpecAudioSavedListener.PositionInstance
-                SpecAudioListener.AudioInteractionGroup = SpecAudioSavedListener.AudioInteractionGroup or ""
             end)
         end
-
-        for _, wire in ipairs(SpecAudioCreatedWires) do
-            pcall(function()
-                if wire and wire.Parent then wire:Destroy() end
-            end)
-        end
-        if SpecAudioCreatedListener and SpecAudioListener and SpecAudioListener.Parent then
-            pcall(function() SpecAudioListener:Destroy() end)
-        end
-        if SpecAudioCreatedOutput then
-            pcall(function()
-                local wires = SpecAudioCreatedOutput:GetConnectedWires("Input")
-                if #wires == 0 and SpecAudioCreatedOutput.Parent then
-                    SpecAudioCreatedOutput:Destroy()
-                end
-            end)
-        end
-
         SpecAudioListener = nil
-        SpecAudioCreatedListener = false
-        SpecAudioCreatedOutput = nil
-        SpecAudioCreatedWires = {}
         SpecAudioSavedListener = nil
+        SpecAudioCamera = nil
     end
 
     local function specEnsureAudio()
         local camera = workspace.CurrentCamera
         if not camera then return end
 
-        pcall(function()
-            local listener = camera:FindFirstChildOfClass("AudioListener")
-            if not listener then
-                listener = Instance.new("AudioListener")
-                listener.Name = "PrisonRP_FreecamVoiceListener"
-                listener.Parent = camera
-                SpecAudioCreatedListener = true
-            end
+        -- Utiliser uniquement le listener déjà fourni par Roblox. S'il n'existe
+        -- pas, ne pas inventer un graphe qui pourrait dupliquer/mélanger le vocal.
+        local listener = camera:FindFirstChildOfClass("AudioListener")
+        SpecAudioCamera = camera
+        if not listener then return end
 
-            if SpecAudioListener and SpecAudioListener ~= listener then
-                return
-            end
-            SpecAudioListener = listener
-            specSaveAudioListener(listener)
-
-            listener.PositionType = Enum.ListenerPositionType.Instance
-            listener.PositionInstance = camera
-
-            local soundService = game:GetService("SoundService")
-            local output = soundService:FindFirstChildOfClass("AudioDeviceOutput")
-            if not output then
-                output = Instance.new("AudioDeviceOutput")
-                output.Name = "PrisonRP_FreecamVoiceOutput"
-                pcall(function() output.Player = LocalPlayer end)
-                output.Parent = soundService
-                SpecAudioCreatedOutput = output
-            end
-
-            local connected = false
-            local wireOk, wires = pcall(function()
-                return listener:GetConnectedWires("Output")
+        if SpecAudioListener and SpecAudioListener ~= listener
+            and SpecAudioListener.Parent and SpecAudioSavedListener then
+            pcall(function()
+                if SpecAudioSavedListener.PositionType ~= nil then
+                    SpecAudioListener.PositionType = SpecAudioSavedListener.PositionType
+                end
+                SpecAudioListener.PositionInstance = SpecAudioSavedListener.PositionInstance
             end)
-            if wireOk then
-                for _, wire in ipairs(wires) do
-                    if wire.TargetInstance == output then
-                        connected = true
-                        break
-                    end
-                end
-            end
-            if not connected then
-                for _, child in ipairs(listener:GetChildren()) do
-                    if child:IsA("Wire") and child.SourceInstance == listener and child.TargetInstance == output then
-                        connected = true
-                        break
-                    end
-                end
-            end
-            if not connected then
-                local wire = Instance.new("Wire")
-                wire.Name = "PrisonRP_FreecamVoiceWire"
-                wire.SourceInstance = listener
-                wire.TargetInstance = output
-                wire.Parent = listener
-                table.insert(SpecAudioCreatedWires, wire)
-            end
-        end)
+        end
+
+        if SpecAudioListener ~= listener then
+            SpecAudioListener = listener
+            SpecAudioSavedListener = {
+                PositionType = nil,
+                PositionInstance = nil,
+            }
+            pcall(function() SpecAudioSavedListener.PositionType = listener.PositionType end)
+            pcall(function() SpecAudioSavedListener.PositionInstance = listener.PositionInstance end)
+        end
+
+        local localRoot = tpSpecGetRoot(LocalPlayer)
+        if localRoot then
+            pcall(function()
+                listener.PositionType = Enum.ListenerPositionType.Instance
+                listener.PositionInstance = localRoot
+            end)
+        end
+
+        -- Le RenderStepped de TP SPEC réapplique son groupe après cette étape
+        -- lorsque l'observation d'un joueur est active.
+        if TPSpecEnabled and TPSpecSelectedPlayer then
+            pcall(function()
+                tpSpecSetVoiceListener(tpSpecGetRoot(TPSpecSelectedPlayer))
+            end)
+        end
     end
 
     local function specDisable()
@@ -9444,6 +9772,10 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
 
             SpecCamera = workspace.CurrentCamera
             if not SpecCamera then return end
+            if SpecAudioCamera ~= SpecCamera or not SpecAudioListener
+                or SpecAudioListener.Parent ~= SpecCamera then
+                specEnsureAudio()
+            end
 
             local rotation = CFrame.fromEulerAnglesYXZ(Spec.Pitch, Spec.Yaw, 0)
             local direction = Vector3.zero
@@ -16080,6 +16412,21 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             "FPSCounter", "AutoPurple", "AutoParry", "AimEnabled", "ESPCheckedButtons"
         }
 
+        -- Retourne l'autre fonction qui possède déjà cette touche, s'il y en a une.
+        local bindConflictNotice = nil
+        local function findBindConflict(entry, key)
+            if not key or key == "NONE" then return nil end
+            local wanted = tostring(key):upper()
+            for _, otherId in ipairs(BindOrder) do
+                local otherEntry = BindConfig[otherId]
+                if otherEntry and otherEntry ~= entry and otherEntry.key
+                    and tostring(otherEntry.key):upper() == wanted then
+                    return otherEntry, otherId
+                end
+            end
+            return nil
+        end
+
         local BindKeys = {
             "NONE","Q","E","R","T","Y","U","I","O","P",
             "A","S","D","F","G","H","J","K","L",
@@ -16216,7 +16563,15 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     bindCaptureEntry = nil
                     bindCaptureButton = nil
                 else
-                    entry.key = keyCodeToBindName(input.KeyCode)
+                    local newKey = keyCodeToBindName(input.KeyCode)
+                    local conflictingEntry = findBindConflict(entry, newKey)
+                    if conflictingEntry then
+                        -- Refuse le doublon et conserve l'ancien bind de cette ligne.
+                        bindConflictNotice = {entry = entry, owner = conflictingEntry}
+                    else
+                        entry.key = newKey
+                        bindConflictNotice = nil
+                    end
                     bindCaptureEntry = nil
                     bindCaptureButton = nil
                 end
@@ -16228,12 +16583,24 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             end
 
             if processed then return end
-            for _, entry in pairs(BindConfig) do
-                if entry.key and samePressedInput(input, entry.key) then
-                    toggleBoundSwitch(entry)
+            -- Parcours ordonné et garde-fou : même si un ancien état contient
+            -- accidentellement un doublon, une touche ne déclenche qu'une action.
+            local triggeredKeys = {}
+            for _, id in ipairs(BindOrder) do
+                local entry = BindConfig[id]
+                if entry and entry.key then
+                    local normalizedKey = tostring(entry.key):upper()
+                    if not triggeredKeys[normalizedKey] and samePressedInput(input, entry.key) then
+                        triggeredKeys[normalizedKey] = true
+                        toggleBoundSwitch(entry)
+                    end
                 end
             end
         end)
+        if _G.PRISONRP_BINDS_INPUT_CONNECTION then
+            pcall(function() _G.PRISONRP_BINDS_INPUT_CONNECTION:Disconnect() end)
+        end
+        _G.PRISONRP_BINDS_INPUT_CONNECTION = BindInputConnection
         table.insert(BindPages, BindInputConnection)
 
         local function copyBindState()
@@ -16247,16 +16614,24 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
         local function applyBindState(data)
             if type(data) ~= "table" then return end
+            local usedKeys = {}
+            bindConflictNotice = nil
             for _, id in ipairs(BindOrder) do
                 local entry = BindConfig[id]
                 if entry then
-                    local v = data[id]
-                    if v == "NONE" or v == nil then
+                    local v = type(data[id]) == "string" and data[id] or nil
+                    local conflictKey = v and v:upper() or nil
+                    if conflictKey == "NONE" or v == nil then
                         entry.key = nil
+                    elseif (isValidBindName(v) or isValidBindName(conflictKey))
+                        and not usedKeys[conflictKey] then
+                        -- Préserve la casse des noms Enum historiques (ex. CapsLock),
+                        -- tout en comparant les doublons sans tenir compte de la casse.
+                        -- Le premier bind de BindOrder garde la touche en cas de doublon.
+                        entry.key = isValidBindName(v) and v or conflictKey
+                        usedKeys[conflictKey] = true
                     else
-                        -- Les binds capturés directement peuvent utiliser n'importe quelle touche clavier,
-                        -- pas uniquement l'ancienne liste limitée du menu déroulant.
-                        entry.key = isValidBindName(v) and v or nil
+                        entry.key = nil
                     end
                 end
             end
@@ -16264,6 +16639,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
         end
 
         local function resetBindState()
+            bindConflictNotice = nil
             for _, id in ipairs(BindOrder) do
                 local entry = BindConfig[id]
                 if entry then entry.key = nil end
@@ -16310,7 +16686,8 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 },
                 Toggles={
                     AutoFishing=_G.AutoFishingEnabled==true,
-                    AutoBlock=false,
+                    AutoBlock=_G.PRISONRP_AUTO_BLOCK_ENABLED==true,
+                    AutoPurple=(type(_G.PRISONRP_AUTO_PURPLE_GET_STATE)=="function" and _G.PRISONRP_AUTO_PURPLE_GET_STATE())==true,
                     AutoReload=_G.PRISONRP_AUTO_RELOAD_ENABLED==true,
 
                     HardFish=(_G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED==true or _G.PRISONRP_HARD_FISH_ENGINE_ENABLED==true),
@@ -16500,8 +16877,23 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                             _G.PRISONRP_AUTO_BLOCK_SET_STATE(false)
                         end
                     end,
-                    false
+                    t.AutoBlock
                 )
+            end
+            if t.AutoPurple ~= nil then
+                if type(_G.PRISONRP_AUTO_PURPLE_GET_STATE) == "function"
+                    and type(_G.PRISONRP_AUTO_PURPLE_TOGGLE) == "function" then
+                    restoreBool(
+                        function() return _G.PRISONRP_AUTO_PURPLE_GET_STATE() == true end,
+                        function() _G.PRISONRP_AUTO_PURPLE_TOGGLE() end,
+                        function() _G.PRISONRP_AUTO_PURPLE_TOGGLE() end,
+                        t.AutoPurple
+                    )
+                else
+                    -- Le module Auto Purple est construit après le chargement des profils.
+                    -- On garde donc l'état demandé jusqu'à son initialisation.
+                    _G.PRISONRP_AUTO_PURPLE_PENDING_RESTORE = (t.AutoPurple == true)
+                end
             end
 
             -- Les anciens champs AutoChangeServer/AutoFishCycle migrent vers Hard Fish ci-dessus.
@@ -17090,176 +17482,181 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             end)
         end
 
-        local defaultSlotButtons = {}
-        local function refreshDefaultSlotButtons()
-            for index, button in pairs(defaultSlotButtons) do
-                local isDefault = index == defaultSlotIndex
-                button.Text = isDefault and "DEFAULT ✓" or "DEFAULT"
-                button.BackgroundColor3 = isDefault
-                    and Color3.fromRGB(40, 130, 75)
-                    or Color3.fromRGB(58, 67, 82)
+        -- The profile cards are isolated in their own function prototype.
+        -- This reduces the parent chunk register usage without changing behavior.
+        local function buildProfileSlotRows()
+            local defaultSlotButtons = {}
+            local function refreshDefaultSlotButtons()
+                for index, button in pairs(defaultSlotButtons) do
+                    local isDefault = index == defaultSlotIndex
+                    button.Text = isDefault and "DEFAULT ✓" or "DEFAULT"
+                    button.BackgroundColor3 = isDefault
+                        and Color3.fromRGB(40, 130, 75)
+                        or Color3.fromRGB(58, 67, 82)
+                end
             end
-        end
 
-        for index = 1, 5 do
-            local slotIndex = index
-            local row = Instance.new("Frame")
-            row.Name = "SettingsProfileSlot" .. tostring(slotIndex)
-            row.LayoutOrder = 2 + index
-            row.Size = UDim2.new(1, -4, 0, 54)
-            row.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
-            row.BorderSizePixel = 0
-            row.ZIndex = 92
-            row.Parent = settingsPage
-            makeCorner(row, 8)
+            for index = 1, 5 do
+                local slotIndex = index
+                local row = Instance.new("Frame")
+                row.Name = "SettingsProfileSlot" .. tostring(slotIndex)
+                row.LayoutOrder = 2 + index
+                row.Size = UDim2.new(1, -4, 0, 54)
+                row.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                row.BorderSizePixel = 0
+                row.ZIndex = 92
+                row.Parent = settingsPage
+                makeCorner(row, 8)
 
-            local label = Instance.new("TextButton")
-            label.Name = "SlotNameButton"
-            label.Size = UDim2.new(1, -274, 0, 27)
-            label.Position = UDim2.fromOffset(10, 1)
-            label.BackgroundTransparency = 1
-            label.BorderSizePixel = 0
-            label.AutoButtonColor = false
-            label.Text = (slotNames[slotIndex] or ("Profile " .. tostring(slotIndex))) .. "  ✎"
-            label.TextColor3 = Color3.fromRGB(235,238,244)
-            label.TextSize = 11
-            label.Font = Enum.Font.GothamBold
-            label.TextXAlignment = Enum.TextXAlignment.Left
-            label.TextYAlignment = Enum.TextYAlignment.Center
-            label.TextTruncate = Enum.TextTruncate.AtEnd
-            label.ZIndex = 93
-            label.Parent = row
-            slotNameLabels[slotIndex] = label
+                local label = Instance.new("TextButton")
+                label.Name = "SlotNameButton"
+                label.Size = UDim2.new(1, -274, 0, 27)
+                label.Position = UDim2.fromOffset(10, 1)
+                label.BackgroundTransparency = 1
+                label.BorderSizePixel = 0
+                label.AutoButtonColor = false
+                label.Text = (slotNames[slotIndex] or ("Profile " .. tostring(slotIndex))) .. "  ✎"
+                label.TextColor3 = Color3.fromRGB(235,238,244)
+                label.TextSize = 11
+                label.Font = Enum.Font.GothamBold
+                label.TextXAlignment = Enum.TextXAlignment.Left
+                label.TextYAlignment = Enum.TextYAlignment.Center
+                label.TextTruncate = Enum.TextTruncate.AtEnd
+                label.ZIndex = 93
+                label.Parent = row
+                slotNameLabels[slotIndex] = label
 
-            local descriptionLabel = Instance.new("TextLabel")
-            descriptionLabel.Name = "ProfileMetadataLabel"
-            descriptionLabel.Size = UDim2.new(1, -274, 0, 18)
-            descriptionLabel.Position = UDim2.fromOffset(10, 29)
-            descriptionLabel.BackgroundTransparency = 1
-            descriptionLabel.Text = profileMetadata.Format(slotIndex)
-            descriptionLabel.TextColor3 = Color3.fromRGB(165, 175, 190)
-            descriptionLabel.TextSize = 7
-            descriptionLabel.Font = Enum.Font.GothamMedium
-            descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
-            descriptionLabel.TextYAlignment = Enum.TextYAlignment.Center
-            descriptionLabel.TextTruncate = Enum.TextTruncate.AtEnd
-            descriptionLabel.ZIndex = 93
-            descriptionLabel.Parent = row
-            profileMetadata.DescriptionLabels[slotIndex] = descriptionLabel
-            label.MouseButton1Click:Connect(function()
-                openRenameModal(slotIndex)
-            end)
+                local descriptionLabel = Instance.new("TextLabel")
+                descriptionLabel.Name = "ProfileMetadataLabel"
+                descriptionLabel.Size = UDim2.new(1, -274, 0, 18)
+                descriptionLabel.Position = UDim2.fromOffset(10, 29)
+                descriptionLabel.BackgroundTransparency = 1
+                descriptionLabel.Text = profileMetadata.Format(slotIndex)
+                descriptionLabel.TextColor3 = Color3.fromRGB(165, 175, 190)
+                descriptionLabel.TextSize = 7
+                descriptionLabel.Font = Enum.Font.GothamMedium
+                descriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+                descriptionLabel.TextYAlignment = Enum.TextYAlignment.Center
+                descriptionLabel.TextTruncate = Enum.TextTruncate.AtEnd
+                descriptionLabel.ZIndex = 93
+                descriptionLabel.Parent = row
+                profileMetadata.DescriptionLabels[slotIndex] = descriptionLabel
+                label.MouseButton1Click:Connect(function()
+                    openRenameModal(slotIndex)
+                end)
 
-            local saveSlotButton = Instance.new("TextButton")
-            saveSlotButton.Size = UDim2.fromOffset(54, 30)
-            saveSlotButton.Position = UDim2.new(1, -258, 0.5, -15)
-            saveSlotButton.BackgroundColor3 = Color3.fromRGB(40,145,78)
-            saveSlotButton.BorderSizePixel = 0
-            saveSlotButton.AutoButtonColor = true
-            saveSlotButton.Text = "SAVE"
-            saveSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
-            saveSlotButton.TextSize = 8
-            saveSlotButton.Font = Enum.Font.GothamBold
-            saveSlotButton.ZIndex = 94
-            saveSlotButton.Parent = row
-            makeCorner(saveSlotButton, 7)
+                local saveSlotButton = Instance.new("TextButton")
+                saveSlotButton.Size = UDim2.fromOffset(54, 30)
+                saveSlotButton.Position = UDim2.new(1, -258, 0.5, -15)
+                saveSlotButton.BackgroundColor3 = Color3.fromRGB(40,145,78)
+                saveSlotButton.BorderSizePixel = 0
+                saveSlotButton.AutoButtonColor = true
+                saveSlotButton.Text = "SAVE"
+                saveSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
+                saveSlotButton.TextSize = 8
+                saveSlotButton.Font = Enum.Font.GothamBold
+                saveSlotButton.ZIndex = 94
+                saveSlotButton.Parent = row
+                makeCorner(saveSlotButton, 7)
 
-            local loadSlotButton = Instance.new("TextButton")
-            loadSlotButton.Size = UDim2.fromOffset(54, 30)
-            loadSlotButton.Position = UDim2.new(1, -198, 0.5, -15)
-            loadSlotButton.BackgroundColor3 = Color3.fromRGB(52,100,165)
-            loadSlotButton.BorderSizePixel = 0
-            loadSlotButton.AutoButtonColor = true
-            loadSlotButton.Text = "LOAD"
-            loadSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
-            loadSlotButton.TextSize = 8
-            loadSlotButton.Font = Enum.Font.GothamBold
-            loadSlotButton.ZIndex = 94
-            loadSlotButton.Parent = row
-            makeCorner(loadSlotButton, 7)
+                local loadSlotButton = Instance.new("TextButton")
+                loadSlotButton.Size = UDim2.fromOffset(54, 30)
+                loadSlotButton.Position = UDim2.new(1, -198, 0.5, -15)
+                loadSlotButton.BackgroundColor3 = Color3.fromRGB(52,100,165)
+                loadSlotButton.BorderSizePixel = 0
+                loadSlotButton.AutoButtonColor = true
+                loadSlotButton.Text = "LOAD"
+                loadSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
+                loadSlotButton.TextSize = 8
+                loadSlotButton.Font = Enum.Font.GothamBold
+                loadSlotButton.ZIndex = 94
+                loadSlotButton.Parent = row
+                makeCorner(loadSlotButton, 7)
 
-            local resetSlotButton = Instance.new("TextButton")
-            resetSlotButton.Name = "ResetSlotButton"
-            resetSlotButton.Size = UDim2.fromOffset(54, 30)
-            resetSlotButton.Position = UDim2.new(1, -138, 0.5, -15)
-            resetSlotButton.BackgroundColor3 = Color3.fromRGB(145, 72, 48)
-            resetSlotButton.BorderSizePixel = 0
-            resetSlotButton.AutoButtonColor = true
-            resetSlotButton.Text = "RESET"
-            resetSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
-            resetSlotButton.TextSize = 8
-            resetSlotButton.Font = Enum.Font.GothamBold
-            resetSlotButton.ZIndex = 94
-            resetSlotButton.Parent = row
-            makeCorner(resetSlotButton, 7)
+                local resetSlotButton = Instance.new("TextButton")
+                resetSlotButton.Name = "ResetSlotButton"
+                resetSlotButton.Size = UDim2.fromOffset(54, 30)
+                resetSlotButton.Position = UDim2.new(1, -138, 0.5, -15)
+                resetSlotButton.BackgroundColor3 = Color3.fromRGB(145, 72, 48)
+                resetSlotButton.BorderSizePixel = 0
+                resetSlotButton.AutoButtonColor = true
+                resetSlotButton.Text = "RESET"
+                resetSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
+                resetSlotButton.TextSize = 8
+                resetSlotButton.Font = Enum.Font.GothamBold
+                resetSlotButton.ZIndex = 94
+                resetSlotButton.Parent = row
+                makeCorner(resetSlotButton, 7)
 
-            local defaultSlotButton = Instance.new("TextButton")
-            defaultSlotButton.Name = "DefaultSlotButton"
-            defaultSlotButton.Size = UDim2.fromOffset(74, 30)
-            defaultSlotButton.Position = UDim2.new(1, -78, 0.5, -15)
-            defaultSlotButton.BorderSizePixel = 0
-            defaultSlotButton.AutoButtonColor = true
-            defaultSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
-            defaultSlotButton.TextSize = 7
-            defaultSlotButton.Font = Enum.Font.GothamBold
-            defaultSlotButton.ZIndex = 94
-            defaultSlotButton.Parent = row
-            defaultSlotButtons[slotIndex] = defaultSlotButton
-            makeCorner(defaultSlotButton, 7)
+                local defaultSlotButton = Instance.new("TextButton")
+                defaultSlotButton.Name = "DefaultSlotButton"
+                defaultSlotButton.Size = UDim2.fromOffset(74, 30)
+                defaultSlotButton.Position = UDim2.new(1, -78, 0.5, -15)
+                defaultSlotButton.BorderSizePixel = 0
+                defaultSlotButton.AutoButtonColor = true
+                defaultSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
+                defaultSlotButton.TextSize = 7
+                defaultSlotButton.Font = Enum.Font.GothamBold
+                defaultSlotButton.ZIndex = 94
+                defaultSlotButton.Parent = row
+                defaultSlotButtons[slotIndex] = defaultSlotButton
+                makeCorner(defaultSlotButton, 7)
 
-            saveSlotButton.MouseButton1Click:Connect(function()
-                confirmSlotAction(slotIndex, "save", function()
-                    if writeSettingsFile(accountFiles.Slots[slotIndex]) then
-                        local metadataSaved = profileMetadata.MarkModified(slotIndex)
-                        status.Text = "✓ \"" .. slotNames[slotIndex] .. "\" saved."
-                        if not metadataSaved then status.Text = status.Text .. " (date not saved)" end
-                        status.TextColor3 = metadataSaved and Color3.fromRGB(125,230,155) or Color3.fromRGB(255,170,90)
-                        if BindPages and BindPages.MarkClean then BindPages.MarkClean() end
+                saveSlotButton.MouseButton1Click:Connect(function()
+                    confirmSlotAction(slotIndex, "save", function()
+                        if writeSettingsFile(accountFiles.Slots[slotIndex]) then
+                            local metadataSaved = profileMetadata.MarkModified(slotIndex)
+                            status.Text = "✓ \"" .. slotNames[slotIndex] .. "\" saved."
+                            if not metadataSaved then status.Text = status.Text .. " (date not saved)" end
+                            status.TextColor3 = metadataSaved and Color3.fromRGB(125,230,155) or Color3.fromRGB(255,170,90)
+                            if BindPages and BindPages.MarkClean then BindPages.MarkClean() end
+                        end
+                    end)
+                end)
+
+                resetSlotButton.MouseButton1Click:Connect(function()
+                    confirmSlotAction(slotIndex, "reset", function()
+                        if writeSettingsData(accountFiles.Slots[slotIndex], defaultSettings) then
+                            local metadataSaved = profileMetadata.MarkModified(slotIndex)
+                            status.Text = "✓ \"" .. slotNames[slotIndex] .. "\" reset to default."
+                            if not metadataSaved then status.Text = status.Text .. " (date not saved)" end
+                            status.TextColor3 = metadataSaved and Color3.fromRGB(125,230,155) or Color3.fromRGB(255,170,90)
+                        end
+                    end)
+                end)
+
+                defaultSlotButton.MouseButton1Click:Connect(function()
+                    if not readSettingsFile(accountFiles.Slots[slotIndex]) then
+                        status.Text = "Save first: \"" .. slotNames[slotIndex] .. "\"."
+                        status.TextColor3 = Color3.fromRGB(255,170,90)
+                        return
+                    end
+                    if writeDefaultSlotChoice(slotIndex) then
+                        defaultSlotIndex = slotIndex
+                        refreshDefaultSlotButtons()
+                        status.Text = "✓ \"" .. slotNames[slotIndex] .. "\" will load next time you launch."
+                        status.TextColor3 = Color3.fromRGB(125,230,155)
                     end
                 end)
-            end)
 
-            resetSlotButton.MouseButton1Click:Connect(function()
-                confirmSlotAction(slotIndex, "reset", function()
-                    if writeSettingsData(accountFiles.Slots[slotIndex], defaultSettings) then
-                        local metadataSaved = profileMetadata.MarkModified(slotIndex)
-                        status.Text = "✓ \"" .. slotNames[slotIndex] .. "\" reset to default."
-                        if not metadataSaved then status.Text = status.Text .. " (date not saved)" end
-                        status.TextColor3 = metadataSaved and Color3.fromRGB(125,230,155) or Color3.fromRGB(255,170,90)
+                loadSlotButton.MouseButton1Click:Connect(function()
+                    local data = readSettingsFile(accountFiles.Slots[slotIndex])
+                    if not data then
+                        status.Text = "\"" .. slotNames[slotIndex] .. "\" does not exist yet."
+                        status.TextColor3 = Color3.fromRGB(255,170,90)
+                        return
+                    end
+                    if BindPages and type(BindPages.PreviewProfile) == "function" then
+                        BindPages.PreviewProfile(data, slotNames[slotIndex], "Profile")
+                    else
+                        status.Text = "Profile preview unavailable."
+                        status.TextColor3 = Color3.fromRGB(255,110,110)
                     end
                 end)
-            end)
-
-            defaultSlotButton.MouseButton1Click:Connect(function()
-                if not readSettingsFile(accountFiles.Slots[slotIndex]) then
-                    status.Text = "Save first: \"" .. slotNames[slotIndex] .. "\"."
-                    status.TextColor3 = Color3.fromRGB(255,170,90)
-                    return
-                end
-                if writeDefaultSlotChoice(slotIndex) then
-                    defaultSlotIndex = slotIndex
-                    refreshDefaultSlotButtons()
-                    status.Text = "✓ \"" .. slotNames[slotIndex] .. "\" will load next time you launch."
-                    status.TextColor3 = Color3.fromRGB(125,230,155)
-                end
-            end)
-
-            loadSlotButton.MouseButton1Click:Connect(function()
-                local data = readSettingsFile(accountFiles.Slots[slotIndex])
-                if not data then
-                    status.Text = "\"" .. slotNames[slotIndex] .. "\" does not exist yet."
-                    status.TextColor3 = Color3.fromRGB(255,170,90)
-                    return
-                end
-                if BindPages and type(BindPages.PreviewProfile) == "function" then
-                    BindPages.PreviewProfile(data, slotNames[slotIndex], "Profile")
-                else
-                    status.Text = "Profile preview unavailable."
-                    status.TextColor3 = Color3.fromRGB(255,110,110)
-                end
-            end)
+            end
+            refreshDefaultSlotButtons()
         end
-        refreshDefaultSlotButtons()
+        buildProfileSlotRows()
 
         -- Recherche simple, état des fichiers et aperçu avant chargement des profils.
         do
@@ -17643,6 +18040,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 bindCaptureEntry = nil
                 bindCaptureButton = nil
                 activeBindDropdown = nil
+                bindConflictNotice = nil
                 if refreshBindsUI then pcall(refreshBindsUI) end
             end
 
@@ -17710,6 +18108,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                         if bindCaptureEntry == entry then
                             button.Text = "PRESS A KEY"
                             button.BackgroundColor3 = Color3.fromRGB(60,90,145)
+                        elseif bindConflictNotice and bindConflictNotice.entry == entry then
+                            button.Text = "IN USE: " .. tostring(bindConflictNotice.owner.label or "OTHER BIND")
+                            button.BackgroundColor3 = Color3.fromRGB(145,75,45)
                         elseif hasConflict then
                             button.Text = "DUPLICATE:" .. bindKeyToDisplay(entry.key)
                             button.BackgroundColor3 = Color3.fromRGB(145,75,45)
@@ -17835,196 +18236,200 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             return loadedDefaultSlot, loadedLegacyFile, nil
         end
 
-        -- Création unique de l'onglet, juste sous AIMBOT.
-        local oldSettingsTab = settingsSidebar:FindFirstChild("V7Tab_Settings")
-        if oldSettingsTab then oldSettingsTab:Destroy() end
+        -- Keep tab construction in a separate prototype to stay below Luau's local-register cap.
+        local function buildSettingsTab()
+            -- Création unique de l'onglet, juste sous AIMBOT.
+            local oldSettingsTab = settingsSidebar:FindFirstChild("V7Tab_Settings")
+            if oldSettingsTab then oldSettingsTab:Destroy() end
 
-        local settingsTab = Instance.new("TextButton")
-        settingsTab.Name = "V7Tab_Settings"
-        settingsTab.Parent = settingsSidebar
-        settingsTab.Position = UDim2.fromOffset(6, 5 + (5 * 31))
-        settingsTab.Size = UDim2.fromOffset(31,27)
-        settingsTab.BackgroundColor3 = Color3.fromRGB(25,29,37)
-        settingsTab.BackgroundTransparency = 1
-        settingsTab.BorderSizePixel = 0
-        settingsTab.AutoButtonColor = false
-        settingsTab.Text = ""
-        settingsTab.ZIndex = 102
-        makeCorner(settingsTab, 4)
+            local settingsTab = Instance.new("TextButton")
+            settingsTab.Name = "V7Tab_Settings"
+            settingsTab.Parent = settingsSidebar
+            settingsTab.Position = UDim2.fromOffset(6, 5 + (5 * 31))
+            settingsTab.Size = UDim2.fromOffset(31,27)
+            settingsTab.BackgroundColor3 = Color3.fromRGB(25,29,37)
+            settingsTab.BackgroundTransparency = 1
+            settingsTab.BorderSizePixel = 0
+            settingsTab.AutoButtonColor = false
+            settingsTab.Text = ""
+            settingsTab.ZIndex = 102
+            makeCorner(settingsTab, 4)
 
-        local icon = Instance.new("TextLabel")
-        icon.Name = "V7Icon"
-        icon.Parent = settingsTab
-        icon.Position = UDim2.fromOffset(0,-2)
-        icon.Size = UDim2.fromOffset(31,31)
-        icon.BackgroundTransparency = 1
-        icon.Text = "⚙"
-        icon.TextColor3 = Color3.fromRGB(92,97,108)
-        icon.Font = Enum.Font.GothamBold
-        icon.TextSize = 18
-        icon.TextXAlignment = Enum.TextXAlignment.Center
-        icon.TextYAlignment = Enum.TextYAlignment.Center
-        icon.ZIndex = 103
+            local icon = Instance.new("TextLabel")
+            icon.Name = "V7Icon"
+            icon.Parent = settingsTab
+            icon.Position = UDim2.fromOffset(0,-2)
+            icon.Size = UDim2.fromOffset(31,31)
+            icon.BackgroundTransparency = 1
+            icon.Text = "⚙"
+            icon.TextColor3 = Color3.fromRGB(92,97,108)
+            icon.Font = Enum.Font.GothamBold
+            icon.TextSize = 18
+            icon.TextXAlignment = Enum.TextXAlignment.Center
+            icon.TextYAlignment = Enum.TextYAlignment.Center
+            icon.ZIndex = 103
 
-        local label = Instance.new("TextLabel")
-        label.Name = "V7Label"
-        label.Parent = settingsTab
-        label.Position = UDim2.fromOffset(36,0)
-        label.Size = UDim2.new(1,-40,1,0)
-        label.BackgroundTransparency = 1
-        label.Text = "SETTINGS"
-        label.TextColor3 = Color3.fromRGB(116,121,132)
-        label.Font = Enum.Font.GothamBold
-        label.TextSize = 11
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.TextYAlignment = Enum.TextYAlignment.Center
-        label.TextTransparency = 1
-        label.ZIndex = 103
+            local label = Instance.new("TextLabel")
+            label.Name = "V7Label"
+            label.Parent = settingsTab
+            label.Position = UDim2.fromOffset(36,0)
+            label.Size = UDim2.new(1,-40,1,0)
+            label.BackgroundTransparency = 1
+            label.Text = "SETTINGS"
+            label.TextColor3 = Color3.fromRGB(116,121,132)
+            label.Font = Enum.Font.GothamBold
+            label.TextSize = 11
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.TextYAlignment = Enum.TextYAlignment.Center
+            label.TextTransparency = 1
+            label.ZIndex = 103
 
-        for _, child in ipairs(settingsSidebar:GetChildren()) do
-            if child:IsA("Frame") and child.Size == UDim2.fromOffset(2,22) then
-                if child.BackgroundTransparency < 0.5 and not settingsMarker then
-                    settingsMarker = child
-                elseif child.BackgroundTransparency >= 0.5 and not settingsGlow then
-                    settingsGlow = child
+            for _, child in ipairs(settingsSidebar:GetChildren()) do
+                if child:IsA("Frame") and child.Size == UDim2.fromOffset(2,22) then
+                    if child.BackgroundTransparency < 0.5 and not settingsMarker then
+                        settingsMarker = child
+                    elseif child.BackgroundTransparency >= 0.5 and not settingsGlow then
+                        settingsGlow = child
+                    end
                 end
             end
-        end
 
-        local settingsActive = false
-        local function setSettingsActive(active)
-            settingsActive = active
-            local scale = (MainFrameScale and MainFrameScale.Scale) or 1
-            local expanded = (settingsSidebar.AbsoluteSize.X / scale) >= 100
-            settingsTab.BackgroundTransparency = (expanded and active) and 0.72 or 1
-            icon.TextColor3 = active and Color3.fromRGB(132,165,230) or Color3.fromRGB(92,97,108)
-            if active then
-                if settingsMarker then
-                    settingsMarker.Position = UDim2.fromOffset(0, settingsTab.Position.Y.Offset + 5)
-                end
-                if settingsGlow then
-                    settingsGlow.Position = UDim2.fromOffset(0, settingsTab.Position.Y.Offset + 5)
+            local settingsActive = false
+            local function setSettingsActive(active)
+                settingsActive = active
+                local scale = (MainFrameScale and MainFrameScale.Scale) or 1
+                local expanded = (settingsSidebar.AbsoluteSize.X / scale) >= 100
+                settingsTab.BackgroundTransparency = (expanded and active) and 0.72 or 1
+                icon.TextColor3 = active and Color3.fromRGB(132,165,230) or Color3.fromRGB(92,97,108)
+                if active then
+                    if settingsMarker then
+                        settingsMarker.Position = UDim2.fromOffset(0, settingsTab.Position.Y.Offset + 5)
+                    end
+                    if settingsGlow then
+                        settingsGlow.Position = UDim2.fromOffset(0, settingsTab.Position.Y.Offset + 5)
+                    end
                 end
             end
-        end
 
-        local function showSettingsPage()
-            -- Paramètres et BINDS sont exclusifs : un seul panneau visible à la fois.
-            for _, name in ipairs({"Content","OmegaOthersPage","OmegaESPPage","OmegaAutresPage","AimbotPage","OmegaBindsPage"}) do
-                local page = settingsBody:FindFirstChild(name)
-                if page and page:IsA("GuiObject") then page.Visible = false end
+            local function showSettingsPage()
+                -- Paramètres et BINDS sont exclusifs : un seul panneau visible à la fois.
+                for _, name in ipairs({"Content","OmegaOthersPage","OmegaESPPage","OmegaAutresPage","AimbotPage","OmegaBindsPage"}) do
+                    local page = settingsBody:FindFirstChild(name)
+                    if page and page:IsA("GuiObject") then page.Visible = false end
+                end
+                if BindPages and BindPages.Page and BindPages.Page:IsA("GuiObject") then
+                    BindPages.Page.Visible = false
+                end
+                if BindPages and BindPages.SetActive then
+                    BindPages.SetActive(false)
+                end
+                settingsPage.Visible = true
+                _G.PRISONRP_ACTIVE_UI_PAGE = 6
+                if type(_G.PRISONRP_ENFORCE_ACTIVE_PAGE) == "function" then
+                    pcall(_G.PRISONRP_ENFORCE_ACTIVE_PAGE, 6)
+                end
+                if type(closeDropdown) == "function" then
+                    pcall(closeDropdown)
+                end
+                fitSettingsPage()
+                setSettingsActive(true)
+
+                for i = 1, 4 do
+                    local b = settingsSidebar:FindFirstChild("V7Tab_" .. tostring(i))
+                    local bi = b and b:FindFirstChild("V7Icon")
+                    if b then b.BackgroundTransparency = 1 end
+                    if bi then bi.TextColor3 = Color3.fromRGB(92,97,108) end
+                end
+                local aim = settingsSidebar:FindFirstChild("V7Tab_Aimbot")
+                local ai = aim and aim:FindFirstChild("V7Icon")
+                if aim then aim.BackgroundTransparency = 1 end
+                if ai then ai.TextColor3 = Color3.fromRGB(92,97,108) end
             end
-            if BindPages and BindPages.Page and BindPages.Page:IsA("GuiObject") then
-                BindPages.Page.Visible = false
+
+            BindPages.Navigate = function(page)
+                page = math.clamp(math.floor(tonumber(page) or 1), 1, 7)
+                if page <= 4 then
+                    if type(_G.PRISONRP_V7_SELECT_PAGE) == "function" then
+                        pcall(_G.PRISONRP_V7_SELECT_PAGE, page)
+                    elseif type(_G.PRISONRP_SELECT_PAGE) == "function" then
+                        pcall(_G.PRISONRP_SELECT_PAGE, page)
+                    end
+                elseif page == 5 then
+                    if type(_G.PRISONRP_SHOW_AIMBOT_PAGE) == "function" then pcall(_G.PRISONRP_SHOW_AIMBOT_PAGE) end
+                elseif page == 6 then
+                    showSettingsPage()
+                elseif page == 7 and type(showBindsPage) == "function" then
+                    showBindsPage()
+                end
             end
-            if BindPages and BindPages.SetActive then
-                BindPages.SetActive(false)
-            end
-            settingsPage.Visible = true
-            _G.PRISONRP_ACTIVE_UI_PAGE = 6
-            if type(_G.PRISONRP_ENFORCE_ACTIVE_PAGE) == "function" then
-                pcall(_G.PRISONRP_ENFORCE_ACTIVE_PAGE, 6)
-            end
-            if type(closeDropdown) == "function" then
-                pcall(closeDropdown)
-            end
-            fitSettingsPage()
-            setSettingsActive(true)
+
+            settingsTab.MouseButton1Click:Connect(showSettingsPage)
+            settingsTab.MouseEnter:Connect(function()
+                if type(_G.PRISONRP_V7_SET_EXPANDED) == "function" then
+                    _G.PRISONRP_V7_SET_EXPANDED(true)
+                end
+                fitSettingsPage()
+            end)
+
+            settingsSidebar:GetPropertyChangedSignal("Size"):Connect(function()
+                local scale = (MainFrameScale and MainFrameScale.Scale) or 1
+                local open = (settingsSidebar.AbsoluteSize.X / scale) >= 100
+                settingsTab.Size = UDim2.fromOffset(open and 130 or 31, 27)
+                label.TextTransparency = open and 0 or 1
+                settingsTab.Position = UDim2.fromOffset(6, 5 + (5 * 31))
+                fitSettingsPage()
+                if settingsActive then
+                    setSettingsActive(true)
+                else
+                    settingsTab.BackgroundTransparency = 1
+                end
+            end)
 
             for i = 1, 4 do
                 local b = settingsSidebar:FindFirstChild("V7Tab_" .. tostring(i))
-                local bi = b and b:FindFirstChild("V7Icon")
-                if b then b.BackgroundTransparency = 1 end
-                if bi then bi.TextColor3 = Color3.fromRGB(92,97,108) end
-            end
-            local aim = settingsSidebar:FindFirstChild("V7Tab_Aimbot")
-            local ai = aim and aim:FindFirstChild("V7Icon")
-            if aim then aim.BackgroundTransparency = 1 end
-            if ai then ai.TextColor3 = Color3.fromRGB(92,97,108) end
-        end
-
-        BindPages.Navigate = function(page)
-            page = math.clamp(math.floor(tonumber(page) or 1), 1, 7)
-            if page <= 4 then
-                if type(_G.PRISONRP_V7_SELECT_PAGE) == "function" then
-                    pcall(_G.PRISONRP_V7_SELECT_PAGE, page)
-                elseif type(_G.PRISONRP_SELECT_PAGE) == "function" then
-                    pcall(_G.PRISONRP_SELECT_PAGE, page)
+                if b then
+                    b.MouseButton1Click:Connect(function()
+                        settingsPage.Visible = false
+                        setSettingsActive(false)
+                    end)
                 end
-            elseif page == 5 then
-                if type(_G.PRISONRP_SHOW_AIMBOT_PAGE) == "function" then pcall(_G.PRISONRP_SHOW_AIMBOT_PAGE) end
-            elseif page == 6 then
-                showSettingsPage()
-            elseif page == 7 and type(showBindsPage) == "function" then
-                showBindsPage()
             end
-        end
 
-        settingsTab.MouseButton1Click:Connect(showSettingsPage)
-        settingsTab.MouseEnter:Connect(function()
-            if type(_G.PRISONRP_V7_SET_EXPANDED) == "function" then
-                _G.PRISONRP_V7_SET_EXPANDED(true)
-            end
-            fitSettingsPage()
-        end)
-
-        settingsSidebar:GetPropertyChangedSignal("Size"):Connect(function()
-            local scale = (MainFrameScale and MainFrameScale.Scale) or 1
-            local open = (settingsSidebar.AbsoluteSize.X / scale) >= 100
-            settingsTab.Size = UDim2.fromOffset(open and 130 or 31, 27)
-            label.TextTransparency = open and 0 or 1
-            settingsTab.Position = UDim2.fromOffset(6, 5 + (5 * 31))
-            fitSettingsPage()
-            if settingsActive then
-                setSettingsActive(true)
-            else
-                settingsTab.BackgroundTransparency = 1
-            end
-        end)
-
-        for i = 1, 4 do
-            local b = settingsSidebar:FindFirstChild("V7Tab_" .. tostring(i))
-            if b then
-                b.MouseButton1Click:Connect(function()
+            local aim = settingsSidebar:FindFirstChild("V7Tab_Aimbot")
+            if aim then
+                aim.MouseButton1Click:Connect(function()
                     settingsPage.Visible = false
                     setSettingsActive(false)
                 end)
             end
-        end
 
-        local aim = settingsSidebar:FindFirstChild("V7Tab_Aimbot")
-        if aim then
-            aim.MouseButton1Click:Connect(function()
-                settingsPage.Visible = false
-                setSettingsActive(false)
+            fitSettingsPage()
+            task.defer(function()
+                task.wait()
+                fitSettingsPage()
+                local loadedDefaultSlot, loadedLegacyFile, loadError = loadSettings()
+                _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY = true
+
+                -- Après le chargement, certaines fonctions finissent leur initialisation
+                -- un peu plus tard. On resynchronise donc les switches plusieurs fois.
+                -- Le restore visuel principal est effectué dans applyLoadedSettings(),
+                -- avec des références valides même hors du pcall principal.
+                if loadError then
+                    status.Text = "Could not apply profile: " .. tostring(loadError)
+                    status.TextColor3 = Color3.fromRGB(255,110,110)
+                elseif loadedDefaultSlot then
+                    status.Text = "Auto-loaded profile: \"" .. ((slotNames and slotNames[defaultSlotIndex]) or ("Profile " .. tostring(defaultSlotIndex))) .. "\"."
+                    status.TextColor3 = Color3.fromRGB(125,230,155)
+                elseif loadedLegacyFile then
+                    status.Text = "Default slot is empty; previous save loaded."
+                    status.TextColor3 = Color3.fromRGB(255,170,90)
+                else
+                    status.Text = "Default slot is empty: “" .. ((slotNames and slotNames[defaultSlotIndex]) or ("Profile " .. tostring(defaultSlotIndex))) .. "”. Save it first."
+                    status.TextColor3 = Color3.fromRGB(255,170,90)
+                end
             end)
         end
-
-        fitSettingsPage()
-        task.defer(function()
-            task.wait()
-            fitSettingsPage()
-            local loadedDefaultSlot, loadedLegacyFile, loadError = loadSettings()
-            _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY = true
-
-            -- Après le chargement, certaines fonctions finissent leur initialisation
-            -- un peu plus tard. On resynchronise donc les switches plusieurs fois.
-            -- Le restore visuel principal est effectué dans applyLoadedSettings(),
-            -- avec des références valides même hors du pcall principal.
-            if loadError then
-                status.Text = "Could not apply profile: " .. tostring(loadError)
-                status.TextColor3 = Color3.fromRGB(255,110,110)
-            elseif loadedDefaultSlot then
-                status.Text = "Auto-loaded profile: \"" .. ((slotNames and slotNames[defaultSlotIndex]) or ("Profile " .. tostring(defaultSlotIndex))) .. "\"."
-                status.TextColor3 = Color3.fromRGB(125,230,155)
-            elseif loadedLegacyFile then
-                status.Text = "Default slot is empty; previous save loaded."
-                status.TextColor3 = Color3.fromRGB(255,170,90)
-            else
-                status.Text = "Default slot is empty: “" .. ((slotNames and slotNames[defaultSlotIndex]) or ("Profile " .. tostring(defaultSlotIndex))) .. "”. Save it first."
-                status.TextColor3 = Color3.fromRGB(255,170,90)
-            end
-        end)
+        buildSettingsTab()
     end
 end
 
@@ -19248,6 +19653,14 @@ do
         end
         _G.PRISONRP_AUTO_PURPLE_TOGGLE = toggleAutoPurple
 
+        -- Le profil est chargé avant la création de ce module : applique son état
+        -- en attente dès que le getter et le toggle sont enfin disponibles.
+        local pendingAutoPurpleRestore = _G.PRISONRP_AUTO_PURPLE_PENDING_RESTORE
+        _G.PRISONRP_AUTO_PURPLE_PENDING_RESTORE = nil
+        if pendingAutoPurpleRestore == true then
+            task.defer(toggleAutoPurple)
+        end
+
         -- Le switch standardisé sera branché dans le layout final.
         AutoPurpleSwitch.Activated:Connect(toggleAutoPurple)
         AutoPurpleButton.Activated:Connect(toggleAutoPurple)
@@ -19278,7 +19691,6 @@ do
         updateButton(false)
         refreshCardStroke()
 
-        print("[AutoPurple] Added to OTHER without a separate interface.")
     end
 end
 
@@ -19563,7 +19975,6 @@ do
 
         updateSwitch(launched, false)
         refreshCardStroke()
-        print("[Infinite Yield] Launcher added to OTHER.")
     end)
 end
 
@@ -19709,7 +20120,6 @@ do
             end
         end)
 
-        print("[Custom buttons] Anti V, Novoline, and M7 added to OTHER.")
     end)
 end
 
@@ -20210,7 +20620,6 @@ do
 
         updateSwitch(false, false)
         refreshCardStroke()
-        print("[Chat Dock] Switch added to OTHER; disabled by default.")
     end)
     if not initOk then
         warn("[Chat Dock] Initialization failed: " .. tostring(initErr))
@@ -20426,7 +20835,6 @@ do
 
         leftScroll.CanvasSize = UDim2.fromOffset(0, math.max(0, top))
         leftScroll.CanvasPosition = Vector2.zero
-        print("[OTHER] Hard Fish switch is visible.")
 
         -- Le panneau Give Money reste fixé à droite et ne défile pas avec les cases.
         local giveMoneyPanel = autresPageRef:FindFirstChild("GiveMoneyPanel")
@@ -20436,7 +20844,6 @@ do
             giveMoneyPanel.AnchorPoint = Vector2.new(0, 0)
         end
 
-        print("[OTHER] Scrollable left column configured; Give Money stays fixed on the right.")
     end)
     if not layoutOk then
         warn("[OTHER] Could not configure the scrollable layout: " .. tostring(layoutErr))
@@ -20713,7 +21120,27 @@ end
 
 
 ]=]
+-- IMPORTANT : publier la source avant d'exécuter le hub. Les réglages peuvent
+-- tenter d'armer Auto Reload pendant le démarrage ; la source doit déjà être disponible.
 _G.PRISONRP_AUTO_RELOAD_SOURCE = __PRISONRP_SOURCE
-local __PRISONRP_CHUNK, __PRISONRP_COMPILE_ERROR = loadstring(__PRISONRP_SOURCE)
-if not __PRISONRP_CHUNK then error(__PRISONRP_COMPILE_ERROR) end
-__PRISONRP_CHUNK()
+pcall(function()
+    if type(getgenv) == "function" then
+        local shared = getgenv()
+        if type(shared) == "table" then
+            shared.PRISONRP_AUTO_RELOAD_SOURCE = __PRISONRP_SOURCE
+        end
+    end
+end)
+local __PRISONRP_COMPILE_CALL_OK, __PRISONRP_CHUNK, __PRISONRP_COMPILE_ERROR = pcall(function()
+    return loadstring(__PRISONRP_SOURCE)
+end)
+if not __PRISONRP_COMPILE_CALL_OK then
+    error(__PRISONRP_CHUNK)
+end
+if not __PRISONRP_CHUNK then
+    error(__PRISONRP_COMPILE_ERROR)
+end
+local __PRISONRP_RUN_OK, __PRISONRP_RUN_ERROR = pcall(__PRISONRP_CHUNK)
+if not __PRISONRP_RUN_OK then
+    error(__PRISONRP_RUN_ERROR)
+end
