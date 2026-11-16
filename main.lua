@@ -1,6 +1,8 @@
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
--- V334 : met les callbacks en cache et relance immédiatement après une capture confirmée.
--- V326 : cherche aussi les autres PerformCast si l'upvalue sélectionnée ne contient pas le poisson.
+-- V342 : Auto Mine reprend l'approche frontale et le seuil d'arrivee valides dans la v6 autonome.
+-- V341 : reprend l'Auto-Fish V2 (cache de canne, relance adaptative, stats à la prise).
+-- V340 : relance après CatchPrompt, ferme un mini-jeu resté actif et retire l'attente Secret de 20 s.
+-- V338 : rescane les callbacks à chaque lancer et lit directement upvalues[1].PreRolledFish.
 -- V325 : reprend le flux de lecture/maintien de l'ancien script pour éviter de bloquer la fiche PreRolledFish.
 -- V320 : impose le minimum de rareté choisi, y compris si la rareté ne peut pas être lue.
 -- V319 : ferme le cycle dès la fin confirmée du mini-jeu, même si CatchPrompt manque.
@@ -24,8 +26,9 @@
 -- V284 : ajoute le combo Captainsteach à Auto Parry, délais calibrés sur les logs de dégâts.
 -- V283 : Auto Fish : détection récursive du poisson, signatures identiques acceptées après délai, callbacks sans PerformCast possibles, CatchPrompt tolère les champs/valeurs variés.
 local __PRISONRP_SOURCE = [=[
--- V334 : met les callbacks en cache et relance immédiatement après une capture confirmée.
--- V326 : cherche aussi les autres PerformCast si l'upvalue sélectionnée ne contient pas le poisson.
+-- V341 : Auto-Fish V2 intégré avec relance rapide après capture et skip.
+-- V340 : relance après CatchPrompt, ferme un mini-jeu resté actif et retire l'attente Secret de 20 s.
+-- V338 : rescane les callbacks à chaque lancer et lit directement upvalues[1].PreRolledFish.
 -- V325 : reprend le flux de lecture/maintien de l'ancien script pour éviter de bloquer la fiche PreRolledFish.
 -- V320 : impose le minimum de rareté choisi, y compris si la rareté ne peut pas être lue.
 -- V319 : ferme le cycle dès la fin confirmée du mini-jeu, même si CatchPrompt manque.
@@ -188,19 +191,25 @@ local __PRISONRP_HARD_FISH_FROM_QUEUE =
     or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true)
     or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_HARD_FISH_ENGINE_ENABLED == true)
     or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_FISH_CYCLE_ENABLED == true)
+local __PRISONRP_HARD_MINE_FROM_QUEUE =
+    (_G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true)
+    or (__PRISONRP_QUEUE_STATE_ENV.PRISONRP_HARD_MINE_ENGINE_ENABLED == true)
 _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = nil
 _G.PRISONRP_AUTO_RELOAD_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_RELOAD_TOGGLE_FROM_QUEUE
 _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_HARD_FISH_FROM_QUEUE
 _G.PRISONRP_HARD_FISH_ENGINE_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_HARD_FISH_FROM_QUEUE
+_G.PRISONRP_HARD_MINE_ENGINE_ENABLED = __PRISONRP_AUTO_RELOAD_FROM_QUEUE and __PRISONRP_HARD_MINE_FROM_QUEUE
 _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED = nil
 if __PRISONRP_QUEUE_STATE_ENV ~= _G then
     __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_RELOAD_FROM_QUEUE = nil
     __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_RELOAD_ENABLED = _G.PRISONRP_AUTO_RELOAD_ENABLED
     __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED
     __PRISONRP_QUEUE_STATE_ENV.PRISONRP_HARD_FISH_ENGINE_ENABLED = _G.PRISONRP_HARD_FISH_ENGINE_ENABLED
+    __PRISONRP_QUEUE_STATE_ENV.PRISONRP_HARD_MINE_ENGINE_ENABLED = _G.PRISONRP_HARD_MINE_ENGINE_ENABLED
     __PRISONRP_QUEUE_STATE_ENV.PRISONRP_AUTO_FISH_CYCLE_ENABLED = nil
 end
 _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY = false
+_G.PRISONRP_HARD_MINE_ENGINE_SETTINGS_READY = false
 if __PRISONRP_AUTO_RELOAD_FROM_QUEUE then
     print("[PRISON RP Auto Reload] Queued Hub source started in the new server")
 end
@@ -277,6 +286,7 @@ end)
 
 _G.CombinedHubLoaded = true
 _G.PRISONRP_ESP_USER_TOUCHED_KEYS = {}
+_G.PRISONRP_ESP_CHECKED_MASTER_STATE = false
 -- V187 : toujours repartir avec le Fly désactivé au chargement.
 MovementFlyEnabled = false
 
@@ -299,8 +309,32 @@ _G.AutoPushupEnabled = false
 AutoPushupWorker = nil
 _G.PRISONRP_FPS_COUNTER_ENABLED = false
 
+-- Optional read-only bridge for the separate Fish Audit window.
+local function publishFishAuditEvent(kind, name, rarity, fishId, price, reason)
+    local target = _G
+    if type(getgenv) == "function" then
+        pcall(function()
+            local shared = getgenv()
+            if type(shared) == "table" then target = shared end
+        end)
+    end
+    local events = target.PRISONRP_FISH_AUDIT_EVENTS
+    if type(events) ~= "table" then
+        events = {}
+        target.PRISONRP_FISH_AUDIT_EVENTS = events
+    end
+    table.insert(events, {
+        EventId = tostring(os.clock()) .. ":" .. tostring(math.random(1, 1000000000)),
+        Kind = tostring(kind), Name = name, Rarity = rarity,
+        FishId = fishId, Price = price, Reason = tostring(reason or ""),
+        Time = os.date("%Y-%m-%d %H:%M:%S"),
+    })
+    while #events > 500 do table.remove(events, 1) end
+end
+
 -- Auto Eat / Drink
-AutoEatDrinkEnabled = false
+AutoEatDrinkEnabled = true
+_G.AutoEatDrinkEnabled = true
 AutoEatDrinkBusy = false
 AutoEatDrinkThreadRunning = true
 AutoEatDrinkWasPushupActive = false
@@ -309,6 +343,15 @@ AutoEatDrinkWasPushupActive = false
 local AutoEatDrinkPending = false
 local AutoEatDrinkNextTryAt = 0
 local AutoFishingCatchWindow = false
+local CAST_HOLD_TIME = 0.80
+local CATCH_CONFIRM_GRACE = 1.0
+local POST_CATCH_IDLE_WAIT = 0.30
+local RARITY_REFRESH_INTERVAL = 0.05
+local relaunchSince, relaunchReason = nil, nil
+local function markRelaunch(reason)
+    relaunchSince = os.clock()
+    relaunchReason = reason
+end
 AUTO_EAT_THRESHOLD = 5
 AUTO_DRINK_THRESHOLD = 30
 AUTO_EAT_DRINK_CHECK_INTERVAL = 0.5
@@ -521,6 +564,8 @@ do
         env.PRISONRP_AUTO_RELOAD_ENABLED = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
         env.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
         env.PRISONRP_HARD_FISH_ENGINE_ENABLED = _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+        env.PRISONRP_HARD_MINE_ENGINE_ENABLED = _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
+        _G.PRISONRP_HARD_MINE_ENGINE_ENABLED = _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
         _G.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = token
         _G.PRISONRP_AUTO_RELOAD_EXECUTED_TOKEN = nil
         local stateSaved, stateSaveError = writeAutoReloadFile(AUTO_RELOAD_STATE_FILE, "ON|" .. token)
@@ -1142,10 +1187,10 @@ vendingOpenUiRemote, vendingBuyRemote, vendingOpenPrompt = nil, nil, nil
 POND_GROUND_CFRAME = CFrame.new(Vector3.new(-585, 0.5, -100), Vector3.new(-615, 0.5, -85))
 -- Point d'arrivée utilisé par le bouton TP Mine.
 AUTO_MINE_START_CFRAME = CFrame.new(
-    -356.731995, 4.07552624, 166.393158,
-     0.161931038, 0, 0.986802101,
-     0, 1, 0,
-    -0.986802101, 0, 0.161931038
+    -365.998352, 4.61087418, 194.104752,
+    -0.97303015, -6.47786313e-09, 0.230678022,
+     2.29210803e-10, 1, 2.90486799e-08,
+    -0.230678022, 2.83181159e-08, -0.97303015
 )
 
 -- V180 : TP robuste + retour à la position d'origine.
@@ -1306,7 +1351,11 @@ _G.PRISONRP_TEXT_SCALE = 1.0
 _G.PRISONRP_HIGH_CONTRAST = false
 _G.PRISONRP_REDUCED_MOTION = false
 -- Persisté par le lanceur pendant une téléportation.
-_G.PRISONRP_AUTO_RELOAD_ENABLED = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
+if __PRISONRP_AUTO_RELOAD_FROM_QUEUE then
+    _G.PRISONRP_AUTO_RELOAD_ENABLED = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
+else
+    _G.PRISONRP_AUTO_RELOAD_ENABLED = true
+end
 _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
 _G.PRISONRP_TOUCH_MODE = false
 function PRISONRP_AdjustUITweenInfo(info)
@@ -1902,6 +1951,21 @@ local FPSCounterBtnCorner = Instance.new("UICorner")
 FPSCounterBtnCorner.CornerRadius = UDim.new(0, 6)
 FPSCounterBtnCorner.Parent = FPSCounterBtn
 
+AutoAFKBtn = Instance.new("TextButton")
+AutoAFKBtn.Name = "AutoAFKBtn"
+AutoAFKBtn.Size = UDim2.new(1, -215, 0, 32)
+AutoAFKBtn.Position = UDim2.new(0, 0, 0, 169)
+AutoAFKBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+AutoAFKBtn.Text = "ANTI-AFK: OFF"
+AutoAFKBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
+AutoAFKBtn.TextSize = 11
+AutoAFKBtn.Font = Enum.Font.GothamBold
+AutoAFKBtn.Visible = false -- déplacé dans Outils par l'interface V2
+AutoAFKBtn.Parent = Content
+local AutoAFKBtnCorner = Instance.new("UICorner")
+AutoAFKBtnCorner.CornerRadius = UDim.new(0, 6)
+AutoAFKBtnCorner.Parent = AutoAFKBtn
+
 --==============================================================
 -- AUTO MINE V32 — CHARACTER AIM SANS CONTROLE CAMERA
 -- Déplacement progressif + Noclip, sans TP vers les minerais.
@@ -1915,6 +1979,9 @@ AutoMinePreviousFlyEnabled = false
 AutoMineNoclipConnection = nil
 AutoMineFlyConnection = nil
 AutoMineMouseHeld = false
+AutoMineAimConnection = nil
+AutoMineAimTargetObject = nil
+AutoMineAimGyro = nil
 -- Évite de retenter en boucle la même roche si elle est inaccessible ou si la pioche manque.
 AutoMineFailedTargets = setmetatable({}, {__mode = "k"})
 
@@ -1986,7 +2053,7 @@ AUTO_MINE_CONFIG = {
     ScanInterval = 0.02,
     MoveDistance = 4.5,
     HoldDuration = 1.00,
-    ReclickInterval = 1.00,
+    ReclickInterval = 0.15,
 }
 
 AutoMineBtn = Instance.new("TextButton")
@@ -2115,37 +2182,44 @@ function autoMineGetRockPart(obj)
     return nil
 end
 
+-- Seules les trois roches demandées sont candidates. Le rayon absorbe l'arrondi du dump.
+AUTO_MINE_ALLOWED_ROCK_POSITIONS = {
+    Vector3.new(-428, 9, 302),
+    Vector3.new(-441, 9, 294),
+    Vector3.new(-441, 9, 309),
+}
+AUTO_MINE_ALLOWED_ROCK_RADIUS = 2.5
+function autoMineIsAllowedRockPart(part)
+    if not part then return false end
+    for _, allowedPosition in ipairs(AUTO_MINE_ALLOWED_ROCK_POSITIONS) do
+        if (part.Position - allowedPosition).Magnitude <= AUTO_MINE_ALLOWED_ROCK_RADIUS then
+            return true
+        end
+    end
+    return false
+end
+
 function autoMineGetActiveRocks()
     local folder = autoMineFindRocksFolder()
     if not folder then return {} end
 
     local rocks, seen = {}, {}
-
     for _, obj in ipairs(folder:GetChildren()) do
         local part = autoMineGetRockPart(obj)
-        if part and not seen[part] then
+        if part and autoMineIsAllowedRockPart(part) and not seen[part] then
             seen[part] = true
-            table.insert(rocks, {
-                object = obj,
-                part = part,
-                name = obj.Name,
-            })
+            table.insert(rocks, {object = obj, part = part, name = obj.Name})
         end
     end
 
     if #rocks == 0 then
         for _, d in ipairs(folder:GetDescendants()) do
-            if autoMineVisiblePart(d) and not seen[d] then
+            if autoMineVisiblePart(d) and autoMineIsAllowedRockPart(d) and not seen[d] then
                 seen[d] = true
-                table.insert(rocks, {
-                    object = d,
-                    part = d,
-                    name = d.Name,
-                })
+                table.insert(rocks, {object = d, part = d, name = d.Name})
             end
         end
     end
-
     return rocks
 end
 
@@ -2187,20 +2261,39 @@ function autoMineEquipPickaxe()
     end
 
     local equipped = char:FindFirstChildOfClass("Tool")
-    if isPick(equipped) then return equipped end
+    if isPick(equipped) and equipped.Parent == char then
+        return equipped
+    end
 
     local backpack = LocalPlayer:FindFirstChild("Backpack")
     if not backpack then return nil end
 
     for _, tool in ipairs(backpack:GetChildren()) do
         if isPick(tool) then
-            pcall(function() hum:EquipTool(tool) end)
-            task.wait(0.15)
-            return char:FindFirstChildOfClass("Tool") or tool
+            local equipOK = pcall(function() hum:EquipTool(tool) end)
+            if equipOK then
+                local deadline = os.clock() + 1.25
+                repeat
+                    task.wait(0.05)
+                    char = LocalPlayer.Character
+                    if not char then return nil end
+                    local current = char:FindFirstChildOfClass("Tool")
+                    if isPick(current) and current.Parent == char then
+                        return current
+                    end
+                until os.clock() >= deadline or not running or not AutoMineRunning
+            end
         end
     end
 
     return nil
+end
+
+function autoMineGetMineRemote()
+    local remotes = ReplicatedStorage:FindFirstChild("Remotes")
+    local toolFolder = remotes and remotes:FindFirstChild("Tool")
+    local event = toolFolder and toolFolder:FindFirstChild("Event")
+    return event and event:IsA("RemoteEvent") and event or nil
 end
 
 function autoMineReleaseMouse()
@@ -2213,7 +2306,20 @@ function autoMineReleaseMouse()
     end)
 end
 
+function autoMineStopAim()
+    if AutoMineAimConnection then
+        pcall(function() AutoMineAimConnection:Disconnect() end)
+        AutoMineAimConnection = nil
+    end
+    AutoMineAimTargetObject = nil
+    if AutoMineAimGyro then
+        pcall(function() AutoMineAimGyro:Destroy() end)
+        AutoMineAimGyro = nil
+    end
+end
+
 function autoMineStopFly()
+    autoMineStopAim()
     -- Ne toucher à la physique que si la boucle de déplacement était réellement active.
     -- CombinedHubCleanup appelle aussi autoMineStop() quand Auto Mine est déjà OFF.
     local wasAutoMineFlying = AutoMineFlyConnection ~= nil
@@ -2274,7 +2380,9 @@ function autoMineRestorePreviousFly()
     end
 end
 
-function autoMineStartAim()
+function autoMineStartAim(rockObject)
+    autoMineStopAim()
+
     local hum = autoMineCharacter():FindFirstChildOfClass("Humanoid")
     if hum and AutoMinePreviousAutoRotate == nil then
         pcall(function()
@@ -2283,23 +2391,79 @@ function autoMineStartAim()
         end)
     end
 
+    if not rockObject or not rockObject.Parent then return end
+    AutoMineAimTargetObject = rockObject
+    AutoMineAimConnection = AutoMineRunService.Heartbeat:Connect(function()
+        local target = AutoMineAimTargetObject
+        if not AutoMineRunning or not target or not target.Parent then
+            autoMineStopAim()
+            return
+        end
+
+        local part = autoMineGetRockPart(target)
+        if part then
+            autoMineAimAtPart(part, target)
+        end
+    end)
+
     -- Aucun CameraType / CameraSubject / CameraCFrame n'est modifié.
 end
 
-function autoMineAimAtPart(part)
+function autoMineGetRockBounds(rockObject, fallbackPart)
+    if rockObject and rockObject:IsA("Model") then
+        local ok, boundsCFrame, boundsSize = pcall(function()
+            return rockObject:GetBoundingBox()
+        end)
+        if ok and boundsCFrame and boundsSize then
+            return boundsCFrame, boundsSize
+        end
+    end
+
+    if fallbackPart and fallbackPart:IsA("BasePart") then
+        return fallbackPart.CFrame, fallbackPart.Size
+    end
+
+    return nil, nil
+end
+
+function autoMineAimAtPart(part, rockObject)
     if not part or not part.Parent then return end
 
     local rr = autoMineRoot()
-    if rr then
-        pcall(function()
-            -- Rotation horizontale uniquement : le personnage regarde la roche
-            -- sans incliner son corps et sans toucher à la caméra du joueur.
-            local flatTarget = Vector3.new(part.Position.X, rr.Position.Y, part.Position.Z)
-            if (flatTarget - rr.Position).Magnitude > 0.05 then
-                rr.CFrame = CFrame.lookAt(rr.Position, flatTarget)
+    local char = rr and rr.Parent
+    if not rr or not char then return end
+
+    pcall(function()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then hum.AutoRotate = false end
+
+        local boundsCFrame = autoMineGetRockBounds(rockObject, part)
+        local aimPosition = boundsCFrame and boundsCFrame.Position or part.Position
+        local flatTarget = Vector3.new(aimPosition.X, rr.Position.Y, aimPosition.Z)
+        if (flatTarget - rr.Position).Magnitude <= 0.05 then return end
+
+        local desiredRoot = CFrame.lookAt(rr.Position, flatTarget, Vector3.yAxis)
+        local currentPivot = char:GetPivot()
+        local rootToPivot = rr.CFrame:ToObjectSpace(currentPivot)
+        char:PivotTo(desiredRoot * rootToPivot)
+
+        if not AutoMineAimGyro or AutoMineAimGyro.Parent ~= rr then
+            if AutoMineAimGyro then
+                pcall(function() AutoMineAimGyro:Destroy() end)
             end
-        end)
-    end
+            local gyro = Instance.new("BodyGyro")
+            gyro.Name = "AutoMineAimGyro"
+            gyro.P = 100000
+            gyro.D = 5000
+            gyro.MaxTorque = Vector3.new(0, 1000000000, 0)
+            gyro.CFrame = desiredRoot
+            gyro.Parent = rr
+            AutoMineAimGyro = gyro
+        end
+
+        AutoMineAimGyro.CFrame = desiredRoot
+        rr.CFrame = desiredRoot
+    end)
 end
 
 function autoMineSetNoclip(enabled)
@@ -2317,12 +2481,14 @@ function autoMineSetNoclip(enabled)
     end)
 end
 
-function autoMineFlyToPosition(targetPosition, maxTime)
+function autoMineFlyToPosition(targetPosition, maxTime, arrivalTolerance, rockName)
     local hum = autoMineCharacter():FindFirstChildOfClass("Humanoid")
     local rr = autoMineRoot()
     if not hum or not rr then return false end
 
     local started = os.clock()
+    local lastProgressAt = 0
+    arrivalTolerance = math.max(0.5, tonumber(arrivalTolerance) or AUTO_MINE_CONFIG.MoveDistance)
     local speed = math.clamp(
         math.max(hum.WalkSpeed, 16) * AUTO_MINE_CONFIG.SpeedMultiplier,
         AUTO_MINE_CONFIG.MinSpeed,
@@ -2347,7 +2513,7 @@ function autoMineFlyToPosition(targetPosition, maxTime)
         local delta = targetPosition - rootNow.Position
         local distance = delta.Magnitude
 
-        if distance <= AUTO_MINE_CONFIG.MoveDistance then
+        if distance <= arrivalTolerance then
             autoMineStopFly()
             pcall(function() hum:Move(Vector3.zero, false) end)
             return
@@ -2359,7 +2525,7 @@ function autoMineFlyToPosition(targetPosition, maxTime)
             hum.PlatformStand = false
             hum:ChangeState(Enum.HumanoidStateType.Freefall)
             rootNow.AssemblyLinearVelocity =
-                direction * math.min(speed, distance * 3)
+                direction * math.min(speed, math.max(6, distance * 3))
         end)
 
         pcall(function()
@@ -2374,7 +2540,12 @@ function autoMineFlyToPosition(targetPosition, maxTime)
             return false
         end
 
-        if (rrNow.Position - targetPosition).Magnitude <= AUTO_MINE_CONFIG.MoveDistance then
+        local remaining = (rrNow.Position - targetPosition).Magnitude
+        if os.clock() - lastProgressAt >= 0.35 then
+            lastProgressAt = os.clock()
+            autoMineStatus(string.format("Approach %.1f studs", remaining))
+        end
+        if remaining <= arrivalTolerance then
             autoMineStopFly()
             pcall(function() hum:Move(Vector3.zero, false) end)
             return true
@@ -2406,10 +2577,39 @@ function autoMineMine(rock)
 
     autoMineSetNoclip(true)
 
-    -- Déplacement en Fly + noclip vers la roche.
-    -- On vise légèrement au-dessus de la roche pour éviter d'entrer dans son volume.
-    local targetPosition = currentPart.Position + Vector3.new(0, 2.5, 0)
-    local reachedTarget = autoMineFlyToPosition(targetPosition, 12)
+    -- Approche frontale depuis la meme hauteur que le personnage.
+    local boundsCFrame, boundsSize = autoMineGetRockBounds(rockObject, currentPart)
+    local aimPosition = boundsCFrame and boundsCFrame.Position or currentPart.Position
+    local approachDirection = Vector3.new(
+        r.Position.X - aimPosition.X,
+        0,
+        r.Position.Z - aimPosition.Z
+    )
+    if approachDirection.Magnitude < 0.05 then
+        local partLook = (boundsCFrame or currentPart.CFrame).LookVector
+        approachDirection = Vector3.new(partLook.X, 0, partLook.Z)
+    end
+    if approachDirection.Magnitude < 0.05 then
+        approachDirection = Vector3.new(0, 0, 1)
+    else
+        approachDirection = approachDirection.Unit
+    end
+
+    local approachRadius = 2.5
+    if boundsCFrame and boundsSize then
+        local projectedHalfWidth =
+            math.abs(approachDirection:Dot(boundsCFrame.RightVector)) * boundsSize.X * 0.5
+            + math.abs(approachDirection:Dot(boundsCFrame.LookVector)) * boundsSize.Z * 0.5
+        approachRadius = math.clamp(projectedHalfWidth + 0.75, 2.25, 4.0)
+    end
+
+    local targetPosition = Vector3.new(
+        aimPosition.X + approachDirection.X * approachRadius,
+        r.Position.Y,
+        aimPosition.Z + approachDirection.Z * approachRadius
+    )
+    autoMineStatus("Approaching " .. rockObject.Name)
+    local reachedTarget = autoMineFlyToPosition(targetPosition, 12, 2.0, rockObject.Name)
     if not reachedTarget then
         autoMineReleaseMouse()
         autoMineSetNoclip(false)
@@ -2419,6 +2619,7 @@ function autoMineMine(rock)
         return false
     end
 
+    autoMineStatus("Arrived at " .. rockObject.Name .. ", aiming")
     local h = autoMineCharacter():FindFirstChildOfClass("Humanoid")
     local rr2 = autoMineRoot()
     if h then
@@ -2434,10 +2635,11 @@ function autoMineMine(rock)
 
     local lastPart = currentPart
     local phase = 1
-    local last = 0
+    local last = os.clock()
+    local hitsSent = 0
     local missingSince = nil
 
-    autoMineStartAim()
+    autoMineStartAim(rockObject)
 
     while running and AutoMineRunning and rockObject.Parent do
         currentPart = autoMineGetRockPart(rockObject)
@@ -2447,7 +2649,7 @@ function autoMineMine(rock)
 
             -- Oriente uniquement le personnage vers la roche.
             -- La caméra reste entièrement contrôlée par le joueur.
-            autoMineAimAtPart(currentPart)
+            autoMineAimAtPart(currentPart, rockObject)
 
             if currentPart ~= lastPart then
                 lastPart = currentPart
@@ -2460,9 +2662,10 @@ function autoMineMine(rock)
         else
             if not missingSince then
                 missingSince = os.clock()
+                autoMineStatus("Waiting for rock: " .. rockObject.Name)
             end
 
-            if os.clock() - missingSince >= 2 then
+            if os.clock() - missingSince >= 4 then
                 autoMineReleaseMouse()
                 autoMineSetNoclip(false)
                 autoMineStopFly()
@@ -2481,38 +2684,40 @@ function autoMineMine(rock)
 
         if os.clock() - last >= AUTO_MINE_CONFIG.ReclickInterval then
             last = os.clock()
-            autoMineReleaseMouse()
+            local mineRemote = autoMineGetMineRemote()
+            if not mineRemote then
+                autoMineReleaseMouse()
+                autoMineStatus("Mine remote not found")
+                task.wait(0.5)
+            elseif not rockObject.Parent or not currentPart or not currentPart.Parent then
+                autoMineStatus("Rock target is no longer valid")
+                task.wait(0.2)
+            else
+                local currentCharacter = LocalPlayer.Character
+                if not currentCharacter or tool.Parent ~= currentCharacter then
+                    autoMineStatus("Waiting for equipped Pickaxe")
+                    task.wait(0.1)
+                    continue
+                end
 
-            local camera = workspace.CurrentCamera
-            if camera then
-                local v = camera.ViewportSize
-                local x = math.floor(v.X / 2)
-                local y = math.floor(v.Y / 2)
-                AutoMineMouseX, AutoMineMouseY = x, y
+                autoMineAimAtPart(currentPart, rockObject)
+                pcall(function() tool:Activate() end)
+                task.wait(0.05)
+                autoMineAimAtPart(currentPart, rockObject)
 
-                pcall(function()
-                    AutoMineVirtualInputManager:SendMouseButtonEvent(
-                        x, y, 0, true, game, 0
-                    )
+                local sent, sendError = pcall(function()
+                    mineRemote:FireServer("MineOres", tool, rockObject)
                 end)
-
-                AutoMineMouseHeld = true
-
-                pcall(function()
-                    tool:Activate()
-                end)
-
-                task.wait(AUTO_MINE_CONFIG.HoldDuration)
-
-                pcall(function()
-                    AutoMineVirtualInputManager:SendMouseButtonEvent(
-                        x, y, 0, false, game, 0
-                    )
-                end)
-                AutoMineMouseHeld = false
+                pcall(function() tool:Deactivate() end)
+                if sent then
+                    hitsSent += 1
+                    autoMineStatus(string.format("%s — hits sent: %d", rockObject.Name, hitsSent))
+                else
+                    warn("[Auto Mine] MineOres call failed: " .. tostring(sendError))
+                    autoMineStatus("Mine hit failed")
+                end
             end
         end
-
         task.wait(0.04)
     end
 
@@ -2887,9 +3092,26 @@ if _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true then
     end)
 end
 
--- V191 : Anti-AFK Auto-Fish
--- Actif uniquement lorsque Auto-Fish est actif.
--- Utilise Player.Idled + VirtualUser au moment exact où Roblox détecte l'inactivité.
+if _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true then
+    task.spawn(function()
+        local deadline = os.clock() + 90
+        while running and _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
+            and os.clock() < deadline
+            and (_G.PRISONRP_HARD_MINE_ENGINE_SETTINGS_READY ~= true
+                or type(_G.PRISONRP_HARD_MINE_ENGINE_SET_STATE) ~= "function") do
+            task.wait(0.25)
+        end
+        if running and _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
+            and _G.PRISONRP_HARD_MINE_ENGINE_SETTINGS_READY == true
+            and type(_G.PRISONRP_HARD_MINE_ENGINE_SET_STATE) == "function" then
+            _G.PRISONRP_HARD_MINE_ENGINE_SET_STATE(true)
+        end
+    end)
+end
+_G.PRISONRP_ANTIAFK_ENABLED = true
+-- Anti-AFK actif par défaut ; son switch Outils et les profils peuvent le désactiver.
+
+-- Utilise Player.Idled + VirtualUser quand Roblox détecte l'inactivité.
 do
     pcall(function()
         if type(_G.PRISONRP_ANTIAFK_STOP) == "function" then
@@ -2907,7 +3129,7 @@ do
 
     pcall(function()
         __antiAFKConnection = LocalPlayer.Idled:Connect(function()
-            if not __antiAFKRunning or _G.AutoFishingEnabled ~= true then
+            if not __antiAFKRunning or _G.PRISONRP_ANTIAFK_ENABLED ~= true then
                 return
             end
 
@@ -4660,7 +4882,7 @@ end
 function staffLeave(player, reason)
     -- Quand Hard Fish est actif, son moteur unique quitte le serveur si le staff est détecté.
     -- Ne pas lancer en parallèle l'ancien Auto Leave (Kick) ou un second server-hop.
-    if _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true then return end
+    if _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true or _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true then return end
     local autoChangeServer = _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED == true
     if StaffLeaving or (not StaffAutoLeaveEnabled and not autoChangeServer) then return end
     StaffLeaving = true
@@ -5322,7 +5544,7 @@ function ensureRodEquipped()
     return false
 end
 
-function resetRod(fastMode)
+function resetRod()
     local player = LocalPlayer
     local char = player and player.Character
     local humanoid = char and char:FindFirstChildOfClass("Humanoid")
@@ -5341,7 +5563,7 @@ function resetRod(fastMode)
             return false
         end
 
-        local unequipDeadline = os.clock() + (fastMode and 0.15 or 0.8)
+        local unequipDeadline = os.clock() + 0.8
         while running and rod.Parent == char and os.clock() < unequipDeadline do
             task.wait(0.05)
         end
@@ -5357,7 +5579,7 @@ function resetRod(fastMode)
         end
     end
 
-    local equipDeadline = os.clock() + (fastMode and 0.45 or 1.2)
+    local equipDeadline = os.clock() + 1.2
     while running and os.clock() < equipDeadline do
         local currentCharacter = player.Character
         local equipped = currentCharacter and currentCharacter:FindFirstChild("FishingRod")
@@ -5367,25 +5589,7 @@ function resetRod(fastMode)
     return false
 end
 
-local autoFishRodFunctionCache = nil
-function getActiveRodFunctions(candidateIndex)
-    local currentCharacter = LocalPlayer and LocalPlayer.Character
-    local cached = autoFishRodFunctionCache
-    if cached and currentCharacter and cached.character == currentCharacter
-        and type(cached.onActionBegan) == "function"
-        and type(cached.onActionEnded) == "function"
-        and type(cached.performCast) == "function" then
-        local state = nil
-        if type(get_upvalues) == "function" then
-            local upvaluesOk, upvalues = pcall(get_upvalues, cached.performCast)
-            if upvaluesOk and type(upvalues) == "table" and type(upvalues[1]) == "table" then
-                state = upvalues[1]
-            end
-        end
-        return cached.onActionBegan, cached.onActionEnded, cached.performCast, 1, "cached rod callbacks", state
-    end
-    autoFishRodFunctionCache = nil
-
+local function scanRodFunctionsGC()
     if type(get_gc) ~= "function" or type(islclosure) ~= "function"
         or type(debug) ~= "table" or type(debug.getinfo) ~= "function" then
         return nil, nil, nil, 0, nil, nil
@@ -5418,15 +5622,36 @@ function getActiveRodFunctions(candidateIndex)
             state = upvalues[1]
         end
     end
-    if currentCharacter and onActionBeganFunc and onActionEndedFunc and performCastFunc then
-        autoFishRodFunctionCache = {
-            character = currentCharacter,
-            onActionBegan = onActionBeganFunc,
-            onActionEnded = onActionEndedFunc,
-            performCast = performCastFunc,
-        }
-    end
     return onActionBeganFunc, onActionEndedFunc, performCastFunc, 1, "V239 direct GC scan", state
+end
+
+-- Garde les callbacks tant que le Tool FishingRod reste le même. Le scan GC
+-- complet est relancé après un échec ou un changement d'instance de canne.
+local rodFnCache = nil
+local function invalidateRodCache()
+    rodFnCache = nil
+end
+
+local function getActiveRodFunctions(candidateIndex, forceRescan)
+    local player = LocalPlayer
+    local character = player and player.Character
+    local rod = character and character:FindFirstChild("FishingRod")
+    if not rod then
+        local backpack = player and player:FindFirstChildOfClass("Backpack")
+        rod = backpack and backpack:FindFirstChild("FishingRod")
+    end
+
+    if not forceRescan and rod and rodFnCache and rodFnCache.rod == rod then
+        return rodFnCache.began, rodFnCache.ended, rodFnCache.perform, 1, "cache", rodFnCache.state
+    end
+
+    local began, ended, perform, count, source, state = scanRodFunctionsGC()
+    if rod and began and ended and perform then
+        rodFnCache = {rod = rod, began = began, ended = ended, perform = perform, state = state}
+    else
+        rodFnCache = nil
+    end
+    return began, ended, perform, count, source, state
 end
 function getRarityIndex(rarityName)
     if rarityName == nil then return nil end
@@ -5666,7 +5891,7 @@ local function autoFishFishSignature(fish)
 end
 
 -- Auto Buy Food : déplacement progressif à 60 studs/s, ouverture de la boutique,
--- puis un achat unique de 20 barres de céréales et 20 bouteilles d'eau.
+-- puis un achat unique de 20 barres de céréales et 13 bouteilles d'eau.
 -- Aucun cycle répété, aucune interface supplémentaire et aucun retour automatique.
 isBuying = false
 buyRequest = false
@@ -5958,21 +6183,21 @@ function startRemoteBuy()
             return
         end
 
-        if StartBtn then StartBtn.Text = "Buying 20 + 20..." end
-        setAutoBuyStatus("Sending purchase: 20 cereal bars + 20 water bottles...")
+        if StartBtn then StartBtn.Text = "Buying 20 + 13..." end
+        setAutoBuyStatus("Sending purchase: 20 cereal bars + 13 water bottles...")
 
-        -- Même requête que le snippet validé : une seule demande, 20 de chaque.
+        -- Une seule demande : 20 barres et 13 bouteilles d'eau.
         local result = table.pack(pcall(function()
             return vendingBuyRemote:InvokeServer({
                 FecletsCerealBar = 20,
-                WaterBottle = 20,
+                WaterBottle = 13,
             })
         end))
 
         if not result[1] then
             finishAutoBuy(thisRunToken, "BuyVending error: " .. tostring(result[2]))
         elseif result[2] == true then
-            finishAutoBuy(thisRunToken, "Server accepted: 20 cereal bars + 20 water bottles.")
+            finishAutoBuy(thisRunToken, "Server accepted: 20 cereal bars + 13 water bottles.")
         elseif result[2] == nil then
             finishAutoBuy(thisRunToken, "Purchase request sent; server returned no confirmation (nil).")
         else
@@ -6783,6 +7008,7 @@ UnloadYesBtn.MouseButton1Click:Connect(function()
         _G.PRISONRP_AUTO_RELOAD_ENABLED = false
         _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = false
         _G.PRISONRP_HARD_FISH_ENGINE_ENABLED = false
+        _G.PRISONRP_HARD_MINE_ENGINE_ENABLED = false
         _G.PRISONRP_AUTO_FISH_CYCLE_ENABLED = nil
         _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
         if type(_G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE) == "function" then
@@ -6800,6 +7026,7 @@ UnloadYesBtn.MouseButton1Click:Connect(function()
             env.PRISONRP_AUTO_RELOAD_ENABLED = false
             env.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = false
             env.PRISONRP_HARD_FISH_ENGINE_ENABLED = false
+            env.PRISONRP_HARD_MINE_ENGINE_ENABLED = false
             env.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
             env.PRISONRP_AUTO_RELOAD_CANCELLED = true
             env.PRISONRP_AUTO_RELOAD_QUEUE_TOKEN = nil
@@ -7164,6 +7391,18 @@ local function autoFishReadMinigameState()
     return active == true, phase, true
 end
 
+-- Rend la main dès que le jeu ferme le mini-jeu, au lieu d'attendre un délai fixe.
+local function waitMinigameIdle(timeout)
+    local deadline = os.clock() + (tonumber(timeout) or 0)
+    while running and os.clock() < deadline do
+        local active, _, readOk = autoFishReadMinigameState()
+        if readOk and not active then return true end
+        task.wait(0.03)
+    end
+    local active, _, readOk = autoFishReadMinigameState()
+    return readOk and not active
+end
+
 -- Auto Fish V28 : boucle de contrôle rapide.
 -- Le moteur de jeu reste responsable du déplacement de la zone blanche ;
 -- nous ne faisons que maintenir / relâcher via SetHolding().
@@ -7221,31 +7460,108 @@ pcall(function()
 end)
 _G.PRISONRP_FISHING_CATCH_CONNECTION = nil
 
+local lastAutoSellCatchCount = 0
+local function maybeAutoSell()
+    if _G.AutoSellEnabled
+        and Inventory_SellAll
+        and stats.totalCaught > 0
+        and stats.totalCaught % 3 == 0
+        and lastAutoSellCatchCount ~= stats.totalCaught then
+        lastAutoSellCatchCount = stats.totalCaught
+        task.spawn(function()
+            pcall(function() Inventory_SellAll:InvokeServer() end)
+        end)
+    end
+end
+
+function autoFishFindCatchString(data, aliases, depth, seen)
+    if type(data) ~= "table" or (depth or 0) > 5 then return nil end
+    seen = seen or {}
+    if seen[data] then return nil end
+    seen[data] = true
+    for key, value in pairs(data) do
+        local normalized = string.lower(tostring(key)):gsub("[^%w]", "")
+        if aliases[normalized] and type(value) == "string" and value ~= "" then return value end
+    end
+    for _, value in pairs(data) do
+        if type(value) == "table" then
+            local found = autoFishFindCatchString(value, aliases, (depth or 0) + 1, seen)
+            if found then return found end
+        end
+    end
+    return nil
+end
+function autoFishPayloadIsPerfect(data, depth, seen)
+    if type(data) ~= "table" or (depth or 0) > 5 then return false end
+    seen = seen or {}
+    if seen[data] then return false end
+    seen[data] = true
+    for key, value in pairs(data) do
+        local normalized = string.lower(tostring(key)):gsub("[^%w]", "")
+        local textValue = type(value) == "string" and string.lower(value) or ""
+        if string.find(normalized, "perfect", 1, true)
+            and (value == true or value == 1 or textValue == "true" or textValue == "1" or textValue == "perfect") then return true end
+        if (normalized == "quality" or normalized == "rating" or normalized == "grade" or normalized == "result" or normalized == "catchresult")
+            and (textValue == "perfect" or textValue == "perfect catch") then return true end
+        if type(value) == "table" and autoFishPayloadIsPerfect(value, (depth or 0) + 1, seen) then return true end
+    end
+    return false
+end
+
 -- CatchPrompt peut apparaître tardivement ou être recréé après un changement d'état.
 -- On réessaie tant que le Hub tourne et on rattache le listener si l'instance change.
 task.spawn(function()
     local boundEvent = nil
+    local perfectSchemaWarned = false
+    local catchSchemaWarned = false
     local function handleCatchPrompt(data)
         if not running then return end
-        -- Reprend le format strict de l'ancien script, qui confirmait bien les prises.
-        if type(data) ~= "table" or type(data.Name) ~= "string" or type(data.Rarity) ~= "string" then
+        if type(data) ~= "table" then
+            warn("[Auto-Fish] CatchPrompt payload is not a table: " .. typeof(data))
+            return
+        end
+        local fishName = autoFishFindCatchString(data, {name = true, fishname = true, caughtfish = true})
+        local fishRarity = autoFishFindCatchString(data, {rarity = true, fishrarity = true})
+        if not fishName or not fishRarity then
+            if not catchSchemaWarned then
+                local keys = {}
+                for key in pairs(data) do keys[#keys + 1] = tostring(key) end
+                warn("[Auto-Fish] CatchPrompt missing name/rarity fields; top-level keys: " .. table.concat(keys, ", "))
+                catchSchemaWarned = true
+            end
+            return
+        end
+        local now = os.clock()
+        local catchId = data.Id or data.id or data.FishId or data.fishId
+        local catchKey = (type(catchId) == "string" or type(catchId) == "number")
+            and tostring(catchId)
+            or (fishName .. "|" .. fishRarity .. "|" .. tostring(data.Price or data.price))
+        if catchKey == _G.PRISONRP_FISHING_LAST_CATCH_KEY
+            and now - (tonumber(_G.PRISONRP_FISHING_LAST_CATCH_TIME) or 0) < 2 then
             return
         end
 
-        local now = os.clock()
-        local rawId = data.Id
-        local catchId = (type(rawId) == "string" or type(rawId) == "number") and tostring(rawId) or nil
-        local catchKey = catchId or (data.Name .. "|" .. data.Rarity .. "|" .. tostring(data.Price))
-        local duplicateWindow = catchId and 2 or 0.25
-        if catchKey == _G.PRISONRP_FISHING_LAST_CATCH_KEY
-            and now - (tonumber(_G.PRISONRP_FISHING_LAST_CATCH_TIME) or 0) < duplicateWindow then
-            return
-        end
         _G.PRISONRP_FISHING_LAST_CATCH_KEY = catchKey
         _G.PRISONRP_FISHING_LAST_CATCH_TIME = now
         _G.PRISONRP_FISHING_LAST_CATCH = data
         _G.PRISONRP_FISHING_CATCH_COUNT = (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) + 1
-        print("[Auto-Fish] CatchPrompt", data.Name, "|", data.Rarity)
+        print("[Auto-Fish] CatchPrompt", fishName, "|", fishRarity)
+
+        -- Compter la prise dès sa confirmation, même si le worker réarme déjà la canne.
+        if _G.AutoFishingEnabled then
+            stats.totalCaught = stats.totalCaught + 1
+            stats.lastFish = tostring(fishName) .. " (" .. tostring(fishRarity) .. ")"
+            if autoFishPayloadIsPerfect(data) then
+                stats.perfectCount = stats.perfectCount + 1
+            elseif not perfectSchemaWarned then
+                local keys = {}
+                for key in pairs(data) do keys[#keys + 1] = tostring(key) end
+                warn("[Auto-Fish] No Perfect marker recognized in CatchPrompt; top-level keys: " .. table.concat(keys, ", "))
+                perfectSchemaWarned = true
+            end
+            updateUI()
+            maybeAutoSell()
+        end
     end
     while running and ScreenGui and ScreenGui.Parent do
         local folder = ReplicatedStorage:FindFirstChild("FishingSystem")
@@ -7279,7 +7595,6 @@ task.spawn(function()
         _G.PRISONRP_FISHING_CATCH_CONNECTION = nil
     end
 end)
-local lastAutoSellCatchCount = 0
 local function runAutoFishingWorker()
     local stuckReelSince = nil
     local stuckReelRecoveryAttempts = 0
@@ -7289,17 +7604,11 @@ local function runAutoFishingWorker()
     local rodFunctionRotation = 0
     local lastRodFunctionCount = 1
     local unknownActivePhaseSince = nil
-    local lastHandledCatchCount = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0
-    local rearmAfterConfirmedCatch = false
-    local rearmRetryAt = 0
-    local immediateRecastAfterCatch = false
+    local suppressShakeResume = false
+    local lastCatchRecoveryCount = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0
 
     while running and ScreenGui and ScreenGui.Parent do
-        if immediateRecastAfterCatch then
-            immediateRecastAfterCatch = false
-        else
-            task.wait(0.05)
-        end
+        task.wait(0.03)
         if _G.AutoFishingEnabled and not AutoEatDrinkBusy and MinigameSystem and SoundManager and GUIManager then
             -- Auto Eat/Drink est traité entre deux cycles d'appât, jamais au milieu
             -- d'un mini-jeu. On relit les jauges ici pour ne pas dépendre de CatchPrompt :
@@ -7345,49 +7654,53 @@ local function runAutoFishingWorker()
             -- le worker : le blocage de toute phase active empêchait HandleClick()
             -- de faire avancer le mini-jeu et pouvait empêcher le lancer suivant.
             local previousActive, previousPhase, previousStateOk = autoFishReadMinigameState()
-            local resumeExistingShake = previousStateOk and previousActive and previousPhase == "shake"
-            if rearmAfterConfirmedCatch and previousStateOk then
-                if not previousActive then
-                    rearmAfterConfirmedCatch = false
-                    rearmRetryAt = 0
-                else
-                    if os.clock() < rearmRetryAt then
-                        task.wait(0.1)
-                        continue
-                    end
-                    rearmRetryAt = os.clock() + 0.75
-                    stats.status = "Rearming Rod After Catch..."
-                    updateUI()
-                    autoFishRelease()
-                    local resetOk, resetResult = pcall(resetRod, true)
-                    local resetActive, _, resetStateOk = autoFishReadMinigameState()
-                    if resetOk and resetResult == true and resetStateOk and not resetActive then
-                        rearmAfterConfirmedCatch = false
-                        rearmRetryAt = 0
-                        previousActive = false
-                        previousPhase = nil
-                        resumeExistingShake = false
-                        stuckReelSince = nil
-                        stuckReelRecoveryAttempts = 0
-                        unknownActivePhaseSince = nil
-                        print("[Auto-Fish] confirmed catch; cleared lingering minigame phase")
-                    else
-                        rearmRetryAt = os.clock() + 0.5
-                        warn("[Auto-Fish] rod rearm after confirmed catch failed", tostring(resetResult))
-                        stats.status = "Retrying Rod After Catch..."
-                        updateUI()
-                        task.wait(0.15)
-                        continue
-                    end
-                end
-            end
+            local currentCatchCount = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0
+            local catchJustConfirmed = previousStateOk and currentCatchCount > lastCatchRecoveryCount
+            if catchJustConfirmed then lastCatchRecoveryCount = currentCatchCount end
+            local resumeExistingShake = previousStateOk and previousActive
+                and previousPhase == "shake" and not suppressShakeResume and not catchJustConfirmed
             if not previousStateOk then
                 -- Ne pas lancer une nouvelle canne lorsque le module ne peut pas
                 -- confirmer l'état du mini-jeu : attendre une lecture cohérente.
                 stats.status = "Syncing Fishing..."
                 updateUI()
-                task.wait(0.15)
+                task.wait(0.1)
                 continue
+            end
+            if catchJustConfirmed and previousActive then
+                -- CatchPrompt confirme la prise. Si le mini-jeu affiche encore reel/shake,
+                -- ne pas le traiter comme un nouveau poisson : libérer puis réarmer la canne.
+                stats.status = "Rearming after catch..."
+                updateUI()
+                autoFishRelease()
+
+                -- Laisser brièvement le jeu fermer le mini-jeu après la prise.
+                -- Réinitialiser la canne seulement s'il reste actif.
+                local idle = waitMinigameIdle(POST_CATCH_IDLE_WAIT)
+                if not idle then
+                    local resetCallOk, resetResult = pcall(resetRod)
+                    if not resetCallOk or resetResult ~= true then
+                        warn("[Auto-Fish] Catch confirmed but rod reset was not confirmed", tostring(resetResult))
+                    end
+                    idle = waitMinigameIdle(1.0)
+                end
+
+                if idle then
+                    suppressShakeResume = false
+                    stuckReelSince = nil
+                    stuckReelRecoveryAttempts = 0
+                    unknownActivePhaseSince = nil
+                else
+                    suppressShakeResume = true
+                    -- Quel que soit le prochain état lu, déclencher sa récupération
+                    -- tout de suite au lieu d'attendre le délai normal de 180 secondes.
+                    stuckReelSince = os.clock() - reelNoProgressTimeout
+                    unknownActivePhaseSince = os.clock() - 8
+                end
+                continue
+            end
+            if previousStateOk and not previousActive then
+                suppressShakeResume = false
             end
             if previousStateOk and previousActive and previousPhase == "reel" then
                 unknownActivePhaseSince = nil
@@ -7430,7 +7743,7 @@ local function runAutoFishingWorker()
                     stats.status = "Waiting for Reel..."
                     updateUI()
                 end
-                task.wait(0.15)
+                task.wait(0.1)
                 continue
             elseif previousStateOk and previousActive and not resumeExistingShake then
                 -- Une phase inconnue ne doit pas immobiliser le worker sans limite.
@@ -7451,7 +7764,7 @@ local function runAutoFishingWorker()
                     stats.status = "Finishing Fishing..."
                     updateUI()
                 end
-                task.wait(0.15)
+                task.wait(0.1)
                 continue
             elseif previousStateOk then
                 stuckReelSince = nil
@@ -7462,9 +7775,7 @@ local function runAutoFishingWorker()
             -- Ferme la fenêtre au début d'un nouveau cycle de pêche.
             AutoFishingCatchWindow = false
             local fishCaughtThisCycle = false
-            local isSecretCast = false
-            local isMythicalCast = false
-
+            local catchCountAtCycleStart = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0
 
             stats.status = "Equipping Rod..."
             updateUI()
@@ -7496,14 +7807,15 @@ local function runAutoFishingWorker()
                     if not ensureRodEquipped() then
                         stats.status = "Fishing Rod Not Equipped - Retrying..."
                         updateUI()
-                        task.wait(0.25)
+                        task.wait(0.15)
                         continue
                     end
 
                     local candidateIndex = rodFunctionRotation + castAttempt
                     local candidateCount = 0
                     local candidateSource = nil
-                    onActionBegan, onActionEnded, performCast, candidateCount, candidateSource, rodState = getActiveRodFunctions(candidateIndex)
+                    onActionBegan, onActionEnded, performCast, candidateCount, candidateSource, rodState =
+                        getActiveRodFunctions(candidateIndex, castAttempt > 1)
                     -- Refresh before recording the previous roll signature so each account
                     -- uses the same PerformCast state that the proven V239 filter reads.
                     rodState = autoFishRefreshRodState(performCast, rodState)
@@ -7513,27 +7825,34 @@ local function runAutoFishingWorker()
                         lastRodFunctionCount = candidateCount
                     end
 
-                    if not onActionBegan or not onActionEnded then
-                        stats.status = "Finding Cast Functions..."
+                    if not onActionBegan or not onActionEnded or (getAutoFishMinimumRarityIndex() > 1 and not performCast) then
+                        stats.status = (getAutoFishMinimumRarityIndex() > 1 and not performCast)
+                            and "Finding Rarity Source..." or "Finding Cast Functions..."
                         updateUI()
                         warn("[Auto-Fish] No complete OnActionBegan/OnActionEnded pair found")
-                        task.wait(0.4)
+                        invalidateRodCache()
+                        task.wait(0.3)
                     else
                         stats.status = castAttempt == 1 and "Casting Rod..."
                             or ("Retrying Cast " .. tostring(castAttempt) .. "/3...")
                         updateUI()
                         print("[Auto-Fish] cast attempt", castAttempt, "candidate", tostring(((candidateIndex - 1) % math.max(candidateCount, 1)) + 1) .. "/" .. tostring(candidateCount), "source", tostring(candidateSource))
 
+                        if relaunchSince then
+                            print(string.format("[Auto-Fish] relance %.2fs après %s (fonctions : %s)",
+                                os.clock() - relaunchSince, tostring(relaunchReason), tostring(candidateSource)))
+                            relaunchSince = nil
+                        end
+
                         local beginAt = os.clock()
                         local beginOk, beginErr = pcall(onActionBegan)
                         if not beginOk then
-                            autoFishRodFunctionCache = nil
                             warn("[Auto-Fish] OnActionBegan failed: " .. tostring(beginErr))
                         else
                             -- Maintenir 0,8 s : une libération au bout de 0,3 s pouvait
                             -- couper le lancer avant que le jeu ne l'enregistre.
                             while running and _G.AutoFishingEnabled
-                                and os.clock() - beginAt < 0.80 do
+                                and os.clock() - beginAt < CAST_HOLD_TIME do
                                 task.wait(0.03)
                             end
                         end
@@ -7541,7 +7860,6 @@ local function runAutoFishingWorker()
                         -- Toujours libérer l'action, même si Begin a échoué.
                         local endOk, endErr = pcall(onActionEnded)
                         if not endOk then
-                            autoFishRodFunctionCache = nil
                             warn("[Auto-Fish] OnActionEnded failed: " .. tostring(endErr))
                         end
 
@@ -7566,6 +7884,7 @@ local function runAutoFishingWorker()
                         end
 
                         autoFishRelease()
+                        invalidateRodCache()
                         warn("[Auto-Fish] Cast callback failed; resetting rod before retry")
                         if castAttempt < 3 then
                             stats.status = "Cast Not Started - Resetting Rod..."
@@ -7574,7 +7893,7 @@ local function runAutoFishingWorker()
                             if not resetCallOk or resetResult ~= true then
                                 warn("[Auto-Fish] resetRod did not confirm a successful re-equip", tostring(resetResult))
                             end
-                            task.wait(0.3)
+                            task.wait(0.15)
                         end
                     end
                 end
@@ -7604,7 +7923,6 @@ local function runAutoFishingWorker()
                 end
 
                 if not castStarted then
-                    autoFishRodFunctionCache = nil
                     if lastRodFunctionCount > 0 then
                         rodFunctionRotation = (rodFunctionRotation + 1) % lastRodFunctionCount
                     end
@@ -7623,7 +7941,7 @@ local function runAutoFishingWorker()
             -- Certains builds placent la table d'état dans un upvalue autre que [1].
             rodState = autoFishRefreshRodState(performCast, rodState)
             local castTime = tick()
-            local loopTimeout = 30
+            local loopTimeout = 15
             local reelDeadline = nil
             local lastReelFishPos = nil
             local lastReelZonePos = nil
@@ -7644,8 +7962,9 @@ local function runAutoFishingWorker()
             local rarityRefreshAt = 0
             local cachedPreRolledFish, cachedFishName, cachedFishRarity = nil, nil, nil
             local lastRarityDiagnosticSignature = nil
-            local minigameWasActive = resumeExistingShake
-            local inactiveAfterMinigameAt = nil
+            -- V339 : suivi de fin de mini-jeu pour relancer sans attendre CatchPrompt/15 s.
+            local sawReel = false
+            local minigameEndedAt = nil
 
             while running and _G.AutoFishingEnabled and not AutoEatDrinkBusy
                 and (tick() - castTime < loopTimeout or (reelDeadline and os.clock() < reelDeadline)) do
@@ -7659,18 +7978,24 @@ local function runAutoFishingWorker()
                         if refreshedState then rodState = refreshedState end
                     end
                     cachedPreRolledFish, cachedFishName, cachedFishRarity = autoFishGetFishInfo(rodState)
-                    rarityRefreshAt = os.clock() + 0.12
+                    rarityRefreshAt = os.clock() + RARITY_REFRESH_INTERVAL
                 end
 
                 local preRolledFish, fishName, fishRarity = cachedPreRolledFish, cachedFishName, cachedFishRarity
                 local minigameActive, phase, phaseReadOk = autoFishReadMinigameState()
-                if phaseReadOk and minigameActive then
-                    minigameWasActive = true
-                    inactiveAfterMinigameAt = nil
-                elseif phaseReadOk and minigameWasActive then
-                    inactiveAfterMinigameAt = inactiveAfterMinigameAt or os.clock()
-                elseif not phaseReadOk then
-                    inactiveAfterMinigameAt = nil
+                if phaseReadOk then
+                    if minigameActive then
+                        minigameEndedAt = nil
+                        if phase == "reel" then sawReel = true end
+                    elseif sawReel and not minigameEndedAt then
+                        minigameEndedAt = os.clock()
+                    end
+                end
+                if minigameEndedAt and os.clock() - minigameEndedAt >= CATCH_CONFIRM_GRACE
+                    and (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) <= catchCountAtCycleStart then
+                    markRelaunch("poisson perdu")
+                    AutoFishingCatchWindow = true
+                    break
                 end
 
                 -- Prolonger la récupération tant que la simulation du poisson ou
@@ -7729,20 +8054,18 @@ local function runAutoFishingWorker()
                 local selectedMinRarity = getAutoFishMinimumRarityIndex()
                 if preRolledFish and fishRarity ~= nil and freshPreRoll then
                     local currentRarityIdx = getRarityIndex(fishRarity)
-                    if currentRarityIdx == #RarityList then
-                        isSecretCast = true
-                    elseif currentRarityIdx == #RarityList - 1 then
-                        isMythicalCast = true
-                    end
                     stats.lastFish = tostring(fishName or "Unknown fish") .. " (" .. tostring(fishRarity) .. ")"
-                    if currentRarityIdx == nil then
-                        -- Une valeur nouvelle ou mal lue ne doit pas faire abandonner le poisson.
-                        if selectedMinRarity > 1 and not rarityUnavailableLogged then
-                            rarityUnavailableLogged = true
-                            warn("[Auto-Fish] Rarity not recognized; continuing this fish instead of skipping it:", tostring(fishRarity))
-                        end
-                        rarityDecisionMade = true
-                    elseif currentRarityIdx < selectedMinRarity then
+                    if currentRarityIdx == nil and selectedMinRarity > 1 then
+                        local _, _, auditFishId = autoFishGetFishFields(preRolledFish)
+                        publishFishAuditEvent("PASSED", fishName, fishRarity, auditFishId, nil, "Rarity not recognized; filter skipped this cast")
+                        stats.status = "Skipped: unrecognized rarity"
+                        warn("[Auto-Fish] Rarity value not recognized; fail-closed filter:", tostring(fishRarity))
+                        updateUI()
+                        shouldSkip = true
+                        break
+                    elseif currentRarityIdx and currentRarityIdx < selectedMinRarity then
+                        local _, _, auditFishId = autoFishGetFishFields(preRolledFish)
+                        publishFishAuditEvent("PASSED", fishName, fishRarity, auditFishId, nil, "Below selected minimum " .. tostring(RarityList[selectedMinRarity]))
                         stats.status = "Skipped: " .. tostring(fishRarity)
                         print("[Auto-Fish] rarity filter skipped", tostring(fishName), tostring(fishRarity), "below", tostring(RarityList[selectedMinRarity]))
                         updateUI()
@@ -7754,17 +8077,19 @@ local function runAutoFishingWorker()
                         end
                         rarityDecisionMade = true
                     end
+                elseif not rarityDecisionMade and selectedMinRarity > 1 and os.clock() >= rarityReadDeadline then
+                    -- Enforce the selected minimum: if the fish grade cannot be read, do not catch it.
+                    publishFishAuditEvent("PASSED", fishName, fishRarity, nil, nil, "Rarity unavailable after 5 seconds; filter skipped this cast")
+                    stats.status = "Skipped: rarity unavailable"
+                    if not rarityUnavailableLogged then
+                        warn("[Auto-Fish] Rarity unavailable after waiting; skipping cast to enforce minimum", tostring(RarityList[selectedMinRarity]), "PerformCast available:", tostring(performCast ~= nil), "state table:", tostring(type(rodState) == "table"))
+                        rarityUnavailableLogged = true
+                    end
+                    updateUI()
+                    shouldSkip = true
+                    break
                 elseif not rarityDecisionMade and selectedMinRarity > 1 then
-                    if os.clock() >= rarityReadDeadline then
-                        -- Sans rareté lisible, continuer la prise pour ne pas perdre un poisson valide.
-                        rarityDecisionMade = true
-                        stats.status = "Rarity unavailable - catching anyway"
-                        if not rarityUnavailableLogged then
-                            rarityUnavailableLogged = true
-                            warn("[Auto-Fish] Rarity unavailable after waiting; continuing the cast without filtering", "PerformCast:", tostring(performCast ~= nil), "state:", tostring(type(rodState) == "table"))
-                        end
-                        updateUI()
-                    elseif not phaseReadOk or not minigameActive then
+                    if not phaseReadOk or not minigameActive then
                         local waitStatus = freshPreRoll and "Reading fish rarity..." or "Waiting for fish data..."
                         if stats.status ~= waitStatus then
                             stats.status = waitStatus
@@ -7814,37 +8139,13 @@ local function runAutoFishingWorker()
                     reelDeadline = nil
                 end
 
-                local observedCatchCount = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or lastHandledCatchCount
-                if observedCatchCount > lastHandledCatchCount then
-                    stats.totalCaught = stats.totalCaught + (observedCatchCount - lastHandledCatchCount)
-                    lastHandledCatchCount = observedCatchCount
-                    local confirmedCatch = _G.PRISONRP_FISHING_LAST_CATCH
-                    if confirmedCatch then
-                        local confirmedRarityIndex = getRarityIndex(confirmedCatch.Rarity)
-                        if confirmedRarityIndex == #RarityList then
-                            isSecretCast = true
-                        elseif confirmedRarityIndex == #RarityList - 1 then
-                            isMythicalCast = true
-                        end
-                        stats.lastFish = tostring(confirmedCatch.Name or "Unknown")
-                            .. " (" .. tostring(confirmedCatch.Rarity or "Unknown") .. ")"
-                        -- Le signal ne compte comme "parfait" que s'il fournit explicitement ce booléen.
-                        if confirmedCatch.Perfect == true or confirmedCatch.perfect == true or confirmedCatch.IsPerfect == true then
-                            stats.perfectCount = stats.perfectCount + 1
-                        end
-                    end
+                if (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) > catchCountAtCycleStart then
+                    -- Le listener CatchPrompt compte déjà la prise et déclenche la vente auto.
                     stats.status = "Fish Caught!"
                     fishCaughtThisCycle = true
-                    rearmAfterConfirmedCatch = true
                     AutoFishingCatchWindow = true
+                    markRelaunch("capture")
                     updateUI()
-                    break
-                end
-
-                if phaseReadOk and minigameWasActive and not minigameActive
-                    and inactiveAfterMinigameAt
-                    and os.clock() - inactiveAfterMinigameAt >= 0.12 then
-                    print("[Auto-Fish] minigame ended; closing fishing cycle")
                     break
                 end
             end
@@ -7855,41 +8156,6 @@ local function runAutoFishingWorker()
             end
 
             local finalActive, finalPhase, finalStateOk = autoFishReadMinigameState()
-            if not fishCaughtThisCycle and finalStateOk and not finalActive then
-                -- Le serveur peut envoyer CatchPrompt juste après la fin du mini-jeu.
-                local catchGraceDuration = (isSecretCast or isMythicalCast) and 2.5 or 1.5
-                local catchGraceDeadline = os.clock() + catchGraceDuration
-                while running and _G.AutoFishingEnabled
-                    and (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) <= lastHandledCatchCount
-                    and os.clock() < catchGraceDeadline do
-                    task.wait(0.05)
-                end
-                local observedCatchCount = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or lastHandledCatchCount
-                if observedCatchCount > lastHandledCatchCount then
-                    stats.totalCaught = stats.totalCaught + (observedCatchCount - lastHandledCatchCount)
-                    lastHandledCatchCount = observedCatchCount
-                    local confirmedCatch = _G.PRISONRP_FISHING_LAST_CATCH
-                    if confirmedCatch then
-                        local confirmedRarityIndex = getRarityIndex(confirmedCatch.Rarity)
-                        if confirmedRarityIndex == #RarityList then
-                            isSecretCast = true
-                        elseif confirmedRarityIndex == #RarityList - 1 then
-                            isMythicalCast = true
-                        end
-                        stats.lastFish = tostring(confirmedCatch.Name or "Unknown")
-                            .. " (" .. tostring(confirmedCatch.Rarity or "Unknown") .. ")"
-                        if confirmedCatch.Perfect == true or confirmedCatch.perfect == true or confirmedCatch.IsPerfect == true then
-                            stats.perfectCount = stats.perfectCount + 1
-                        end
-                    end
-                    stats.status = "Fish Caught!"
-                    fishCaughtThisCycle = true
-                    rearmAfterConfirmedCatch = true
-                    shouldSkip = false
-                    AutoFishingCatchWindow = true
-                    updateUI()
-                end
-            end
             if running and _G.AutoFishingEnabled and not fishCaughtThisCycle
                 and finalStateOk and finalActive and finalPhase == "reel"
                 and reelDeadline and os.clock() >= reelDeadline then
@@ -7930,38 +8196,39 @@ local function runAutoFishingWorker()
             end
 
             if shouldSkip then
+                markRelaunch("skip")
+                autoFishRelease()
                 resetRod()
-                task.wait(0.2)
+                invalidateRodCache()
+                if waitMinigameIdle(1.0) then
+                    suppressShakeResume = false
+                else
+                    suppressShakeResume = true
+                end
+                task.wait(0.03)
                 continue
             end
 
             -- Si aucune touche n'arrive pendant la fenêtre de pêche, réarme la canne
             -- avant le prochain cycle au lieu de relancer l'action sur une canne bloquée.
             if running and _G.AutoFishingEnabled and not AutoEatDrinkBusy
-                and not fishCaughtThisCycle and finalStateOk and not finalActive
+                and not fishCaughtThisCycle and not sawReel and finalStateOk and not finalActive
                 and tick() - castTime >= loopTimeout then
                 stats.status = "No Bite - Refreshing Rod..."
                 updateUI()
+                markRelaunch("pas de touche")
                 autoFishRelease()
+                invalidateRodCache()
                 local resetOk, resetResult = pcall(resetRod)
                 if not resetOk or resetResult ~= true then
                     warn("[Auto-Fish] No-bite rod refresh did not confirm re-equip", tostring(resetResult))
                 end
-                task.wait(0.2)
+                task.wait(0.1)
                 continue
             end
-            if _G.AutoSellEnabled
-                and Inventory_SellAll
-                and stats.totalCaught > 0
-                and stats.totalCaught % 3 == 0
-                and lastAutoSellCatchCount ~= stats.totalCaught then
-                local saleCallSucceeded = pcall(function()
-                    Inventory_SellAll:InvokeServer()
-                end)
-                if saleCallSucceeded then
-                    lastAutoSellCatchCount = stats.totalCaught
-                end
-            end
+            -- Reprise de sécurité si le Remote de vente n'était pas encore chargé
+            -- au moment où CatchPrompt a confirmé le troisième poisson.
+            maybeAutoSell()
 
             -- Après une capture détectée, tenter la consommation si le mini-jeu est déjà terminé.
             -- Si CatchPrompt est manquant, le garde inter-cast en tête de boucle s'en charge
@@ -7983,11 +8250,7 @@ local function runAutoFishingWorker()
                 AutoFishingCatchWindow = false
             end
 
-            if fishCaughtThisCycle and not AutoEatDrinkPending and not AutoEatDrinkBusy then
-                immediateRecastAfterCatch = true
-            else
-                task.wait(0.15)
-            end
+            task.wait(0.05)
         elseif _G.AutoFishingEnabled and not (MinigameSystem and SoundManager and GUIManager) then
             AutoFishingCatchWindow = false
             stats.status = "Loading Fishing Modules..."
@@ -8702,6 +8965,9 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             if tpSelected.Text ~= "Selected: none" then
                 tpSelected.Text = "Selected: none"
             end
+            if type(_G.PRISONRP_GiveMoneyUI.RefreshLanguage) == "function" then
+                pcall(_G.PRISONRP_GiveMoneyUI.RefreshLanguage)
+            end
             return
         end
 
@@ -8711,6 +8977,9 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             .. "  @" .. tostring(player.Name)
         if tpSelected.Text ~= infoText then
             tpSelected.Text = infoText
+        end
+        if type(_G.PRISONRP_GiveMoneyUI.RefreshLanguage) == "function" then
+            pcall(_G.PRISONRP_GiveMoneyUI.RefreshLanguage)
         end
     end
     local function tpSpecStop()
@@ -10505,6 +10774,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             or btn.Name == "PRISONRP_AutoChangeServerToggle"
             or btn.Name == "PRISONRP_AutoBlockToggle"
             or btn.Name == "PRISONRP_HardFishToggle"
+            or btn.Name == "PRISONRP_HardMineToggle"
             or btn == FPSCounterBtn
             or btn == AutoArmWrestleState.Btn
             or btn == BlackMarketBtn
@@ -11462,6 +11732,7 @@ end)
         function()
             _G.AutoFishingEnabled = not (_G.AutoFishingEnabled == true)
             if _G.AutoFishingEnabled then
+                relaunchSince = nil
                 __PRISONRP_HARD_FISH_AUTO_FISH_SUPPRESSED = false
                 _G.PRISONRP_HARD_FISH_AUTO_FISH_SUPPRESSED = false
                 if type(__PRISONRP_QUEUE_STATE_ENV) == "table" then
@@ -11515,6 +11786,13 @@ end)
             if FPSCounterLabel then
                 FPSCounterLabel.Text = formatFPSCounterText()
             end
+        end
+    )
+
+    gdpCheckbox(AutoAFKBtn,
+        function() return _G.PRISONRP_ANTIAFK_ENABLED == true end,
+        function()
+            _G.PRISONRP_ANTIAFK_ENABLED = not (_G.PRISONRP_ANTIAFK_ENABLED == true)
         end
     )
 
@@ -12975,6 +13253,15 @@ end)
                 moneyViewSetEnabled(v)
             end)
 
+        _G.PRISONRP_REFRESH_MONEY_VIEW_SWITCH = function()
+            for _, control in ipairs(optionControls) do
+                if control.Name == "MONEY VIEW" and type(control.refresh) == "function" then
+                    pcall(control.refresh, false)
+                    return
+                end
+            end
+        end
+
         _G.PRISONRP_GET_ESP_STATE = function()
             local selected = {}
             local function packColor(color)
@@ -13003,6 +13290,7 @@ end)
                 FillTransparency = ESPConfig.FillTransparency,
                 OutlineTransparency = ESPConfig.OutlineTransparency,
                 Selected = selected,
+                CheckedMaster = _G.PRISONRP_ESP_CHECKED_MASTER_STATE == true,
             }
         end
         _G.PRISONRP_SET_ESP_STATE = function(data)
@@ -13043,6 +13331,12 @@ end)
                     if data.Selected[control.Name] ~= nil then
                         pcall(function() control.setSelected(data.Selected[control.Name] == true) end)
                     end
+                end
+            end
+            if data.CheckedMaster ~= nil then
+                _G.PRISONRP_ESP_CHECKED_MASTER_STATE = data.CheckedMaster == true
+                if type(_G.PRISONRP_SET_ESP_CHECKED_MASTER_STATE) == "function" then
+                    pcall(_G.PRISONRP_SET_ESP_CHECKED_MASTER_STATE, _G.PRISONRP_ESP_CHECKED_MASTER_STATE)
                 end
             end
             if type(setPlayerESPState) == "function" then
@@ -13106,8 +13400,10 @@ end)
         ml.ZIndex = 99
         ml.Parent = master
 
-        local masterState = false
+        local masterState = _G.PRISONRP_ESP_CHECKED_MASTER_STATE == true
+        _G.PRISONRP_ESP_CHECKED_MASTER_STATE = masterState
         local function refreshMaster()
+            _G.PRISONRP_ESP_CHECKED_MASTER_STATE = masterState
             mcheck.Visible = masterState
             mb.BackgroundColor3 = masterState
                 and Color3.fromRGB(35,125,75)
@@ -13118,9 +13414,18 @@ end)
             for _, c in ipairs(optionControls) do c.refresh() end
         end
 
+        _G.PRISONRP_GET_ESP_CHECKED_MASTER_STATE = function()
+            return masterState == true
+        end
+        _G.PRISONRP_SET_ESP_CHECKED_MASTER_STATE = function(state)
+            masterState = state == true
+            refreshMaster()
+        end
+
         -- Même action pour le clic sur la case et pour son raccourci clavier.
         local function toggleCheckedButtonsMaster()
             masterState = not masterState
+            markESPSettingTouched("CheckedMaster")
             for _, c in ipairs(optionControls) do
                 if c.isSelected() then c.setValue(masterState) end
             end
@@ -14234,28 +14539,37 @@ end)
 
     --==============================================================
     -- FINAL PATCH V132
-    -- GIVE MONEY AUTO LOOP DANS L'ONGLET AUTRES
+    -- GIVE MONEY DANS TP / SPEC, SUR UNE SEULE LIGNE
     --==============================================================
-    -- REGISTER CLEANUP V33 : Give Money isolé dans sa propre fonction anonyme.
-    -- Cela évite que ses nombreux locals consomment les registres du gros scope principal.
-    _G.PRISONRP_GiveMoneyUI = _G.PRISONRP_GiveMoneyUI or {}
+    -- Le destinataire est le joueur sélectionné dans TP / SPEC.
+    -- Les boutons de pourcentage remplissent le montant; GIVE envoie une fois.
+    _G.PRISONRP_GiveMoneyUI = {}
+
     (function()
         local GiveMoneyPlayers = game:GetService("Players")
         local GiveMoneyRS = game:GetService("ReplicatedStorage")
         local GiveMoneyLocalPlayer = GiveMoneyPlayers.LocalPlayer
         local GiveMoneyConnections = {}
-        local GiveMoneyRunning = false
-        local GiveMoneyRunToken = 0
-        local GIVE_MONEY_INTERVAL_SECONDS = 20
-
         local GiveMoneyRemotes = GiveMoneyRS:FindFirstChild("Remotes")
         local GiveMoneyRemote = GiveMoneyRemotes and GiveMoneyRemotes:FindFirstChild("GiveMoney")
+        local GIVE_MONEY_LANG_FILE = "PRISONRP_UI_Lang.txt"
+        local GiveMoneyLanguage = 2
 
-        -- Nettoyage explicite : la boucle temporisée et les écouteurs Players
-        -- ne doivent pas survivre à UNLOAD ou s'empiler au rechargement du hub.
+        pcall(function()
+            if type(isfile) == "function" and type(readfile) == "function"
+                and isfile(GIVE_MONEY_LANG_FILE) then
+                local savedLanguage = tonumber(readfile(GIVE_MONEY_LANG_FILE))
+                if savedLanguage == 1 or savedLanguage == 2 then
+                    GiveMoneyLanguage = savedLanguage
+                end
+            end
+        end)
+
+        local function translate(en, fr)
+            return GiveMoneyLanguage == 1 and en or fr
+        end
+
         _G.PRISONRP_GIVE_MONEY_STOP = function()
-            GiveMoneyRunning = false
-            GiveMoneyRunToken += 1
             for i = #GiveMoneyConnections, 1, -1 do
                 local connection = GiveMoneyConnections[i]
                 pcall(function() connection:Disconnect() end)
@@ -14264,415 +14578,312 @@ end)
             _G.PRISONRP_GiveMoneyRPcache = {}
         end
 
-        -- Si le remote existe, on crée uniquement la partie UI dans AUTRES.
-        -- Le système reste indépendant du reste du hub.
-        if GiveMoneyRemote and autresPage then
-            local GiveMoneyFrame = Instance.new("Frame")
-            GiveMoneyFrame.Name = "GiveMoneyPanel"
-            -- Colonne verticale placée à droite de l'onglet AUTRES.
-            GiveMoneyFrame.Size = UDim2.fromOffset(205, 430)
-            GiveMoneyFrame.Position = UDim2.new(1, -205, 0, 10)
-            GiveMoneyFrame.BackgroundColor3 = Color3.fromRGB(25, 27, 34)
-            GiveMoneyFrame.BorderSizePixel = 0
-            GiveMoneyFrame.ZIndex = 20
-            GiveMoneyFrame.Parent = autresPage
+        local function toMoneyNumber(value)
+            local amount = tonumber(value)
+            if not amount then
+                amount = tonumber(tostring(value or ""):gsub("[^%d]", ""))
+            end
+            if amount and amount >= 0 then return math.floor(amount) end
+            return nil
+        end
 
-            local GiveMoneyCorner = Instance.new("UICorner")
-            GiveMoneyCorner.CornerRadius = UDim.new(0, 9)
-            GiveMoneyCorner.Parent = GiveMoneyFrame
+        local function getLocalMoneyBalance()
+            local exactPaths = {
+                {"Stats", "Value"}, {"leaderstats", "Cash"},
+                {"leaderstats", "Money"}, {"Cash"}, {"Money"},
+                {"Wallet"}, {"Balance"},
+            }
+            for _, path in ipairs(exactPaths) do
+                local object = GiveMoneyLocalPlayer
+                for _, name in ipairs(path) do
+                    object = object and object:FindFirstChild(name)
+                end
+                if object and object:IsA("ValueBase") then
+                    local amount = toMoneyNumber(object.Value)
+                    if amount ~= nil then return amount end
+                end
+            end
 
-            local GiveMoneyTitle = Instance.new("TextLabel")
-            GiveMoneyTitle.Size = UDim2.new(1, -12, 0, 26)
-            GiveMoneyTitle.Position = UDim2.fromOffset(6, 5)
-            GiveMoneyTitle.BackgroundTransparency = 1
-            GiveMoneyTitle.Text = "GIVE MONEY"
-            GiveMoneyTitle.TextColor3 = Color3.fromRGB(240, 245, 255)
-            GiveMoneyTitle.TextSize = 11
-            GiveMoneyTitle.Font = Enum.Font.GothamBold
-            GiveMoneyTitle.TextXAlignment = Enum.TextXAlignment.Left
-            GiveMoneyTitle.ZIndex = 21
-            GiveMoneyTitle.Parent = GiveMoneyFrame
+            for _, name in ipairs({"Money", "Cash", "Wallet", "Balance", "Currency"}) do
+                local ok, value = pcall(function()
+                    return GiveMoneyLocalPlayer:GetAttribute(name)
+                end)
+                if ok and value ~= nil then
+                    local amount = toMoneyNumber(value)
+                    if amount ~= nil then return amount end
+                end
+            end
 
-            local GiveMoneySelected = Instance.new("TextLabel")
-            GiveMoneySelected.Size = UDim2.new(1, -12, 0, 20)
-            GiveMoneySelected.Position = UDim2.fromOffset(6, 32)
-            GiveMoneySelected.BackgroundTransparency = 1
-            GiveMoneySelected.Text = "Player: none"
-            GiveMoneySelected.TextColor3 = Color3.fromRGB(180, 185, 195)
-            GiveMoneySelected.TextSize = 9
-            GiveMoneySelected.Font = Enum.Font.Gotham
-            GiveMoneySelected.TextXAlignment = Enum.TextXAlignment.Left
-            GiveMoneySelected.TextTruncate = Enum.TextTruncate.AtEnd
-            GiveMoneySelected.ZIndex = 21
-            GiveMoneySelected.Parent = GiveMoneyFrame
+            local roots = {
+                GiveMoneyLocalPlayer:FindFirstChild("Stats"),
+                GiveMoneyLocalPlayer:FindFirstChild("leaderstats"),
+                GiveMoneyLocalPlayer,
+            }
+            local names = {money = true, cash = true, wallet = true, balance = true, currency = true}
+            for _, root in ipairs(roots) do
+                if root then
+                    for _, object in ipairs(root:GetDescendants()) do
+                        if object:IsA("ValueBase") and names[string.lower(object.Name)] then
+                            local amount = toMoneyNumber(object.Value)
+                            if amount ~= nil then return amount end
+                        end
+                    end
+                end
+            end
+            return nil
+        end
 
-            local GiveMoneySearch = Instance.new("TextBox")
-            GiveMoneySearch.Size = UDim2.new(1, -12, 0, 30)
-            GiveMoneySearch.Position = UDim2.fromOffset(6, 56)
-            GiveMoneySearch.BackgroundColor3 = Color3.fromRGB(35, 37, 45)
-            GiveMoneySearch.BorderSizePixel = 0
-            GiveMoneySearch.PlaceholderText = "Search..."
-            GiveMoneySearch.PlaceholderColor3 = Color3.fromRGB(125, 130, 140)
-            GiveMoneySearch.Text = ""
-            GiveMoneySearch.TextColor3 = Color3.fromRGB(255, 255, 255)
-            GiveMoneySearch.TextSize = 9
-            GiveMoneySearch.Font = Enum.Font.Gotham
-            GiveMoneySearch.ZIndex = 21
-            GiveMoneySearch.Parent = GiveMoneyFrame
+        if autresPage then
+            local oldPanel = autresPage:FindFirstChild("GiveMoneyPanel")
+            if oldPanel then pcall(function() oldPanel:Destroy() end) end
+        end
+        if MainFrame then
+            for _, object in ipairs(MainFrame:GetDescendants()) do
+                if object.Name == "GiveMoneyPanel" then
+                    pcall(function() object:Destroy() end)
+                end
+            end
+        end
 
-            local GiveMoneySearchCorner = Instance.new("UICorner")
-            GiveMoneySearchCorner.CornerRadius = UDim.new(0, 6)
-            GiveMoneySearchCorner.Parent = GiveMoneySearch
+        if tpSpecPanel and tpSpecPanel.Parent then
+            tpSpecPanel.Position = UDim2.new(1, -271, 0, 144)
+            tpSpecPanel.Size = UDim2.fromOffset(271, 316)
+            if tpTitle then
+                tpTitle.Text = translate("TP / SPEC / GIVE", "TP / SPEC / DONNER")
+            end
+            if tpSearchBox then
+                tpSearchBox.PlaceholderText = translate("Search players...", "Chercher des joueurs...")
+            end
+            if tpListFrame then
+                -- 4 pseudos visibles : 4 x 32 px + les espacements de la liste.
+                tpListFrame.Position = UDim2.fromOffset(6, 53)
+                tpListFrame.Size = UDim2.new(1, -12, 0, 143)
+            end
+            if tpSelected then
+                tpSelected.Position = UDim2.fromOffset(6, 198)
+                tpSelected.Size = UDim2.new(1, -12, 0, 14)
+            end
+            if tpSpecButton then
+                tpSpecButton.Position = UDim2.fromOffset(6, 214)
+                tpSpecButton.Size = UDim2.new(1, -12, 0, 26)
+            end
+            if tpButton then
+                tpButton.Position = UDim2.fromOffset(6, 282)
+                tpButton.Size = UDim2.new(1, -12, 0, 25)
+            end
 
-            local GiveMoneyList = Instance.new("ScrollingFrame")
-            GiveMoneyList.Size = UDim2.new(1, -12, 0, 215)
-            GiveMoneyList.Position = UDim2.fromOffset(6, 91)
-            GiveMoneyList.BackgroundColor3 = Color3.fromRGB(30, 32, 39)
-            GiveMoneyList.BorderSizePixel = 0
-            GiveMoneyList.ScrollBarThickness = 3
-            GiveMoneyList.CanvasSize = UDim2.new(0, 0, 0, 0)
-            GiveMoneyList.ZIndex = 21
-            GiveMoneyList.Parent = GiveMoneyFrame
+            local GiveMoneyRow = Instance.new("Frame")
+            GiveMoneyRow.Name = "GiveMoneyRow"
+            GiveMoneyRow.Position = UDim2.fromOffset(6, 242)
+            GiveMoneyRow.Size = UDim2.new(1, -12, 0, 24)
+            GiveMoneyRow.BackgroundTransparency = 1
+            GiveMoneyRow.BorderSizePixel = 0
+            GiveMoneyRow.ClipsDescendants = true
+            GiveMoneyRow.ZIndex = 14
+            GiveMoneyRow.Parent = tpSpecPanel
 
-            local GiveMoneyListCorner = Instance.new("UICorner")
-            GiveMoneyListCorner.CornerRadius = UDim.new(0, 7)
-            GiveMoneyListCorner.Parent = GiveMoneyList
-
-            local GiveMoneyLayout = Instance.new("UIListLayout")
-            GiveMoneyLayout.Padding = UDim.new(0, 4)
-            GiveMoneyLayout.Parent = GiveMoneyList
+            local GiveMoneyRowLayout = Instance.new("UIListLayout")
+            GiveMoneyRowLayout.FillDirection = Enum.FillDirection.Horizontal
+            GiveMoneyRowLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            GiveMoneyRowLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+            GiveMoneyRowLayout.SortOrder = Enum.SortOrder.LayoutOrder
+            GiveMoneyRowLayout.Padding = UDim.new(0, 3)
+            GiveMoneyRowLayout.Parent = GiveMoneyRow
 
             local GiveMoneyAmount = Instance.new("TextBox")
             GiveMoneyAmount.Name = "GiveMoneyAmount"
-            GiveMoneyAmount.Size = UDim2.new(1, -12, 0, 30)
-            GiveMoneyAmount.Position = UDim2.fromOffset(6, 316)
+            GiveMoneyAmount.Position = UDim2.new()
+            GiveMoneyAmount.Size = UDim2.new(0.26, -3, 1, 0)
+            GiveMoneyAmount.LayoutOrder = 1
             GiveMoneyAmount.BackgroundColor3 = Color3.fromRGB(35, 37, 45)
             GiveMoneyAmount.BorderSizePixel = 0
-            GiveMoneyAmount.PlaceholderText = "Amount to give..."
-            GiveMoneyAmount.PlaceholderColor3 = Color3.fromRGB(125, 130, 140)
+            GiveMoneyAmount.PlaceholderText = translate("Amount", "Montant")
+            GiveMoneyAmount.PlaceholderColor3 = Color3.fromRGB(145, 150, 160)
             GiveMoneyAmount.Text = "3000"
             GiveMoneyAmount.TextColor3 = Color3.fromRGB(255, 255, 255)
-            GiveMoneyAmount.TextSize = 10
+            GiveMoneyAmount.TextSize = 8
             GiveMoneyAmount.Font = Enum.Font.GothamBold
             GiveMoneyAmount.ClearTextOnFocus = false
-            GiveMoneyAmount.ZIndex = 21
-            GiveMoneyAmount.Parent = GiveMoneyFrame
+            GiveMoneyAmount.ZIndex = 15
+            GiveMoneyAmount.Parent = GiveMoneyRow
+            local amountCorner = Instance.new("UICorner")
+            amountCorner.CornerRadius = UDim.new(0, 5)
+            amountCorner.Parent = GiveMoneyAmount
 
-            local GiveMoneyAmountCorner = Instance.new("UICorner")
-            GiveMoneyAmountCorner.CornerRadius = UDim.new(0, 6)
-            GiveMoneyAmountCorner.Parent = GiveMoneyAmount
+            local GiveMoneyStatus = Instance.new("TextLabel")
+            GiveMoneyStatus.Name = "GiveMoneyStatus"
+            GiveMoneyStatus.Position = UDim2.fromOffset(6, 268)
+            GiveMoneyStatus.Size = UDim2.new(1, -12, 0, 13)
+            GiveMoneyStatus.BackgroundTransparency = 1
+            GiveMoneyStatus.Text = translate("Choose an amount, then GIVE", "Choisis un montant, puis DONNER")
+            GiveMoneyStatus.TextColor3 = Color3.fromRGB(175, 180, 190)
+            GiveMoneyStatus.TextSize = 8
+            GiveMoneyStatus.Font = Enum.Font.Gotham
+            GiveMoneyStatus.TextXAlignment = Enum.TextXAlignment.Left
+            GiveMoneyStatus.TextTruncate = Enum.TextTruncate.AtEnd
+            GiveMoneyStatus.ZIndex = 15
+            GiveMoneyStatus.Parent = tpSpecPanel
 
-            local function getGiveMoneyAmount()
-                local raw = tostring(GiveMoneyAmount.Text or "")
-                raw = raw:gsub("[^%d]", "")
-                local amount = tonumber(raw)
-                if not amount or amount < 1 then
-                    return nil
+            local lastStatusEn = "Choose an amount, then GIVE"
+            local lastStatusFr = "Choisis un montant, puis DONNER"
+            local lastStatusColor = Color3.fromRGB(175, 180, 190)
+            local function setStatus(en, fr, color)
+                lastStatusEn = en
+                lastStatusFr = fr
+                lastStatusColor = color or lastStatusColor
+                if GiveMoneyStatus and GiveMoneyStatus.Parent then
+                    GiveMoneyStatus.Text = translate(lastStatusEn, lastStatusFr)
+                    GiveMoneyStatus.TextColor3 = lastStatusColor
                 end
+            end
+            local function getGiveMoneyAmount()
+                local amount = tonumber(tostring(GiveMoneyAmount.Text or ""))
+                if not amount or amount < 1 then return nil end
                 return math.floor(amount)
             end
 
-            local GiveMoneyToggle = Instance.new("TextButton")
-            GiveMoneyToggle.Size = UDim2.new(1, -12, 0, 34)
-            GiveMoneyToggle.Position = UDim2.fromOffset(6, 352)
-            GiveMoneyToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-            GiveMoneyToggle.BorderSizePixel = 0
-            GiveMoneyToggle.Text = "OFF • 3000 / " .. tostring(GIVE_MONEY_INTERVAL_SECONDS) .. "s"
-            GiveMoneyToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-            GiveMoneyToggle.TextSize = 10
-            GiveMoneyToggle.Font = Enum.Font.GothamBold
-            GiveMoneyToggle.ZIndex = 21
-            GiveMoneyToggle.Parent = GiveMoneyFrame
+            GiveMoneyConnections[#GiveMoneyConnections + 1] =
+                GiveMoneyAmount:GetPropertyChangedSignal("Text"):Connect(function()
+                    local clean = tostring(GiveMoneyAmount.Text or ""):gsub("[^%d]", "")
+                    if GiveMoneyAmount.Text ~= clean then GiveMoneyAmount.Text = clean end
+                end)
 
-            local GiveMoneyToggleCorner = Instance.new("UICorner")
-            GiveMoneyToggleCorner.CornerRadius = UDim.new(0, 7)
-            GiveMoneyToggleCorner.Parent = GiveMoneyToggle
-
-            local GiveMoneySelectedPlayer = nil
-
-            local function updateGiveMoneyToggle()
-                if not GiveMoneyToggle or not GiveMoneyToggle.Parent then return end
-                local amount = getGiveMoneyAmount() or 3000
-                if GiveMoneyRunning then
-                    GiveMoneyToggle.Text = "ON  ✓  •  " .. tostring(amount) .. " / " .. tostring(GIVE_MONEY_INTERVAL_SECONDS) .. "s"
-                    GiveMoneyToggle.BackgroundColor3 = Color3.fromRGB(45, 170, 90)
-                else
-                    GiveMoneyToggle.Text = "OFF  •  " .. tostring(amount) .. " / " .. tostring(GIVE_MONEY_INTERVAL_SECONDS) .. "s"
-                    GiveMoneyToggle.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
-                end
-            end
-
-            GiveMoneyConnections[#GiveMoneyConnections + 1] = GiveMoneyAmount:GetPropertyChangedSignal("Text"):Connect(function()
-                local clean = tostring(GiveMoneyAmount.Text or ""):gsub("[^%d]", "")
-                if GiveMoneyAmount.Text ~= clean then
-                    GiveMoneyAmount.Text = clean
-                end
-                updateGiveMoneyToggle()
-            end)
-
-            -- V173 : même logique de pseudo RP que TP / SPEC.
-            -- Registre optimisé : cache stocké hors locals du chunk principal.
-            _G.PRISONRP_GiveMoneyRPcache = _G.PRISONRP_GiveMoneyRPcache or {}
-
-            local function giveMoneyCleanRPText(text, player)
-                if not text then return nil end
-                text = tostring(text):gsub("\r", "")
-                local lines = {}
-                for line in text:gmatch("[^\n]+") do
-                    line = line:gsub("^%s+", ""):gsub("%s+$", "")
-                    if line ~= "" then table.insert(lines, line) end
-                end
-
-                local raw = table.concat(lines, " ")
-                local beforeAt = raw:match("^(.-)%s*@[%w_]+")
-                if beforeAt then
-                    beforeAt = beforeAt:gsub("^%s+", ""):gsub("%s+$", "")
-                    if beforeAt ~= "" and beforeAt ~= player.Name and beforeAt ~= player.DisplayName then
-                        return beforeAt
-                    end
-                end
-
-                for i, line in ipairs(lines) do
-                    if line == "@" .. player.Name then
-                        local candidate = lines[i - 1]
-                        if candidate and candidate ~= "" and not candidate:find("%[")
-                            and candidate ~= player.Name and candidate ~= player.DisplayName then
-                            return candidate
-                        end
-                    end
-                end
-
-                for _, line in ipairs(lines) do
-                    local lower = line:lower()
-                    if line ~= player.Name
-                        and line ~= player.DisplayName
-                        and not line:find("@")
-                        and not line:find("%[")
-                        and not lower:find("vie:")
-                        and not lower:find("health")
-                        and not lower:find("distance")
-                        and not lower:find("dis:")
-                        and not lower:find("homme")
-                        and not lower:find("femme")
-                        and #line <= 40 then
-                        return line
-                    end
-                end
-                return nil
-            end
-
-            local function giveMoneyGetRPPseudo(player)
-                if not player then return "Unknown" end
-                if _G.PRISONRP_GiveMoneyRPcache[player] and _G.PRISONRP_GiveMoneyRPcache[player] ~= "" then
-                    return _G.PRISONRP_GiveMoneyRPcache[player]
-                end
-
-                local character = player.Character
-                local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-                if humanoid and humanoid.DisplayName and humanoid.DisplayName ~= ""
-                    and humanoid.DisplayName ~= player.Name and humanoid.DisplayName ~= player.DisplayName then
-                    _G.PRISONRP_GiveMoneyRPcache[player] = humanoid.DisplayName
-                    return humanoid.DisplayName
-                end
-
-                local containers = {player, character}
-                local keys = {"RPName", "RP_Name", "RoleplayName", "CharacterName", "CharName", "PseudoRP", "Pseudo_RP", "NomRP", "Nom_RP"}
-                for _, container in ipairs(containers) do
-                    if container then
-                        for _, key in ipairs(keys) do
-                            local attr = container:GetAttribute(key)
-                            if typeof(attr) == "string" and attr ~= "" and attr ~= player.Name and attr ~= player.DisplayName then
-                                _G.PRISONRP_GiveMoneyRPcache[player] = attr
-                                return attr
-                            end
-                        end
-                        for _, obj in ipairs(container:GetChildren()) do
-                            if obj:IsA("StringValue") or obj:IsA("TextLabel") then
-                                local n = obj.Name:lower()
-                                if n:find("rp") or n:find("roleplay") or n:find("charactername")
-                                    or n:find("charname") or n:find("pseudorp") or n:find("nomrp") then
-                                    local value = obj:IsA("StringValue") and obj.Value or obj.Text
-                                    if value and value ~= "" and value ~= player.Name and value ~= player.DisplayName then
-                                        _G.PRISONRP_GiveMoneyRPcache[player] = value
-                                        return value
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-
-                local pg = player:FindFirstChildOfClass("PlayerGui")
-                if pg then
-                    for _, obj in ipairs(pg:GetDescendants()) do
-                        if obj:IsA("TextLabel") and obj.Text and obj.Text ~= "" then
-                            local candidate = giveMoneyCleanRPText(obj.Text, player)
-                            if candidate then
-                                _G.PRISONRP_GiveMoneyRPcache[player] = candidate
-                                return candidate
-                            end
-                        end
-                    end
-                end
-
-                local fallback = player.DisplayName or player.Name
-                _G.PRISONRP_GiveMoneyRPcache[player] = fallback
-                return fallback
-            end
-
-            local function createGiveMoneyPlayerButton(player)
+            local function makeButton(name, text, widthScale, order)
                 local button = Instance.new("TextButton")
-                button.Size = UDim2.new(1, -8, 0, 28)
-                button.BackgroundColor3 = Color3.fromRGB(40, 42, 50)
+                button.Name = name
+                button.Position = UDim2.new()
+                button.Size = UDim2.new(widthScale, -3, 1, 0)
+                button.LayoutOrder = order
+                button.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
                 button.BorderSizePixel = 0
-                button.Text = giveMoneyGetRPPseudo(player) .. " -- @" .. player.Name
-                button.TextColor3 = Color3.fromRGB(255, 255, 255)
-                button.TextSize = 10
-                button.Font = Enum.Font.Gotham
-                button.TextXAlignment = Enum.TextXAlignment.Left
-                button.ZIndex = 22
-                button.Parent = GiveMoneyList
-
-                local c = Instance.new("UICorner")
-                c.CornerRadius = UDim.new(0, 6)
-                c.Parent = button
-
-                button.MouseButton1Click:Connect(function()
-                    GiveMoneySelectedPlayer = player
-                    GiveMoneySelected.Text = "Player: " .. giveMoneyGetRPPseudo(player) .. " -- @" .. player.Name
-
-                    for _, v in ipairs(GiveMoneyList:GetChildren()) do
-                        if v:IsA("TextButton") then
-                            v.BackgroundColor3 = Color3.fromRGB(40, 42, 50)
-                        end
-                    end
-
-                    button.BackgroundColor3 = Color3.fromRGB(55, 105, 190)
-                end)
+                button.AutoButtonColor = true
+                button.Text = text
+                button.TextColor3 = Color3.fromRGB(245, 245, 245)
+                button.TextSize = 8
+                button.Font = Enum.Font.GothamBold
+                button.ZIndex = 15
+                button.Parent = GiveMoneyRow
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 5)
+                corner.Parent = button
+                return button
             end
 
-            local function refreshGiveMoneyPlayers()
-                for _, v in ipairs(GiveMoneyList:GetChildren()) do
-                    if v:IsA("TextButton") then
-                        v:Destroy()
-                    end
-                end
-
-                local query = string.lower(GiveMoneySearch.Text or "")
-
-                for _, player in ipairs(GiveMoneyPlayers:GetPlayers()) do
-                    if player ~= GiveMoneyLocalPlayer then
-                        local name1 = string.lower(player.Name)
-                        local name2 = string.lower(player.DisplayName)
-                        local rpName = string.lower(tostring(giveMoneyGetRPPseudo(player) or ""))
-
-                        if query == ""
-                            or string.find(name1, query, 1, true)
-                            or string.find(name2, query, 1, true)
-                            or string.find(rpName, query, 1, true) then
-                            createGiveMoneyPlayerButton(player)
+            local presets = {
+                {en = "1%", fr = "1%", fraction = 0.01, width = 0.11},
+                {en = "10%", fr = "10%", fraction = 0.10, width = 0.13},
+                {en = "25%", fr = "25%", fraction = 0.25, width = 0.13},
+                {en = "ALL", fr = "TOUT", fraction = 1, width = 0.16},
+            }
+            local presetButtons = {}
+            for index, preset in ipairs(presets) do
+                local fraction = preset.fraction
+                local button = makeButton(
+                    "GiveMoneyPreset" .. tostring(index),
+                    translate(preset.en, preset.fr),
+                    preset.width,
+                    index + 1
+                )
+                presetButtons[index] = {button = button, preset = preset}
+                GiveMoneyConnections[#GiveMoneyConnections + 1] =
+                    button.Activated:Connect(function()
+                        local balance = getLocalMoneyBalance()
+                        if balance == nil then
+                            setStatus(
+                                "Balance unavailable; enter an amount manually",
+                                "Solde introuvable ; saisis le montant manuellement",
+                                Color3.fromRGB(235, 180, 95)
+                            )
+                            return
                         end
-                    end
-                end
+                        local amount = math.floor(balance * fraction)
+                        if balance > 0 then amount = math.max(1, amount) end
+                        GiveMoneyAmount.Text = tostring(amount)
+                        local label = translate(preset.en, preset.fr)
+                        setStatus(
+                            label .. " of balance: " .. tostring(amount),
+                            label .. " du solde : " .. tostring(amount),
+                            Color3.fromRGB(175, 210, 180)
+                        )
+                    end)
+            end
 
-                task.defer(function()
-                    GiveMoneyList.CanvasSize = UDim2.new(
-                        0, 0, 0,
-                        GiveMoneyLayout.AbsoluteContentSize.Y + 8
+            local GiveMoneySend = makeButton(
+                "GiveMoneySend", translate("GIVE", "DONNER"), 0.21, 6
+            )
+
+            local function sendGiveMoneyAmount()
+                local target = TPSpecSelectedPlayer
+                if not target or not target.Parent then
+                    setStatus(
+                        "Select a player in TP / SPEC",
+                        "Sélectionne un joueur dans TP / SPEC",
+                        Color3.fromRGB(235, 180, 95)
                     )
-                end)
-            end
-
-            GiveMoneyConnections[#GiveMoneyConnections + 1] = GiveMoneySearch:GetPropertyChangedSignal("Text"):Connect(refreshGiveMoneyPlayers)
-            GiveMoneyConnections[#GiveMoneyConnections + 1] = GiveMoneyPlayers.PlayerAdded:Connect(refreshGiveMoneyPlayers)
-
-            GiveMoneyConnections[#GiveMoneyConnections + 1] = GiveMoneyPlayers.PlayerRemoving:Connect(function(player)
-                _G.PRISONRP_GiveMoneyRPcache[player] = nil
-                if GiveMoneySelectedPlayer == player then
-                    GiveMoneySelectedPlayer = nil
-                    GiveMoneyRunning = false
-                    GiveMoneyRunToken += 1
-                    if GiveMoneySelected and GiveMoneySelected.Parent then
-                        GiveMoneySelected.Text = "Player: none"
-                    end
-                    updateGiveMoneyToggle()
+                    return false
                 end
-                refreshGiveMoneyPlayers()
-            end)
-
-            GiveMoneyToggle.MouseButton1Click:Connect(function()
-                if not GiveMoneySelectedPlayer then
-                    GiveMoneySelected.Text = "Select a player"
-                    return
-                end
-
                 local amount = getGiveMoneyAmount()
                 if not amount then
-                    GiveMoneySelected.Text = "Invalid amount"
-                    return
+                    setStatus("Invalid amount", "Montant invalide", Color3.fromRGB(235, 120, 120))
+                    return false
                 end
-
-                if GiveMoneyRunning then
-                    GiveMoneyRunning = false
-                    GiveMoneyRunToken += 1
-                    updateGiveMoneyToggle()
-                    return
+                if not GiveMoneyRemote or not GiveMoneyRemote:IsA("RemoteEvent") then
+                    setStatus("GiveMoney remote unavailable", "Remote GiveMoney indisponible", Color3.fromRGB(235, 120, 120))
+                    return false
                 end
-
-                GiveMoneyRunning = true
-                GiveMoneyRunToken += 1
-                local thisRunToken = GiveMoneyRunToken
-                updateGiveMoneyToggle()
-
-                task.spawn(function()
-                    while running and GiveMoneyRunning
-                        and thisRunToken == GiveMoneyRunToken
-                        and GiveMoneySelectedPlayer do
-                        local target = GiveMoneySelectedPlayer
-
-                        if not target.Parent then
-                            GiveMoneyRunning = false
-                            GiveMoneyRunToken += 1
-                            break
-                        end
-
-                        -- Lire le montant à chaque cycle afin que l'UI et les requêtes
-                        -- restent synchronisées si l'utilisateur modifie le champ en cours.
-                        local currentAmount = getGiveMoneyAmount()
-                        if not currentAmount then
-                            GiveMoneyRunning = false
-                            GiveMoneyRunToken += 1
-                            if GiveMoneySelected and GiveMoneySelected.Parent then
-                                GiveMoneySelected.Text = "Invalid amount"
-                            end
-                            updateGiveMoneyToggle()
-                            break
-                        end
-
-                        pcall(function()
-                            GiveMoneyRemote:FireServer(currentAmount, target.UserId)
-                        end)
-
-                        task.wait(GIVE_MONEY_INTERVAL_SECONDS)
-                    end
-
-                    if thisRunToken == GiveMoneyRunToken then
-                        updateGiveMoneyToggle()
-                    end
+                local ok = pcall(function()
+                    GiveMoneyRemote:FireServer(amount, target.UserId)
                 end)
-            end)
+                if not ok then
+                    setStatus("Send failed", "Échec de l'envoi", Color3.fromRGB(235, 120, 120))
+                    return false
+                end
+                setStatus(
+                    "Request sent: " .. tostring(amount),
+                    "Demande envoyée : " .. tostring(amount),
+                    Color3.fromRGB(175, 210, 180)
+                )
+                return true
+            end
 
-            refreshGiveMoneyPlayers()
+            GiveMoneyConnections[#GiveMoneyConnections + 1] =
+                GiveMoneySend.Activated:Connect(function() sendGiveMoneyAmount() end)
 
-            -- Expose only the controls needed by the later layout patches.
-            _G.PRISONRP_GiveMoneyUI.Frame = GiveMoneyFrame
-            _G.PRISONRP_GiveMoneyUI.List = GiveMoneyList
-            _G.PRISONRP_GiveMoneyUI.Amount = GiveMoneyAmount
-            _G.PRISONRP_GiveMoneyUI.Toggle = GiveMoneyToggle
+            _G.PRISONRP_GiveMoneyUI.Send = GiveMoneySend
+            _G.PRISONRP_GiveMoneyUI.Status = GiveMoneyStatus
+            _G.PRISONRP_GiveMoneyUI.Presets = presets
+            _G.PRISONRP_GiveMoneyUI.RefreshLanguage = function(language)
+                if language ~= nil then GiveMoneyLanguage = tonumber(language) == 1 and 1 or 2 end
+                if tpTitle and tpTitle.Parent then
+                    tpTitle.Text = translate("TP / SPEC / GIVE", "TP / SPEC / DONNER")
+                end
+                if tpSearchBox and tpSearchBox.Parent then
+                    tpSearchBox.PlaceholderText = translate("Search players...", "Chercher des joueurs...")
+                end
+                if tpSelected and tpSelected.Parent then
+                    local target = TPSpecSelectedPlayer
+                    if not target or not target.Parent then
+                        tpSelected.Text = translate("Selected: none", "Sélection : aucune")
+                    else
+                        local prefix = TPSpecEnabled
+                            and translate("Observing: ", "Observation : ")
+                            or translate("Selected: ", "Sélection : ")
+                        tpSelected.Text = prefix .. tostring(tpSpecGetRPPseudo(target))
+                            .. "  @" .. tostring(target.Name)
+                    end
+                end
+                GiveMoneyAmount.PlaceholderText = translate("Amount", "Montant")
+                GiveMoneySend.Text = translate("GIVE", "DONNER")
+                for _, entry in ipairs(presetButtons) do
+                    if entry.button and entry.button.Parent then
+                        entry.button.Text = translate(entry.preset.en, entry.preset.fr)
+                    end
+                end
+                setStatus(lastStatusEn, lastStatusFr, lastStatusColor)
+            end
+            _G.PRISONRP_GiveMoneyUI.RefreshLanguage(GiveMoneyLanguage)
         end
     end)()
-
-
     --==============================================================
     -- FINAL PATCH V135 : ORGANISATION AUTRES
     -- Give Money plus large, en colonne à droite et remonté.
@@ -14895,9 +15106,9 @@ end)
         local commonHeight = 34
         local gap = 6
         local step = commonHeight + gap
-        -- 8 px de marge avec le panneau Give Money à droite.
+        -- Les boutons utilisent toute la largeur disponible.
         -- Les 5 cases restantes gardent les mêmes dimensions et le même écart.
-        local commonSize = UDim2.new(1, -213, 0, commonHeight)
+        local commonSize = UDim2.new(1, -12, 0, commonHeight)
 
         if AutoPushupBtn then
             AutoPushupBtn.Parent = autresPage
@@ -17062,6 +17273,9 @@ end
         end
 _G.PRISONRP_HARD_FISH_ENGINE_SET_STATE = function(enabled)
     enabled = enabled == true
+    if enabled and _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true and type(_G.PRISONRP_HARD_MINE_ENGINE_SET_STATE) == 'function' then
+        _G.PRISONRP_HARD_MINE_ENGINE_SET_STATE(false)
+    end
     -- Hard Fish is canonical; the retired Auto Change Server flag is only a mirror.
     _G.PRISONRP_HARD_FISH_ENGINE_ENABLED = enabled
     _G.PRISONRP_AUTO_CHANGE_SERVER_ENABLED = enabled
@@ -17192,6 +17406,124 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
             local enabled = not (_G.PRISONRP_HARD_FISH_GET_STATE() == true)
             _G.PRISONRP_HARD_FISH_SET_STATE(enabled)
+        end
+        local hardMineRunToken = tonumber(_G.PRISONRP_HARD_MINE_ENGINE_RUN_TOKEN) or 0
+        local function refreshHardMineSwitch()
+            local button = _G.PRISONRP_HARD_MINE_ENGINE_BUTTON
+            if button and type(_G.PRISONRP_REFRESH_GDP_TOGGLE) == "function" then
+                pcall(_G.PRISONRP_REFRESH_GDP_TOGGLE, button, false)
+            end
+        end
+        _G.PRISONRP_HARD_MINE_GET_STATE = function()
+            return _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
+        end
+        _G.PRISONRP_HARD_MINE_ENGINE_SET_STATE = function(enabled)
+            enabled = enabled == true
+            if enabled and _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+                and type(_G.PRISONRP_HARD_FISH_ENGINE_SET_STATE) == "function" then
+                _G.PRISONRP_HARD_FISH_ENGINE_SET_STATE(false)
+            end
+            _G.PRISONRP_HARD_MINE_ENGINE_ENABLED = enabled
+            if type(__PRISONRP_QUEUE_STATE_ENV) == "table" then
+                __PRISONRP_QUEUE_STATE_ENV.PRISONRP_HARD_MINE_ENGINE_ENABLED = enabled
+            end
+            hardMineRunToken = hardMineRunToken + 1
+            _G.PRISONRP_HARD_MINE_ENGINE_RUN_TOKEN = hardMineRunToken
+            local thisToken = hardMineRunToken
+
+            if enabled then
+                stats.status = "Hard Mine: checking server..."
+                refreshHardMineSwitch()
+                pcall(updateUI)
+                task.spawn(function()
+                    local settingsDeadline = os.clock() + 90
+                    while running and _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
+                        and thisToken == hardMineRunToken
+                        and os.clock() < settingsDeadline
+                        and _G.PRISONRP_HARD_MINE_ENGINE_SETTINGS_READY ~= true do
+                        task.wait(0.25)
+                    end
+                    if not running or _G.PRISONRP_HARD_MINE_ENGINE_ENABLED ~= true
+                        or thisToken ~= hardMineRunToken then return end
+                    if _G.PRISONRP_HARD_MINE_ENGINE_SETTINGS_READY ~= true then
+                        stats.status = "Hard Mine: settings did not finish loading"
+                        warn("[Hub Prison RP] Hard Mine: settings did not finish loading")
+                        pcall(updateUI)
+                        return
+                    end
+
+                    local atMine = false
+                    while running and _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
+                        and thisToken == hardMineRunToken do
+                        local shouldHop, reason, playerCount = inspectHardFishServer()
+                        if shouldHop then
+                            atMine = false
+                            if AutoMineRunning and type(autoMineStop) == "function" then
+                                pcall(autoMineStop)
+                            end
+                            stats.status = "Hard Mine: " .. tostring(reason) .. "; changing server..."
+                            refreshHardMineSwitch()
+                            pcall(updateUI)
+                            local hopCallOk, hopped, hopError = pcall(autoChangeServerForStaff, nil, reason, 10)
+                            if not hopCallOk then
+                                hopError = hopped
+                                hopped = false
+                            end
+                            if hopped then return end
+                            warn("[Hub Prison RP] Hard Mine server change failed: " .. tostring(hopError))
+                            task.wait(AutoChangeServerCooldown or 12)
+                        elseif not atMine then
+                            stats.status = "Hard Mine: clear server (" .. tostring(playerCount) .. "); going to mine..."
+                            refreshHardMineSwitch()
+                            pcall(updateUI)
+                            local teleported = false
+                            for attempt = 1, 3 do
+                                if not running or _G.PRISONRP_HARD_MINE_ENGINE_ENABLED ~= true
+                                    or thisToken ~= hardMineRunToken then return end
+                                local character = LocalPlayer and LocalPlayer.Character
+                                local root = character and character:FindFirstChild("HumanoidRootPart")
+                                if root then
+                                    local okTeleport, result = pcall(function()
+                                        return robustTeleportTo(AUTO_MINE_START_CFRAME, 60, function()
+                                            return not running or _G.PRISONRP_HARD_MINE_ENGINE_ENABLED ~= true
+                                                or thisToken ~= hardMineRunToken
+                                        end)
+                                    end)
+                                    teleported = okTeleport and result == true
+                                    if teleported then break end
+                                end
+                                task.wait(1)
+                            end
+                            if not running or _G.PRISONRP_HARD_MINE_ENGINE_ENABLED ~= true
+                                or thisToken ~= hardMineRunToken then return end
+                            if teleported then
+                                atMine = true
+                                stats.status = "Hard Mine: at the mine"
+                            else
+                                stats.status = "Hard Mine: mine teleport failed"
+                                warn("[Hub Prison RP] Hard Mine: could not teleport to the mine")
+                                task.wait(2)
+                            end
+                            pcall(updateUI)
+                        else
+                            task.wait(1)
+                        end
+                    end
+                end)
+            else
+                stats.status = AutoMineRunning and "Auto Mine: ON" or (_G.AutoFishingEnabled and "Running..." or "Stopped")
+                pcall(updateUI)
+            end
+            refreshHardMineSwitch()
+        end
+        _G.PRISONRP_HARD_MINE_SET_STATE = function(enabled)
+            _G.PRISONRP_HARD_MINE_ENGINE_SET_STATE(enabled == true)
+        end
+        _G.PRISONRP_HARD_MINE_TOGGLE = function()
+            __PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
+            _G.PRISONRP_AUTO_RELOAD_FROM_QUEUE = false
+            local enabled = not (_G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true)
+            _G.PRISONRP_HARD_MINE_SET_STATE(enabled)
         end
         return {
             SetTextScale = setTextScale,
@@ -17816,6 +18148,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
         local function currentSettings()
             syncVisibleTextInputs()
             local esp = type(_G.PRISONRP_GET_ESP_STATE)=="function" and _G.PRISONRP_GET_ESP_STATE() or {}
+            if type(esp) == "table" then
+                esp.CheckedMaster = _G.PRISONRP_ESP_CHECKED_MASTER_STATE == true
+            end
             local spec = type(_G.PRISONRP_GET_SPEC_STATE)=="function" and _G.PRISONRP_GET_SPEC_STATE() or {}
             local tpspec = type(_G.PRISONRP_GET_TPSPEC_STATE)=="function" and _G.PRISONRP_GET_TPSPEC_STATE() or {}
             local chatDockEnabled = _G.PRISONRP_CHAT_DOCK_RESTORE_PENDING == true
@@ -17823,12 +18158,14 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 local chatStateOk, chatState = pcall(_G.PRISONRP_CHAT_DOCK_GET_STATE)
                 chatDockEnabled = chatStateOk and chatState == true
             end
-            -- Hard Fish has one source of truth: the running engine state.
+            -- Hard Fish and Hard Mine are separate saved modes; only one can run at once.
             local hardFishEnabled = _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true
+            local hardMineEnabled = _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true
             return {
-                Version=7,
+                Version=9,
                 Snapshot="FULL_EXACT",
                 HardFish=hardFishEnabled,
+                HardMine=hardMineEnabled,
                 CurrentPage=getCurrentPageIndex(),
                 WalkSpeed=tonumber(MovementWalkSpeed) or 35,
                 FlySpeed=tonumber(MovementFlySpeed) or 60,
@@ -17865,8 +18202,10 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     AutoReload=_G.PRISONRP_AUTO_RELOAD_ENABLED==true,
 
                     HardFish=hardFishEnabled,
+                    HardMine=hardMineEnabled,
+
                     AutoSell=_G.AutoSellEnabled==true,
-                    AutoEatDrink=AutoEatDrinkEnabled==true,
+                    AutoAFK=_G.PRISONRP_ANTIAFK_ENABLED==true,
                     FPSCounter=_G.PRISONRP_FPS_COUNTER_ENABLED==true,
                     AutoPushup=_G.AutoPushupEnabled==true,
                     AutoMine=AutoMineRunning==true,
@@ -17907,11 +18246,13 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
         -- Valeurs par défaut demandées : AIMBOT OFF + les 8 options ESP OFF.
         local defaultSettings = currentSettings()
         defaultSettings.CurrentPage = 6
-        -- A reset/empty slot starts with Hard Fish OFF; it is only enabled by
-        -- an explicitly saved profile or an active teleport queue.
+        -- A reset/empty slot starts with Hard Fish and Hard Mine OFF;
+        -- either mode must be explicitly saved or resumed from its teleport queue.
         defaultSettings.HardFish = false
+        defaultSettings.HardMine = false
         if type(defaultSettings.Toggles) == "table" then
             defaultSettings.Toggles.HardFish = false
+            defaultSettings.Toggles.HardMine = false
             defaultSettings.Toggles.AutoChangeServer = false
             defaultSettings.Toggles.AutoFishCycle = nil
         end
@@ -18020,6 +18361,14 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             end
 
             local t=type(data.Toggles)=="table" and data.Toggles or {}
+            -- Migration des profils antérieurs à V8 : ces options étaient OFF par défaut.
+            -- Elles passent ON une fois ; un profil V8 conserve ensuite les choix OFF sauvegardés.
+            if (tonumber(data.Version) or 0) < 8 then
+                t.AutoAFK = true
+                t.AutoEatDrink = true
+                t.StaffJoinNotification = true
+                t.AutoReload = true
+            end
             if t.ChatDock ~= nil then
                 local desiredChatState = t.ChatDock == true
                 if type(_G.PRISONRP_CHAT_DOCK_SET_STATE) == "function" then
@@ -18047,29 +18396,32 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 end
             end
 
-            if t.AutoReload ~= nil then
-                local savedAutoReload = t.AutoReload == true
-                local currentAutoReload = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
-                if savedAutoReload and not currentAutoReload then
-                    if type(_G.PRISONRP_AUTO_RELOAD_SET_STATE) == "function" then
-                        _G.PRISONRP_AUTO_RELOAD_SET_STATE(true)
-                    end
-                elseif savedAutoReload and currentAutoReload then
-                    -- ON can outlive its one-shot teleport queue; refresh the queue on profile load.
-                    if type(_G.PRISONRP_REARM_AUTO_RELOAD_QUEUE) == "function" then
-                        local armed, armError = _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
-                        if armed then
-                            print("[PRISON RP Auto Reload] Profile ON; teleport queue refreshed")
-                        else
-                            warn("[PRISON RP Auto Reload] Profile ON but queue refresh failed: " .. tostring(armError))
-                        end
-                    end
-                elseif not savedAutoReload and currentAutoReload then
-                    if type(_G.PRISONRP_AUTO_RELOAD_SET_STATE) == "function" then
-                        _G.PRISONRP_AUTO_RELOAD_SET_STATE(false)
+            local savedAutoReload = t.AutoReload
+            if savedAutoReload == nil then savedAutoReload = true end
+            savedAutoReload = savedAutoReload == true
+            local currentAutoReload = _G.PRISONRP_AUTO_RELOAD_ENABLED == true
+            if savedAutoReload and not currentAutoReload then
+                if type(_G.PRISONRP_AUTO_RELOAD_SET_STATE) == "function" then
+                    _G.PRISONRP_AUTO_RELOAD_SET_STATE(true)
+                end
+            elseif savedAutoReload and currentAutoReload then
+                -- ON can outlive its one-shot teleport queue; refresh the queue on profile load.
+                if type(_G.PRISONRP_REARM_AUTO_RELOAD_QUEUE) == "function" then
+                    local armed, armError = _G.PRISONRP_REARM_AUTO_RELOAD_QUEUE()
+                    if armed then
+                        print("[PRISON RP Auto Reload] Profile ON; teleport queue refreshed")
+                    else
+                        warn("[PRISON RP Auto Reload] Profile ON but queue refresh failed: " .. tostring(armError))
                     end
                 end
+            elseif not savedAutoReload and currentAutoReload then
+                if type(_G.PRISONRP_AUTO_RELOAD_SET_STATE) == "function" then
+                    _G.PRISONRP_AUTO_RELOAD_SET_STATE(false)
+                end
             end
+            local savedAntiAFK = t.AutoAFK
+            if savedAntiAFK == nil then savedAntiAFK = true end
+            _G.PRISONRP_ANTIAFK_ENABLED = savedAntiAFK == true
             local savedHardFish = t.HardFish
             if savedHardFish == nil then savedHardFish = data.HardFish end
             if savedHardFish == nil and (t.AutoChangeServer ~= nil or t.AutoFishCycle ~= nil) then
@@ -18097,6 +18449,17 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     end,
                     savedHardFish == true
                 )
+            end
+            local savedHardMine = t.HardMine
+            if savedHardMine == nil then savedHardMine = data.HardMine end
+            local queueOwnsHardMine = __PRISONRP_AUTO_RELOAD_FROM_QUEUE == true
+                and __PRISONRP_HARD_MINE_FROM_QUEUE == true
+            if queueOwnsHardMine then
+                if type(_G.PRISONRP_HARD_MINE_SET_STATE) == "function" then
+                    _G.PRISONRP_HARD_MINE_SET_STATE(true)
+                end
+            elseif savedHardMine ~= nil and type(_G.PRISONRP_HARD_MINE_SET_STATE) == "function" then
+                _G.PRISONRP_HARD_MINE_SET_STATE(savedHardMine == true)
             end
             if t.AutoBlock ~= nil then
                 restoreBool(
@@ -18140,7 +18503,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             end
             _G.AutoFishingEnabled = restoreAutoFishing
             _G.AutoSellEnabled = t.AutoSell == true
-            AutoEatDrinkEnabled = t.AutoEatDrink == true
+            local savedAutoEatDrink = t.AutoEatDrink
+            if savedAutoEatDrink == nil then savedAutoEatDrink = true end
+            AutoEatDrinkEnabled = savedAutoEatDrink == true
             _G.AutoEatDrinkEnabled = AutoEatDrinkEnabled
 
             -- COMPTEUR FPS : restaurer l'état et l'affichage dans AUTRES.
@@ -18244,6 +18609,8 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
             if t.StaffJoinNotification ~= nil then
                 StaffJoinNotificationEnabled = t.StaffJoinNotification == true
+            else
+                StaffJoinNotificationEnabled = true
             end
 
             -- BLACK MARKET ESP
@@ -18255,6 +18622,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 pcall(function() moneyViewSetEnabled(t.MoneyView == true) end)
             elseif type(_G.MoneyViewEnabled)=="function" then
                 pcall(function() _G.MoneyViewEnabled(t.MoneyView == true) end)
+            end
+            if type(_G.PRISONRP_REFRESH_MONEY_VIEW_SWITCH) == "function" then
+                pcall(_G.PRISONRP_REFRESH_MONEY_VIEW_SWITCH)
             end
 
             -- AUTO BRAS DE FER
@@ -18302,7 +18672,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
                 syncSwitchVisual(ToggleFishBtn, _G.AutoFishingEnabled == true)
                 syncSwitchVisual(AutoSellBtn, _G.AutoSellEnabled == true)
-                syncSwitchVisual(AutoEatDrinkBtn, AutoEatDrinkEnabled == true)
+                syncSwitchVisual(AutoAFKBtn, _G.PRISONRP_ANTIAFK_ENABLED == true)
                 syncSwitchVisual(AutoPushupBtn, _G.AutoPushupEnabled == true)
                 syncSwitchVisual(FPSCounterBtn, _G.PRISONRP_FPS_COUNTER_ENABLED == true)
                 syncSwitchVisual(AutoMineBtn, AutoMineRunning == true)
@@ -18314,6 +18684,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 syncSwitchVisual(StaffJoinNotificationBtn, StaffJoinNotificationEnabled == true)
                 syncSwitchVisual(ESPToggleBtn, _G.BlackMarketESP == true)
                 syncSwitchVisual(MoneyViewBtn, _G.MoneyViewEnabledValue == true)
+                if type(_G.PRISONRP_REFRESH_MONEY_VIEW_SWITCH) == "function" then
+                    pcall(_G.PRISONRP_REFRESH_MONEY_VIEW_SWITCH)
+                end
                 syncSwitchVisual((_G.PRISONRP_AUTO_ARM_WRESTLE_STATE and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Btn), (_G.PRISONRP_AUTO_ARM_WRESTLE_STATE and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Enabled) == true)
 
                 local invisibleState = type(_G.PRISONRP_GET_INVISIBLE_STATE)=="function" and _G.PRISONRP_GET_INVISIBLE_STATE() or false
@@ -19687,6 +20060,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 fitSettingsPage()
                 local loadedDefaultSlot, loadedLegacyFile, loadError = loadSettings()
                 _G.PRISONRP_HARD_FISH_ENGINE_SETTINGS_READY = true
+                _G.PRISONRP_HARD_MINE_ENGINE_SETTINGS_READY = true
 
                 -- Après le chargement, certaines fonctions finissent leur initialisation
                 -- un peu plus tard. On resynchronise donc les switches plusieurs fois.
@@ -21991,12 +22365,29 @@ do
             autoChangeServerBtn:Destroy()
         end
 
+        local hardMineBtn = autresPageRef:FindFirstChild("PRISONRP_HardMineToggle")
+        if not hardMineBtn then
+            hardMineBtn = Instance.new("TextButton")
+            hardMineBtn.Name = "PRISONRP_HardMineToggle"
+            hardMineBtn.Size = UDim2.new(1, -5, 0, 34)
+            hardMineBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            hardMineBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            hardMineBtn.BorderSizePixel = 0
+            hardMineBtn.AutoButtonColor = true
+            hardMineBtn.Active = true
+            hardMineBtn.Visible = true
+            hardMineBtn.Parent = autresPageRef
+        end
+        hardMineBtn.Text = "Hard Mine"
+        _G.PRISONRP_HARD_MINE_ENGINE_BUTTON = hardMineBtn
+
         -- Ordre de haut en bas, regroupé par fonction.
         local items = {
             -- Automatisations
             {obj = AutoPushupBtn, label = "Auto Pushup"},
             {obj = autoBlockBtn, label = "Auto Block"},
             {obj = hardFishBtn, label = "Hard Fish"},
+            {obj = hardMineBtn, label = "Hard Mine"},
 
             {obj = type(_G.PRISONRP_AUTO_ARM_WRESTLE_STATE) == "table" and _G.PRISONRP_AUTO_ARM_WRESTLE_STATE.Btn or nil, label = "Auto Arm Wrestle"},
             {obj = autresPageRef:FindFirstChild("PRISONRP_AutoPurpleToggle"), label = "Auto Purple"},
@@ -22075,6 +22466,11 @@ do
                     name = "PRISONRP_HardFishToggle",
                     getter = "PRISONRP_HARD_FISH_GET_STATE",
                     toggle = "PRISONRP_HARD_FISH_TOGGLE",
+                },
+                {
+                    name = "PRISONRP_HardMineToggle",
+                    getter = "PRISONRP_HARD_MINE_GET_STATE",
+                    toggle = "PRISONRP_HARD_MINE_TOGGLE",
                 },
                 {
                     name = "PRISONRP_AutoBlockToggle",
@@ -22532,9 +22928,14 @@ do
         local function pin(obj, parent, size)
             if typeof(obj) ~= "Instance" then return end
             local function fix()
-                if obj.Parent ~= parent then obj.Parent = parent end
-                if obj.Position ~= UDim2.new() then obj.Position = UDim2.new() end
-                if size and obj.Size ~= size then obj.Size = size end
+                -- Destroy() verrouille Parent à nil et déclenche aussi ParentChanged.
+                -- Ne pas tenter de rattacher un élément déjà supprimé.
+                if not obj or obj.Parent == nil then return end
+                pcall(function()
+                    if obj.Parent ~= parent then obj.Parent = parent end
+                    if obj.Position ~= UDim2.new() then obj.Position = UDim2.new() end
+                    if size and obj.Size ~= size then obj.Size = size end
+                end)
             end
             obj:GetPropertyChangedSignal("Parent"):Connect(fix)
             obj:GetPropertyChangedSignal("Position"):Connect(fix)
@@ -22568,7 +22969,7 @@ do
             return "Eats at ≤ " .. e .. " • drinks at ≤ " .. d
         end, function() return AutoEatDrinkEnabled == true end)
         SP.buy = mk("buy", L("Buy food", "Acheter à manger"),
-            L("Buys 20 cereal bars and 20 waters", "Achète 20 barres et 20 bouteilles"),
+            L("Buys 20 cereal bars and 13 waters", "Achète 20 barres et 13 bouteilles"),
             nil, L("Buy", "Acheter"))
         SP.mine = mk("mine", L("Auto mine", "Minage auto"),
             L("Flies to the rocks and mines them", "Vole vers les roches et les mine"),
@@ -22640,6 +23041,9 @@ do
         SP.hard = mk("hard", L("Hard fish", "Hard fish"),
             L("Leaves crowded or staffed servers, then returns to the lake", "Quitte les serveurs pleins ou avec staff, puis retourne au lac"),
             function() return _G.PRISONRP_HARD_FISH_ENGINE_ENABLED == true end)
+        SP.hardmine = mk("hardmine", L("Hard mine", "Hard Mine"),
+            L("Leaves crowded or staffed servers, then teleports to the mine", "Quitte les serveurs pleins ou avec staff, puis te TP à la mine"),
+            function() return _G.PRISONRP_HARD_MINE_ENGINE_ENABLED == true end)
         SP.arm = mk("arm", L("Auto arm wrestling", "Bras de fer auto"),
             L("Hold E during a match to spam Q / E", "Maintiens E pendant un match pour spammer Q / E"),
             function()
@@ -22664,6 +23068,9 @@ do
         SP.fps = mk("fps", L("FPS and ping", "FPS et ping"),
             L("Small counter in the top-right corner", "Petit compteur en haut à droite"),
             function() return _G.PRISONRP_FPS_COUNTER_ENABLED == true end)
+        SP.antiafk = mk("antiafk", L("Anti-AFK", "Anti-AFK"),
+            L("Sends a right-click when Roblox reports idle", "Envoie un clic droit quand Roblox signale l'inactivité"),
+            function() return _G.PRISONRP_ANTIAFK_ENABLED == true end)
         SP.chat = mk("chat", L("Chat window", "Fenêtre de chat"),
             L("Movable chat log that shows RP names", "Historique de chat déplaçable avec les noms RP"),
             function()
@@ -22803,7 +23210,8 @@ do
             if tpPanel then
                 local s3 = newSection(sc, 3, L("Players", "Joueurs"),
                     L("Teleport to a player or watch them", "Se téléporter à un joueur ou l'observer"))
-                s3.add(tpPanel, 292)
+                s3.add(tpPanel, 316)
+                tpPanel.ClipsDescendants = true
                 tpPanel.BackgroundColor3 = T.panel
                 local specSw
                 for _, d in ipairs(tpPanel:GetDescendants()) do
@@ -22999,12 +23407,11 @@ do
             local function f(n) return host:FindFirstChild(n, true) end
             local arm = _G.PRISONRP_AUTO_ARM_WRESTLE_STATE
             local O = {
-                pushup = AutoPushupBtn, parry = f("PRISONRP_AutoBlockToggle"), hard = f("PRISONRP_HardFishToggle"),
+                pushup = AutoPushupBtn, parry = f("PRISONRP_AutoBlockToggle"), hard = f("PRISONRP_HardFishToggle"), hardmine = f("PRISONRP_HardMineToggle"),
                 arm = type(arm) == "table" and arm.Btn or nil, purple = f("PRISONRP_AutoPurpleToggle"),
                 leave = StaffAutoLeaveBtn, notif = StaffJoinNotificationBtn, bm = ESPToggleBtn,
-                fps = FPSCounterBtn, chat = f("PRISONRP_ChatDockToggle"), iy = f("PRISONRP_InfiniteYieldToggle"),
+                fps = FPSCounterBtn, antiafk = AutoAFKBtn, chat = f("PRISONRP_ChatDockToggle"), iy = f("PRISONRP_InfiniteYieldToggle"),
                 vcb = f("PRISONRP_Custom_AntiV"), novo = f("PRISONRP_Custom_Novoline"), m7 = f("PRISONRP_Custom_M7"),
-                give = f("GiveMoneyPanel"),
             }
             hideLegacy(host, sc)
 
@@ -23016,6 +23423,7 @@ do
             adopt(O.arm, SP.arm, g1, 3)
             adopt(O.purple, SP.purple, g1, 4)
             adopt(O.hard, SP.hard, g1, 5)
+            adopt(O.hardmine, SP.hardmine, g1, 6)
 
             local s2 = newSection(sc, 2, L("Alerts and monitoring", "Alertes et surveillance"),
                 L("Know when staff shows up", "Savoir quand un staff arrive"))
@@ -23028,16 +23436,11 @@ do
                 L("On-screen helpers", "Aides à l'écran"))
             local g3 = s3.grid(2, 54)
             adopt(O.fps, SP.fps, g3, 1)
-            adopt(O.chat, SP.chat, g3, 2)
+            adopt(O.antiafk, SP.antiafk, g3, 2)
+            adopt(O.chat, SP.chat, g3, 3)
 
-            if O.give then
-                local s4 = newSection(sc, 4, L("Give money", "Donner de l'argent"),
-                    L("Sends cash to the selected player on a timer", "Envoie de l'argent au joueur choisi à intervalle régulier"))
-                s4.add(O.give, 410)
-                new("UISizeConstraint", {MaxSize = Vector2.new(420, 1000)}, O.give)
-            end
 
-            local s5 = newSection(sc, 5, L("External scripts", "Scripts externes"),
+            local s5 = newSection(sc, 4, L("External scripts", "Scripts externes"),
                 L("Third-party code loaded from the internet", "Code tiers chargé depuis internet"))
             local g5 = s5.grid(2, 54)
             adopt(O.iy, SP.iy, g5, 1)
@@ -23477,6 +23880,9 @@ do
                 if type(writefile) == "function" then writefile(LANG_FILE, tostring(LANG)) end
             end)
             refreshTexts()
+            if type(_G.PRISONRP_GiveMoneyUI.RefreshLanguage) == "function" then
+                pcall(_G.PRISONRP_GiveMoneyUI.RefreshLanguage, LANG)
+            end
             if searching and searchBox then runSearch(searchBox.Text) end
         end)
 
