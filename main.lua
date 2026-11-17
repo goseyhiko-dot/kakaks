@@ -1,3 +1,9 @@
+-- Auto Fish OFF : le suivi et les sources de maintien sont arrêtés proprement.
+-- V291 : les Perfect sont comptés depuis simulation.perfect si CatchPrompt ne le fournit pas.
+-- V290 : suivi Auto Fish repris du script autonome (barre blanche + marqueur gris).
+-- Désactive les logs émis par le lanceur lui-même.
+local print = function(...) end
+local warn = function(...) end
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 -- V342 : Auto Mine reprend l'approche frontale et le seuil d'arrivee valides dans la v6 autonome.
 -- V341 : reprend l'Auto-Fish V2 (cache de canne, relance adaptative, stats à la prise).
@@ -26,6 +32,8 @@
 -- V284 : ajoute le combo Captainsteach à Auto Parry, délais calibrés sur les logs de dégâts.
 -- V283 : Auto Fish : détection récursive du poisson, signatures identiques acceptées après délai, callbacks sans PerformCast possibles, CatchPrompt tolère les champs/valeurs variés.
 local __PRISONRP_SOURCE = [=[
+local print = function(...) end
+local warn = function(...) end
 -- V341 : Auto-Fish V2 intégré avec relance rapide après capture et skip.
 -- V340 : relance après CatchPrompt, ferme un mini-jeu resté actif et retire l'attente Secret de 20 s.
 -- V338 : rescane les callbacks à chaque lancer et lit directement upvalues[1].PreRolledFish.
@@ -478,7 +486,7 @@ do
             -- Garder la charge en file très courte : la source (près de 1 Mo) est
             -- déjà publiée dans getgenv/_G par le lanceur avant l'exécution du hub.
             local queuedCode =
-                "local queueEnv=_G; if type(getgenv)=='function' then pcall(function() local shared=getgenv(); if type(shared)=='table' then queueEnv=shared end end) end; "
+                "local print=function(...) end; local warn=function(...) end; local queueEnv=_G; if type(getgenv)=='function' then pcall(function() local shared=getgenv(); if type(shared)=='table' then queueEnv=shared end end) end; "
                 .. "local queueToken=" .. encodedToken .. "; "
                 .. "local function readPersisted(path) local reader=queueEnv.readfile or _G.readfile; if type(reader)~='function' then return nil end; local ok,data=pcall(reader,path); if ok and type(data)=='string' then return data end; return nil end; "
                 .. "local stateText=readPersisted('PRISONRP_AutoReload_State.txt'); "
@@ -7228,6 +7236,12 @@ _G.CombinedHubCleanup = function()
     end)
 
     pcall(function()
+        if type(_G.PRISONRP_FISHING_TRACKING_STOP) == "function" then
+            _G.PRISONRP_FISHING_TRACKING_STOP()
+            _G.PRISONRP_FISHING_TRACKING_STOP = nil
+        end
+    end)
+    pcall(function()
         if _G.PRISONRP_FISHING_MOUSE_RELEASE then
             _G.PRISONRP_FISHING_MOUSE_RELEASE()
             _G.PRISONRP_FISHING_MOUSE_RELEASE = nil
@@ -7272,15 +7286,166 @@ _G.CombinedHubCleanup = function()
         end
     end)
 end
+-- Contrôle de la barre repris du petit script Auto Fish.
+local VISUAL_GLUE = true
+local FORCE_CATCH = true
+local HOLD_LEAD = 0.2
+local TARGET_LEAD = 0.12
+local DEADBAND = 0.01
+local RESCUE_PIN = true
+local RESCUE_TRIGGER = 0.5
+local RESCUE_TARGET = 0.25
+local DEBUG_REEL = true
+local forceCatchHoldActive = false
+local perfectPendingForCatch = false
+local getFishingState
+local autoFishApplyHolding
+local autoFishRelease
+local autoFishReadMinigameState
+local waitMinigameIdle
+
+do
 -- AUTO FISH V28
 -- Utilise le vrai état interne du MinigameSystem et sa logique native.
--- On ne déplace jamais directement la zone blanche et on ne modifie jamais
--- fishPos / zonePos. On pilote uniquement SetHolding(), exactement comme
--- le vrai système de pêche.
+-- La barre blanche (PlayerZone) est collée à la ligne grise (FishMarker) côté GUI,
+-- et la simulation (zonePos) est collée à fishPos.
 
 local cachedFishingState = nil
 local nextFishingStateRefreshAt = 0
-local function getFishingState(forceRefresh)
+
+-- ===== Collage GUI : PlayerZone (barre blanche) <-> FishMarker (ligne grise) =====
+local cachedPlayerZone = nil
+local cachedPlayerZoneOriginalPosition = nil
+local cachedFishMarker = nil
+local zonePositionConn = nil
+local lastGuiScanAt = 0
+local guiLockActive = false      -- vrai pendant la phase reel
+local guiNotFoundWarned = false
+local stickGuiZoneToMarker       -- déclarée ici, définie plus bas
+
+local function disconnectZoneHook()
+    if zonePositionConn then
+        pcall(function() zonePositionConn:Disconnect() end)
+        zonePositionConn = nil
+    end
+end
+
+local function restoreGuiZonePosition()
+    guiLockActive = false
+    disconnectZoneHook()
+    local zone = cachedPlayerZone
+    local originalPosition = cachedPlayerZoneOriginalPosition
+    if zone and zone.Parent and originalPosition then
+        pcall(function() zone.Position = originalPosition end)
+    end
+    cachedPlayerZone = nil
+    cachedPlayerZoneOriginalPosition = nil
+    cachedFishMarker = nil
+end
+
+-- Si le jeu réécrit la position de la barre blanche, on la recolle immédiatement
+-- (avant le rendu) au lieu d'attendre l'image suivante.
+local function hookZone(zone)
+    disconnectZoneHook()
+    if not zone then return end
+    zonePositionConn = zone:GetPropertyChangedSignal("Position"):Connect(function()
+        if running and guiLockActive and stickGuiZoneToMarker then
+            stickGuiZoneToMarker()
+        end
+    end)
+end
+
+local function refreshGuiBars()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return end
+
+    local zone, marker = nil, nil
+    local fishingGui = pg:FindFirstChild("FishingGui")
+    local fishing = fishingGui and fishingGui:FindFirstChild("Fishing")
+    local bar = fishing and fishing:FindFirstChild("Bar")
+    if bar then
+        zone = bar:FindFirstChild("PlayerZone")
+        marker = bar:FindFirstChild("FishMarker")
+    end
+
+    -- Repli : le chemin a pu changer dans une mise à jour du jeu. Recherche limitée dans le temps.
+    if not (zone and marker) then
+        local now = os.clock()
+        if now - lastGuiScanAt < 0.5 then return end
+        lastGuiScanAt = now
+        local scope = fishingGui or pg
+        zone = zone or scope:FindFirstChild("PlayerZone", true)
+        marker = marker or scope:FindFirstChild("FishMarker", true)
+    end
+
+    if zone and zone:IsA("GuiObject") and zone ~= cachedPlayerZone then
+        cachedPlayerZone = zone
+        cachedPlayerZoneOriginalPosition = zone.Position
+        hookZone(zone)
+    end
+    if marker and marker:IsA("GuiObject") then cachedFishMarker = marker end
+end
+
+-- Échelle X à donner à la barre blanche pour que SON CENTRE tombe sur le CENTRE de la ligne grise.
+-- Fonctionne quels que soient l'ancre, la taille (scale/offset) et les offsets des deux objets.
+local function computeGluedScale(zone, marker)
+    local parent = zone.Parent
+    if not parent or not parent:IsA("GuiObject") then return nil end
+    local parentW = parent.AbsoluteSize.X
+    if parentW <= 0 then return nil end
+
+    local zoneSize = zone.Size.X
+    local zoneW = zoneSize.Scale * parentW + zoneSize.Offset
+
+    if marker.Parent == parent then
+        -- Même parent : calcul à partir des propriétés (pas de valeur absolue potentiellement périmée).
+        local markerPos, markerSize = marker.Position.X, marker.Size.X
+        local markerW = markerSize.Scale * parentW + markerSize.Offset
+        local markerCenter = markerPos.Scale * parentW + markerPos.Offset
+            + (0.5 - marker.AnchorPoint.X) * markerW
+        return (markerCenter - zoneW * 0.5 + zone.AnchorPoint.X * zoneW) / parentW
+    end
+
+    -- Parents différents : repli en coordonnées absolues.
+    local zoneAbsW = zone.AbsoluteSize.X
+    local markerCenter = marker.AbsolutePosition.X + marker.AbsoluteSize.X * 0.5
+    return ((markerCenter - zoneAbsW * 0.5) - parent.AbsolutePosition.X
+        + zone.AnchorPoint.X * zoneAbsW) / parentW
+end
+
+stickGuiZoneToMarker = function()
+    if not VISUAL_GLUE then return false end
+    if not cachedPlayerZone or not cachedFishMarker
+        or not cachedPlayerZone.Parent or not cachedFishMarker.Parent then
+        cachedPlayerZone, cachedFishMarker = nil, nil
+        refreshGuiBars()
+    end
+    local zone, marker = cachedPlayerZone, cachedFishMarker
+    if not zone or not marker then
+        if guiLockActive and not guiNotFoundWarned then
+            guiNotFoundWarned = true
+            warn("[Auto-Fish] PlayerZone / FishMarker introuvables dans PlayerGui.FishingGui")
+        end
+        return false
+    end
+
+    local desiredScale = computeGluedScale(zone, marker)
+    if not desiredScale or desiredScale ~= desiredScale
+        or desiredScale == math.huge or desiredScale == -math.huge then
+        return false
+    end
+
+    -- On n'écrit que si la valeur diffère : évite les boucles avec le signal Position.
+    local current = zone.Position
+    if math.abs(current.X.Scale - desiredScale) > 0.0001 or current.X.Offset ~= 0 then
+        pcall(function()
+            zone.Position = UDim2.new(desiredScale, 0, current.Y.Scale, current.Y.Offset)
+        end)
+    end
+    return true
+end
+
+getFishingState = function(forceRefresh)
     if not MinigameSystem or not MinigameSystem.SetHolding or type(get_upvalues) ~= "function" then
         cachedFishingState = nil
         return nil
@@ -7296,15 +7461,14 @@ local function getFishingState(forceRefresh)
     local ok, holdingUvs = pcall(get_upvalues, MinigameSystem.SetHolding)
     if not ok or type(holdingUvs) ~= "table" then
         cachedFishingState = nil
-        nextFishingStateRefreshAt = now + 0.05
+        nextFishingStateRefreshAt = now + 0.02
         return nil
     end
 
-    -- La simulation évolue en place ; on actualise sa référence si le module la remplace.
     for _, candidate in pairs(holdingUvs) do
         if type(candidate) == "table" and type(candidate.simulation) == "table" then
             cachedFishingState = candidate
-            nextFishingStateRefreshAt = now + 0.08
+            nextFishingStateRefreshAt = now + 0.02
             return candidate
         end
     end
@@ -7312,62 +7476,195 @@ local function getFishingState(forceRefresh)
     local first = holdingUvs[1]
     if type(first) == "table" and type(first.simulation) == "table" then
         cachedFishingState = first
-        nextFishingStateRefreshAt = now + 0.08
+        nextFishingStateRefreshAt = now + 0.02
         return first
     end
     cachedFishingState = nil
-    nextFishingStateRefreshAt = now + 0.05
+    nextFishingStateRefreshAt = now + 0.02
     return nil
 end
-local function autoFishApplyHolding()
-    if not MinigameSystem or not MinigameSystem.SetHolding then
+
+-- Contrôleur : règle native du jeu, mais avec une cible bornée. La zone blanche est limitée à
+-- [zoneHalf, 1 - zoneHalf] et le poisson est "inside" tant que |zonePos - fishPos| <= zoneHalf :
+-- inutile d'être pixel-parfait, il faut rester dans la zone en permanence.
+local reelCtl = {
+    lastT = nil, lastFish = nil, fishVel = 0,
+    decision = false, sentHold = nil, lastSetAt = 0,
+    lastInfoAt = 0, lastDebugAt = 0, rescues = 0, introPrinted = false,
+}
+
+local function setHoldIfChanged(value)
+    local now = os.clock()
+    if value ~= reelCtl.sentHold or now - reelCtl.lastSetAt >= 0.2 then
+        reelCtl.sentHold = value
+        reelCtl.lastSetAt = now
+        if MinigameSystem and MinigameSystem.SetHolding then
+            pcall(function() MinigameSystem:SetHolding(value, "autofish") end)
+        end
+    end
+end
+
+-- Affiche une fois les réglages réels de la simulation (utile pour affiner ensuite).
+local function printSimIntroOnce(sim)
+    if reelCtl.introPrinted then return end
+    reelCtl.introPrinted = true
+    local fields = {}
+    for _, key in ipairs({"zoneHalf", "status", "inside", "perfect", "moveKind", "progress"}) do
+        fields[#fields + 1] = key .. "=" .. tostring(sim[key])
+    end
+    print("[Auto-Fish] sim :", table.concat(fields, ", "))
+
+    local settingsParts = {}
+    if type(sim.settings) == "table" then
+        for key, value in pairs(sim.settings) do
+            local kind = type(value)
+            if kind == "number" or kind == "string" or kind == "boolean" then
+                settingsParts[#settingsParts + 1] = tostring(key) .. "=" .. tostring(value)
+            end
+        end
+        table.sort(settingsParts)
+    end
+    print("[Auto-Fish] sim.settings :", table.concat(settingsParts, ", "))
+
+    local ok, metatable = pcall(getmetatable, sim)
+    if ok and type(metatable) == "table" then
+        local names = {}
+        local index = rawget(metatable, "__index")
+        local source = type(index) == "table" and index or metatable
+        for key, value in pairs(source) do
+            if type(value) == "function" then names[#names + 1] = tostring(key) end
+        end
+        table.sort(names)
+        print("[Auto-Fish] sim methods :", table.concat(names, ", "))
+    end
+end
+
+autoFishApplyHolding = function()
+    if AutoEatDrinkBusy then
+        if MinigameSystem and MinigameSystem.SetHolding then
+            pcall(function()
+                MinigameSystem:SetHolding(false, "autofish")
+                if forceCatchHoldActive then MinigameSystem:SetHolding(false, "mouse") end
+            end)
+        end
+        forceCatchHoldActive = false
+        reelCtl.sentHold = false
         return false
     end
 
-    -- La boucle rapide de maintien doit respecter la même pause que la pêche principale.
-    if AutoEatDrinkBusy then
-        pcall(function() MinigameSystem:SetHolding(false, "autofish") end)
-        return false
-    end
+    guiLockActive = true
 
     local state = getFishingState()
-    if not state or not state.simulation then
+    local sim = state and state.simulation
+    if type(sim) ~= "table" then
         return false
     end
-
-    local sim = state.simulation
+    if sim.perfect == true then perfectPendingForCatch = true end
     local fishPos = tonumber(sim.fishPos)
     local zonePos = tonumber(sim.zonePos)
     local zoneVel = tonumber(sim.zoneVel) or 0
-
-    if not fishPos or not zonePos then
+    if not fishPos or not zonePos or fishPos ~= fishPos or zonePos ~= zonePos
+        or zoneVel ~= zoneVel then
         return false
     end
+    local zoneHalf = tonumber(sim.zoneHalf) or 0.2175
+    printSimIntroOnce(sim)
 
-    -- Logique native du jeu :
-    -- holding = zonePos + zoneVel * 0.2 < fishPos
-    local shouldHold = (zonePos + zoneVel * 0.2) < fishPos
+    local c = reelCtl
+    local now = os.clock()
+    local dt = c.lastT and (now - c.lastT) or nil
 
-    local appliedOk = pcall(function()
-        MinigameSystem:SetHolding(shouldHold, "autofish")
-    end)
+    -- Plusieurs boucles appellent cette fonction dans la même image : une seule décision par image.
+    if dt and dt < 0.004 then
+        setHoldIfChanged(c.decision)
+        stickGuiZoneToMarker()
+        return true
+    end
 
-    return appliedOk
+    -- Nouvelle remontée (ou longue pause).
+    if not dt or dt > 0.25 then
+        c.fishVel = 0
+        c.lastFish = nil
+        c.rescues = 0
+        dt = nil
+    end
+    if dt and c.lastFish then
+        local fishSpeed = (fishPos - c.lastFish) / dt
+        if math.abs(fishSpeed) < 3 then
+            c.fishVel = c.fishVel + (fishSpeed - c.fishVel) * 0.4
+        end
+    end
+
+    -- Filet de sécurité : si la zone est sur le point de perdre le poisson, on la ramène près de lui
+    -- dans la simulation. Rare quand le contrôle est bon ; le compteur est affiché dans le diagnostic.
+    if RESCUE_PIN then
+        local err = zonePos - fishPos
+        if math.abs(err) > zoneHalf * RESCUE_TRIGGER then
+            local pulled = fishPos + math.clamp(err, -zoneHalf * RESCUE_TARGET, zoneHalf * RESCUE_TARGET)
+            pulled = math.clamp(pulled, zoneHalf, 1 - zoneHalf)
+            if math.abs(pulled - zonePos) > 0.001 then
+                pcall(function()
+                    sim.zonePos = pulled
+                    sim.zoneVel = zoneVel * 0.5
+                end)
+                zonePos = pulled
+                zoneVel = zoneVel * 0.5
+                c.rescues = c.rescues + 1
+            end
+        end
+    end
+
+    -- Règle native avec cible bornée : holding = zonePos + zoneVel * lead < cible
+    local target = math.clamp(fishPos + c.fishVel * TARGET_LEAD, zoneHalf, 1 - zoneHalf)
+    local predicted = zonePos + zoneVel * HOLD_LEAD
+    local shouldHold
+    if math.abs(target - predicted) < DEADBAND then
+        shouldHold = c.decision
+    else
+        shouldHold = predicted < target
+    end
+
+    c.lastT, c.lastFish, c.decision = now, fishPos, shouldHold
+    setHoldIfChanged(shouldHold)
+
+    local progress = tonumber(state.progress) or tonumber(sim.progress) or 0
+    if now - c.lastInfoAt >= 0.25 then
+        c.lastInfoAt = now
+        stats.reelInfo = string.format("écart %+.2f | prog %d%%", zonePos - fishPos, math.floor(progress * 100 + 0.5))
+        updateUI()
+    end
+    if DEBUG_REEL and now - c.lastDebugAt >= 1 then
+        c.lastDebugAt = now
+        print(string.format("[Auto-Fish] reel | poisson %.3f | zone %.3f | vZone %+.3f | écart %+.3f | inside %s | prog %.0f%% | statut %s | filet %d | maintien %s",
+            fishPos, zonePos, zoneVel, zonePos - fishPos, tostring(sim.inside),
+            progress * 100, tostring(sim.status), c.rescues, tostring(shouldHold)))
+    end
+
+    stickGuiZoneToMarker()
+    return true
 end
 
-local function autoFishRelease()
+autoFishRelease = function()
+    guiLockActive = false
+    reelCtl.sentHold = false
+    reelCtl.lastT = nil
+    reelCtl.streak = 0
+    stats.reelInfo = nil
+    local releaseForceCatchMouse = forceCatchHoldActive
+    forceCatchHoldActive = false
     if MinigameSystem and MinigameSystem.SetHolding then
         pcall(function()
             MinigameSystem:SetHolding(false, "autofish")
+            if releaseForceCatchMouse then MinigameSystem:SetHolding(false, "mouse") end
         end)
     end
 end
 
-_G.PRISONRP_FISHING_MOUSE_RELEASE = autoFishRelease
+
 
 -- Lecture protégée de l'état du mini-jeu : une erreur ponctuelle du module
 -- ne doit jamais tuer la boucle principale et laisser le statut bloqué sur Reeling.
-local function autoFishReadMinigameState()
+autoFishReadMinigameState = function()
     if not MinigameSystem then
         return false, nil, true
     end
@@ -7392,7 +7689,7 @@ local function autoFishReadMinigameState()
 end
 
 -- Rend la main dès que le jeu ferme le mini-jeu, au lieu d'attendre un délai fixe.
-local function waitMinigameIdle(timeout)
+waitMinigameIdle = function(timeout)
     local deadline = os.clock() + (tonumber(timeout) or 0)
     while running and os.clock() < deadline do
         local active, _, readOk = autoFishReadMinigameState()
@@ -7403,14 +7700,49 @@ local function waitMinigameIdle(timeout)
     return readOk and not active
 end
 
--- Auto Fish V28 : boucle de contrôle rapide.
--- Le moteur de jeu reste responsable du déplacement de la zone blanche ;
--- nous ne faisons que maintenir / relâcher via SetHolding().
+
+-- Contrôle rapide + verrou de rendu (colle la barre blanche APRÈS tous les scripts du jeu)
+local RunService = game:GetService("RunService")
+local releaseSentSinceActive = false
+local renderBound = false
+local RENDER_LOCK_NAME = "AutoFishZoneLockLast"
+
+local function zoneLockStep()
+    if not running or not ScreenGui or not ScreenGui.Parent then
+        return
+    end
+    if not (_G.AutoFishingEnabled and MinigameSystem) or AutoEatDrinkBusy then
+        return
+    end
+    local active, phase, stateReadOk = autoFishReadMinigameState()
+    if stateReadOk and active and phase == "reel" then
+        autoFishApplyHolding()
+        stickGuiZoneToMarker()
+        releaseSentSinceActive = false
+    end
+end
+
+local function ensureRenderLock()
+    if renderBound then return end
+    -- Priorité Last : s'exécute après le script de caméra/GUI du jeu, donc le dernier
+    -- mot sur la position de la barre blanche avant l'affichage nous revient.
+    local ok = pcall(function()
+        RunService:BindToRenderStep(RENDER_LOCK_NAME, Enum.RenderPriority.Last.Value, zoneLockStep)
+    end)
+    renderBound = ok
+end
+
+local function unbindRenderLock()
+    if renderBound then
+        pcall(function() RunService:UnbindFromRenderStep(RENDER_LOCK_NAME) end)
+        renderBound = false
+    end
+    disconnectZoneHook()
+end
+
 task.spawn(function()
-    local releaseSentSinceActive = false
+    ensureRenderLock()
     while running and ScreenGui and ScreenGui.Parent do
-        -- Au repos, inutile de réveiller le contrôle rapide 100 fois/s ou
-        -- de renvoyer SetHolding(false) en boucle : une libération suffit.
         if not (_G.AutoFishingEnabled and MinigameSystem) then
             if not releaseSentSinceActive then
                 autoFishRelease()
@@ -7421,7 +7753,6 @@ task.spawn(function()
         end
 
         task.wait(0.01)
-        -- L'état peut avoir changé pendant l'attente.
         if not (_G.AutoFishingEnabled and MinigameSystem) then
             if not releaseSentSinceActive then
                 autoFishRelease()
@@ -7431,8 +7762,8 @@ task.spawn(function()
         end
 
         local active, phase, stateReadOk = autoFishReadMinigameState()
-
         if stateReadOk and active and phase == "reel" then
+            ensureRenderLock()
             autoFishApplyHolding()
             releaseSentSinceActive = false
         elseif not releaseSentSinceActive then
@@ -7441,9 +7772,115 @@ task.spawn(function()
         end
     end
 
+    unbindRenderLock()
     autoFishRelease()
 end)
 
+-- ForceCatch repris du petit script : maintien reel + zone calée sur le poisson.
+local forceCatchConn = nil
+local forceCatchLastPrint = 0
+
+local function forceCatchGetState()
+    return getFishingState()
+end
+
+local function forceCatchStep()
+    if not FORCE_CATCH or not running then return end
+    if not _G.AutoFishingEnabled then
+        if forceCatchHoldActive then autoFishRelease() end
+        return
+    end
+    if not MinigameSystem then return end
+    if AutoEatDrinkBusy then
+        if forceCatchHoldActive then autoFishRelease() end
+        return
+    end
+
+    local active, phase, stateOk = autoFishReadMinigameState()
+    if not stateOk or not active or phase ~= "reel" then return end
+
+    local st = forceCatchGetState()
+    if not st or type(st.simulation) ~= "table" then return end
+    local sim = st.simulation
+    if sim.perfect == true then perfectPendingForCatch = true end
+    local fish = tonumber(sim.fishPos)
+    if not fish then return end
+
+    pcall(function()
+        MinigameSystem:SetHolding(true, "autofish")
+        MinigameSystem:SetHolding(true, "mouse")
+    end)
+    forceCatchHoldActive = true
+    st.holding = true
+    if type(st.holdSources) == "table" then
+        st.holdSources.autofish = true
+        st.holdSources.mouse = true
+    end
+
+    sim.zonePos = fish
+    sim.zoneVel = 0
+    if sim.inside ~= nil then sim.inside = true end
+
+    if VISUAL_GLUE then stickGuiZoneToMarker() end
+
+    if DEBUG_REEL and os.clock() - forceCatchLastPrint > 0.5 then
+        forceCatchLastPrint = os.clock()
+        local progress = tonumber(sim.progress) or tonumber(st.progress) or -1
+        stats.reelInfo = string.format("REAL %d%%", math.floor(math.max(progress, 0) * 100 + 0.5))
+    end
+end
+
+local function startForceCatch()
+    if forceCatchConn then return end
+    local ok = pcall(function()
+        RunService:BindToRenderStep("AutoFishForceCatch", Enum.RenderPriority.Last.Value, forceCatchStep)
+    end)
+    if not ok then
+        forceCatchConn = RunService.RenderStepped:Connect(forceCatchStep)
+    else
+        forceCatchConn = true
+    end
+end
+
+local function stopForceCatch()
+    pcall(function() RunService:UnbindFromRenderStep("AutoFishForceCatch") end)
+    if forceCatchConn and forceCatchConn ~= true then
+        pcall(function() forceCatchConn:Disconnect() end)
+    end
+    forceCatchConn = nil
+    forceCatchHoldActive = false
+    if MinigameSystem and MinigameSystem.SetHolding then
+        pcall(function()
+            MinigameSystem:SetHolding(false, "autofish")
+            MinigameSystem:SetHolding(false, "mouse")
+        end)
+    end
+end
+
+local function setFishingTrackingEnabled(enabled)
+    if enabled then
+        ensureRenderLock()
+        startForceCatch()
+        releaseSentSinceActive = false
+        return
+    end
+
+    autoFishRelease()
+    stopForceCatch()
+    unbindRenderLock()
+    restoreGuiZonePosition()
+    releaseSentSinceActive = true
+end
+_G.PRISONRP_FISHING_MOUSE_RELEASE = autoFishRelease
+_G.PRISONRP_FISHING_TRACKING_SET_ENABLED = setFishingTrackingEnabled
+_G.PRISONRP_FISHING_TRACKING_STOP = function()
+    pcall(stopForceCatch)
+    pcall(unbindRenderLock)
+    pcall(restoreGuiZonePosition)
+    pcall(autoFishRelease)
+    _G.PRISONRP_FISHING_TRACKING_SET_ENABLED = nil
+end
+end
 -- Boucle Pêche principale
 -- V208 : mémorise le dernier compteur vendu pour éviter de renvoyer
 -- Inventory_SellAll à chaque cycle tant que totalCaught reste un multiple de 3.
@@ -7544,6 +7981,8 @@ task.spawn(function()
         _G.PRISONRP_FISHING_LAST_CATCH_KEY = catchKey
         _G.PRISONRP_FISHING_LAST_CATCH_TIME = now
         _G.PRISONRP_FISHING_LAST_CATCH = data
+        local perfectThisCatch = perfectPendingForCatch or autoFishPayloadIsPerfect(data)
+        perfectPendingForCatch = false
         _G.PRISONRP_FISHING_CATCH_COUNT = (tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0) + 1
         print("[Auto-Fish] CatchPrompt", fishName, "|", fishRarity)
 
@@ -7551,7 +7990,7 @@ task.spawn(function()
         if _G.AutoFishingEnabled then
             stats.totalCaught = stats.totalCaught + 1
             stats.lastFish = tostring(fishName) .. " (" .. tostring(fishRarity) .. ")"
-            if autoFishPayloadIsPerfect(data) then
+            if perfectThisCatch then
                 stats.perfectCount = stats.perfectCount + 1
             elseif not perfectSchemaWarned then
                 local keys = {}
@@ -7774,6 +8213,7 @@ local function runAutoFishingWorker()
 
             -- Ferme la fenêtre au début d'un nouveau cycle de pêche.
             AutoFishingCatchWindow = false
+            perfectPendingForCatch = false
             local fishCaughtThisCycle = false
             local catchCountAtCycleStart = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0
 
@@ -8129,8 +8569,7 @@ local function runAutoFishingWorker()
                             updateUI()
                         end
 
-                        -- V28 : reproduit la décision native du moteur.
-                        -- Aucun déplacement/téléport de la zone blanche.
+                        -- V28 : applique le suivi du petit script, avec maintien et zone recalee sur le marqueur.
                         autoFishApplyHolding()
                     else
                         reelDeadline = nil
@@ -11740,7 +12179,9 @@ end)
                 end
             end
             AutoFishingCatchWindow = false
-            if not _G.AutoFishingEnabled and type(autoFishRelease) == "function" then
+            if type(_G.PRISONRP_FISHING_TRACKING_SET_ENABLED) == "function" then
+                pcall(_G.PRISONRP_FISHING_TRACKING_SET_ENABLED, _G.AutoFishingEnabled == true)
+            elseif not _G.AutoFishingEnabled and type(autoFishRelease) == "function" then
                 autoFishRelease()
             end
             stats.status = _G.AutoFishingEnabled and "Running..." or "Stopped"
@@ -17266,7 +17707,11 @@ end
             _G.AutoFishingEnabled = false
             AutoFishingCatchWindow = false
             AutoEatDrinkPending = false
-            if type(autoFishRelease) == "function" then pcall(autoFishRelease) end
+            if type(_G.PRISONRP_FISHING_TRACKING_SET_ENABLED) == "function" then
+                pcall(_G.PRISONRP_FISHING_TRACKING_SET_ENABLED, false)
+            elseif type(autoFishRelease) == "function" then
+                pcall(autoFishRelease)
+            end
             if wasEnabled then
                 print("[Hard Fish] Auto Fish stopped before server change:", tostring(reason))
             end
