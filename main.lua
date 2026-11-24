@@ -2,8 +2,20 @@
 -- V291 : les Perfect sont comptés depuis simulation.perfect si CatchPrompt ne le fournit pas.
 -- V290 : suivi Auto Fish repris du script autonome (barre blanche + marqueur gris).
 -- Désactive les logs émis par le lanceur lui-même.
-local print = function(...) end
-local warn = function(...) end
+local print, warn = print, warn
+do
+    -- Logs coupés par défaut. Pour les activer : getgenv().PRISONRP_DEBUG = true avant d'exécuter le script.
+    local debugOn = (rawget(_G, "PRISONRP_DEBUG") == true)
+    if not debugOn and type(getgenv) == "function" then
+        pcall(function()
+            local shared = getgenv()
+            debugOn = type(shared) == "table" and rawget(shared, "PRISONRP_DEBUG") == true
+        end)
+    end
+    if not debugOn then
+        print, warn = function(...) end, function(...) end
+    end
+end
 -- Lanceur autonome : embarque le script pour permettre Auto Reload après téléportation.
 -- V342 : Auto Mine reprend l'approche frontale et le seuil d'arrivee valides dans la v6 autonome.
 -- V341 : reprend l'Auto-Fish V2 (cache de canne, relance adaptative, stats à la prise).
@@ -32,8 +44,21 @@ local warn = function(...) end
 -- V284 : ajoute le combo Captainsteach à Auto Parry, délais calibrés sur les logs de dégâts.
 -- V283 : Auto Fish : détection récursive du poisson, signatures identiques acceptées après délai, callbacks sans PerformCast possibles, CatchPrompt tolère les champs/valeurs variés.
 local __PRISONRP_SOURCE = [=[
-local print = function(...) end
-local warn = function(...) end
+-- [patch-engine] applied: P00 P01 P02 P03 P04 P05 P06 P07 P08 P09 P10 P11 P12 P13 P14 P20 P21 P22 P24 P25 P26 P30 P31 P32 P33 P34
+local print, warn = print, warn
+do
+    -- Logs coupés par défaut. Pour les activer : getgenv().PRISONRP_DEBUG = true avant d'exécuter le script.
+    local debugOn = (rawget(_G, "PRISONRP_DEBUG") == true)
+    if not debugOn and type(getgenv) == "function" then
+        pcall(function()
+            local shared = getgenv()
+            debugOn = type(shared) == "table" and rawget(shared, "PRISONRP_DEBUG") == true
+        end)
+    end
+    if not debugOn then
+        print, warn = function(...) end, function(...) end
+    end
+end
 -- V341 : Auto-Fish V2 intégré avec relance rapide après capture et skip.
 -- V340 : relance après CatchPrompt, ferme un mini-jeu resté actif et retire l'attente Secret de 20 s.
 -- V338 : rescane les callbacks à chaque lancer et lit directement upvalues[1].PreRolledFish.
@@ -310,6 +335,107 @@ end
 _G.AutoFishingEnabled = false
 _G.AutoSellEnabled = false
 _G.MinRarityIndex = 1
+
+-- [patch P00] i18n partagé : langue lue une seule fois, traductions rafraîchies à chaque changement de langue
+do
+    local langValue = 2
+    pcall(function()
+        if type(isfile) == "function" and type(readfile) == "function" and isfile("PRISONRP_UI_Lang.txt") then
+            local saved = tonumber(readfile("PRISONRP_UI_Lang.txt"))
+            if saved == 1 or saved == 2 then langValue = saved end
+        end
+    end)
+    _G.PRISONRP_LANG_VALUE = langValue
+end
+
+PRISONRP_LANG_HOOKS = {}
+PRISONRP_I18N_ENTRIES = {}
+PRISONRP_FR_DICT = {
+    ["SAVED PROFILES"] = "PROFILS SAUVEGARDÉS",
+    ["APPEARANCE & ACCESSIBILITY"] = "APPARENCE ET ACCESSIBILITÉ",
+    ["INTERFACE SCALE"] = "ÉCHELLE DE L'INTERFACE",
+    ["TEXT SIZE"] = "TAILLE DU TEXTE",
+    ["HIGH CONTRAST"] = "CONTRASTE ÉLEVÉ",
+    ["Brighter neutral text"] = "Texte neutre plus lumineux",
+    ["LARGER TOUCH TARGETS"] = "ZONES TACTILES PLUS GRANDES",
+    ["Enlarges the menu when screen space allows"] = "Agrandit le menu si la place le permet",
+    ["REDUCED MOTION"] = "ANIMATIONS RÉDUITES",
+    ["Shorter transitions"] = "Transitions plus courtes",
+    ["AUTO RELOAD"] = "RECHARGEMENT AUTO",
+    ["Reload after server teleport"] = "Recharger après un changement de serveur",
+    ["SAVE"] = "SAUVER",
+    ["LOAD"] = "CHARGER",
+    ["RESET"] = "RÉINIT.",
+    ["⌕  Search settings or profiles..."] = "⌕  Chercher un réglage ou un profil...",
+    ["Click KEY and press a key/mouse button. Esc cancels; Backspace/Delete clears. SAVE the slot in SETTINGS, then set it as DEFAULT to auto-load it."] = "Clique sur TOUCHE puis appuie sur une touche ou un bouton de souris. Échap annule ; Retour arrière/Suppr efface. SAUVE le profil dans RÉGLAGES, puis mets-le PAR DÉFAUT pour le charger au démarrage.",
+    ["✕ CLEAR ALL BINDS"] = "✕ EFFACER TOUS LES RACCOURCIS",
+    ["START AUTO FISH"] = "DÉMARRER LA PÊCHE AUTO",
+    ["AUTO DRINK / EAT"] = "MANGER / BOIRE AUTO",
+    ["AUTO MINE"] = "MINAGE AUTO",
+    ["FLY"] = "VOL",
+    ["FREECAM"] = "CAMÉRA LIBRE",
+    ["FPS COUNTER"] = "COMPTEUR FPS",
+    ["AUTO PURPLE"] = "PURPLE AUTO",
+    ["AUTO PARRY"] = "PARADE AUTO",
+    ["ESP: ENABLE CHECKED BUTTONS"] = "ESP : ACTIVER LES OPTIONS COCHÉES",
+}
+
+function PRISONRP_TR(en, fr)
+    if _G.PRISONRP_LANG_VALUE == 1 then return en end
+    return fr or en
+end
+
+function PRISONRP_BindText(obj, en, fr, prop)
+    prop = prop or "Text"
+    pcall(function() obj[prop] = PRISONRP_TR(en, fr) end)
+    table.insert(PRISONRP_I18N_ENTRIES, {obj = obj, en = en, fr = fr, prop = prop})
+end
+
+function PRISONRP_RefreshLanguage()
+    for index = #PRISONRP_I18N_ENTRIES, 1, -1 do
+        local entry = PRISONRP_I18N_ENTRIES[index]
+        if entry.obj and entry.obj.Parent then
+            pcall(function() entry.obj[entry.prop] = PRISONRP_TR(entry.en, entry.fr) end)
+        else
+            table.remove(PRISONRP_I18N_ENTRIES, index)
+        end
+    end
+    for _, hook in ipairs(PRISONRP_LANG_HOOKS) do
+        pcall(hook)
+    end
+end
+
+function PRISONRP_AutoTranslate(root, dict)
+    dict = dict or PRISONRP_FR_DICT
+    if not root then return end
+    local function handle(obj)
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+            local current = obj.Text
+            if dict[current] then PRISONRP_BindText(obj, current, dict[current], "Text") end
+            if obj:IsA("TextBox") then
+                local placeholder = obj.PlaceholderText
+                if dict[placeholder] then
+                    PRISONRP_BindText(obj, placeholder, dict[placeholder], "PlaceholderText")
+                end
+            end
+        end
+    end
+    pcall(handle, root)
+    for _, descendant in ipairs(root:GetDescendants()) do
+        pcall(handle, descendant)
+    end
+end
+
+function PRISONRP_FitButtonText(button, minSize, maxSize)
+    if not button then return end
+    button.TextScaled = true
+    local constraint = button:FindFirstChildOfClass("UITextSizeConstraint")
+    if not constraint then constraint = Instance.new("UITextSizeConstraint") end
+    constraint.MinTextSize = minSize or 8
+    constraint.MaxTextSize = maxSize or 13
+    constraint.Parent = button
+end
+
 _G.BlackMarketESP = false
 
 -- Auto Pompes (ajouté, sans modifier le fonctionnement de la pêche)
@@ -1218,7 +1344,7 @@ end
 -- Certaines mises à jour rejettent un gros saut de position effectué en une seule frame.
 -- On conserve donc le comportement "TP" pour l'utilisateur, mais la position est
 -- envoyée progressivement afin de limiter le rubber-band serveur.
-TP_STEP_TIME = 0.45
+-- (TP_STEP_TIME supprimé : inutilisé)
 TP_MAX_STEP_DISTANCE = 7
 TP_HOLD_TIME = 0.12
 
@@ -1428,7 +1554,7 @@ MainFrame.Name = "MainFrame"
 MainFrame.Size = UDim2.new(0, 320, 0, 620)
 MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(22, 24, 30)
+MainFrame.BackgroundColor3 = Color3.fromRGB(22, 18, 30)
 MainFrame.BorderSizePixel = 0
 MainFrame.Active = true
 MainFrame.Draggable = true
@@ -1440,6 +1566,16 @@ MainFrameScale = Instance.new("UIScale")
 MainFrameScale.Name = "InterfaceScale"
 MainFrameScale.Scale = 0.70
 MainFrameScale.Parent = MainFrame
+
+-- [patch P25] conversion pixels écran -> offset de Position de MainFrame
+-- (UIScale peut aussi mettre à l'échelle l'offset de Position : on le mesure une fois au démarrage, voir plus bas)
+_G.PRISONRP_UI_OFFSET_SCALED = nil
+function PRISONRP_UiPixelsToOffset(pixels)
+    if _G.PRISONRP_UI_OFFSET_SCALED == true then
+        return pixels / math.max((MainFrameScale and MainFrameScale.Scale) or 1, 0.01)
+    end
+    return pixels
+end
 
 -- V100 : interface principale arrondie.
 MainFrameCorner = Instance.new("UICorner")
@@ -1477,7 +1613,7 @@ FPSCounterFrame.Name = "FPSCounterFrame"
 FPSCounterFrame.AnchorPoint = Vector2.new(1, 0)
 FPSCounterFrame.Position = UDim2.new(1, -18, 0, 60)
 FPSCounterFrame.Size = UDim2.fromOffset(120, 42)
-FPSCounterFrame.BackgroundColor3 = Color3.fromRGB(24, 28, 35)
+FPSCounterFrame.BackgroundColor3 = Color3.fromRGB(24, 18, 35)
 FPSCounterFrame.BackgroundTransparency = 0.08
 FPSCounterFrame.BorderSizePixel = 0
 FPSCounterFrame.ZIndex = 10
@@ -1486,7 +1622,7 @@ local FPSCounterCorner = Instance.new("UICorner")
 FPSCounterCorner.CornerRadius = UDim.new(0, 8)
 FPSCounterCorner.Parent = FPSCounterFrame
 local FPSCounterStroke = Instance.new("UIStroke")
-FPSCounterStroke.Color = Color3.fromRGB(75, 95, 115)
+FPSCounterStroke.Color = Color3.fromRGB(76, 54, 115)
 FPSCounterStroke.Transparency = 0.25
 FPSCounterStroke.Thickness = 1
 FPSCounterStroke.Parent = FPSCounterFrame
@@ -1504,6 +1640,20 @@ FPSCounterLabel.TextYAlignment = Enum.TextYAlignment.Center
 FPSCounterLabel.ZIndex = 11
 FPSCounterLabel.Parent = FPSCounterFrame
 
+-- [patch P06] Overlay ESP indépendant du hub (traceurs, Money View) : reste visible quand le hub est masqué.
+pcall(function()
+    local previousESPGui = guiParent:FindFirstChild("PRISONRP_ESPOverlayGui")
+    if previousESPGui then previousESPGui:Destroy() end
+end)
+ESPOverlayGui = Instance.new("ScreenGui")
+ESPOverlayGui.Name = "PRISONRP_ESPOverlayGui"
+ESPOverlayGui.ResetOnSpawn = false
+ESPOverlayGui.IgnoreGuiInset = true
+ESPOverlayGui.DisplayOrder = 999998
+ESPOverlayGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ESPOverlayGui.Parent = guiParent
+
+
 -- Marqueur de démarrage : doit être visible même si une partie du script échoue plus loin.
 -- Petit garde-fou : le menu de base doit être visible immédiatement.
 pcall(function()
@@ -1520,7 +1670,7 @@ task.wait()
 -- Header
 TitleBar = Instance.new("Frame")
 TitleBar.Size = UDim2.new(1, 0, 0, 44)
-TitleBar.BackgroundColor3 = Color3.fromRGB(15, 17, 22)
+TitleBar.BackgroundColor3 = Color3.fromRGB(15, 11, 22)
 TitleBar.BorderSizePixel = 0
 TitleBar.Parent = MainFrame
 
@@ -1560,7 +1710,7 @@ RightShiftLabel.Parent = TitleBar
 CloseBtn = Instance.new("TextButton")
 CloseBtn.Size = UDim2.fromOffset(34, 30)
 CloseBtn.Position = UDim2.new(1, -120, 0, 7)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(38, 42, 54)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(38, 29, 54)
 CloseBtn.Text = "−"
 CloseBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 CloseBtn.TextSize = 17
@@ -1598,7 +1748,7 @@ MinimizedHubButton.Name = "MinimizedHubButton"
 MinimizedHubButton.Size = UDim2.fromOffset(122, 34)
 MinimizedHubButton.Position = UDim2.fromOffset(426, 18)
 MinimizedHubButton.AnchorPoint = Vector2.new(0, 0)
-MinimizedHubButton.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
+MinimizedHubButton.BackgroundColor3 = Color3.fromRGB(16, 11, 25)
 MinimizedHubButton.BorderSizePixel = 0
 -- Le texte est recréé dans un TextLabel indépendant pour éviter tout ancien style hérité.
 MinimizedHubButton.Text = ""
@@ -1640,7 +1790,7 @@ MinimizedHubCorner.Parent = MinimizedHubButton
 
 MinimizedHubStroke = Instance.new("UIStroke")
 -- Contour discret assorti au thème sombre du hub, sans effet de survol.
-MinimizedHubStroke.Color = Color3.fromRGB(75, 88, 112)
+MinimizedHubStroke.Color = Color3.fromRGB(76, 55, 112)
 MinimizedHubStroke.Thickness = 1
 MinimizedHubStroke.Transparency = 0.28
 MinimizedHubStroke.Parent = MinimizedHubButton
@@ -1760,7 +1910,7 @@ Content.Parent = MainFrame
 StatusLabel = Instance.new("TextLabel")
 StatusLabel.Size = UDim2.new(1, 0, 0, 22)
 StatusLabel.Position = UDim2.new(0, 0, 0, 0)
-StatusLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+StatusLabel.BackgroundColor3 = Color3.fromRGB(28, 20, 42)
 StatusLabel.Text = "Status: Waiting"
 StatusLabel.TextColor3 = Color3.fromRGB(130, 200, 255)
 StatusLabel.TextSize = 11
@@ -1771,7 +1921,7 @@ StatusLabel.Parent = Content
 StatsLabel = Instance.new("TextLabel")
 StatsLabel.Size = UDim2.new(1, 0, 0, 22)
 StatsLabel.Position = UDim2.new(0, 0, 0, 26)
-StatsLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+StatsLabel.BackgroundColor3 = Color3.fromRGB(28, 20, 42)
 StatsLabel.Text = "Catches 0  •  Perfect 0"
 StatsLabel.TextColor3 = Color3.fromRGB(150, 240, 160)
 StatsLabel.TextSize = 11
@@ -1782,7 +1932,7 @@ StatsLabel.Parent = Content
 LastFishLabel = Instance.new("TextLabel")
 LastFishLabel.Size = UDim2.new(1, 0, 0, 22)
 LastFishLabel.Position = UDim2.new(0, 0, 0, 52)
-LastFishLabel.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+LastFishLabel.BackgroundColor3 = Color3.fromRGB(28, 20, 42)
 LastFishLabel.Text = "Fish: none"
 LastFishLabel.TextColor3 = Color3.fromRGB(255, 215, 100)
 LastFishLabel.TextSize = 11
@@ -1793,7 +1943,7 @@ LastFishLabel.Parent = Content
 ToggleFishBtn = Instance.new("TextButton")
 ToggleFishBtn.Size = UDim2.new(1, 0, 0, 32)
 ToggleFishBtn.Position = UDim2.new(0, 0, 0, 78)
-ToggleFishBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
+ToggleFishBtn.BackgroundColor3 = Color3.fromRGB(38, 31, 50)
 ToggleFishBtn.Text = "START AUTO-FISH"
 ToggleFishBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ToggleFishBtn.TextSize = 13
@@ -1823,7 +1973,7 @@ TeleportBtn.Parent = Content
 AutoSellBtn = Instance.new("TextButton")
 AutoSellBtn.Size = UDim2.new(0.49, 0, 0, 30)
 AutoSellBtn.Position = UDim2.new(0.51, 0, 0, 148)
-AutoSellBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+AutoSellBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 AutoSellBtn.Text = "AUTO-SELL"
 AutoSellBtn.Font = Enum.Font.GothamMedium
 AutoSellBtn.Parent = Content
@@ -1841,14 +1991,14 @@ SellNowBtn.Parent = Content
 Separator1 = Instance.new("Frame")
 Separator1.Size = UDim2.new(1, 0, 0, 2)
 Separator1.Position = UDim2.new(0, 0, 0, 216)
-Separator1.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+Separator1.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 Separator1.BorderSizePixel = 0
 Separator1.Parent = Content
 
 AutoEatDrinkBtn = Instance.new("TextButton")
 AutoEatDrinkBtn.Size = UDim2.new(1, 0, 0, 28)
 AutoEatDrinkBtn.Position = UDim2.new(0, 0, 0, 216)
-AutoEatDrinkBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+AutoEatDrinkBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 AutoEatDrinkBtn.Text = "AUTO EAT (55) / DRINK (30)"
 AutoEatDrinkBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 AutoEatDrinkBtn.TextSize = 11
@@ -1862,7 +2012,7 @@ AutoEatDrinkCorner.Parent = AutoEatDrinkBtn
 Separator2 = Instance.new("Frame")
 Separator2.Size = UDim2.new(1, 0, 0, 2)
 Separator2.Position = UDim2.new(0, 0, 0, 252)
-Separator2.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+Separator2.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 Separator2.BorderSizePixel = 0
 Separator2.Parent = Content
 
@@ -1893,7 +2043,7 @@ StartCorner.Parent = StartBtn
 Separator3 = Instance.new("Frame")
 Separator3.Size = UDim2.new(1, 0, 0, 2)
 Separator3.Position = UDim2.new(0, 0, 0, 373)
-Separator3.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+Separator3.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 Separator3.BorderSizePixel = 0
 Separator3.Parent = Content
 
@@ -1915,7 +2065,7 @@ BMCorner.Parent = BlackMarketBtn
 ESPToggleBtn = Instance.new("TextButton")
 ESPToggleBtn.Size = UDim2.new(1, -215, 0, 32)
 ESPToggleBtn.Position = UDim2.new(0, 0, 0, 131)
-ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
+ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 31, 50)
 ESPToggleBtn.Text = "ESP Black Market"
 ESPToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 ESPToggleBtn.TextSize = 11
@@ -1933,7 +2083,7 @@ ESPCorner.Parent = ESPToggleBtn
 AutoPushupBtn = Instance.new("TextButton")
 AutoPushupBtn.Size = UDim2.new(1, -215, 0, 32)
 AutoPushupBtn.Position = UDim2.new(0, 0, 0, 55)
-AutoPushupBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+AutoPushupBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 AutoPushupBtn.Text = "AUTO PUSH-UPS: OFF"
 AutoPushupBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 AutoPushupBtn.TextSize = 11
@@ -1949,7 +2099,7 @@ FPSCounterBtn = Instance.new("TextButton")
 FPSCounterBtn.Name = "FPSCounterBtn"
 FPSCounterBtn.Size = UDim2.new(1, -215, 0, 32)
 FPSCounterBtn.Position = UDim2.new(0, 0, 0, 93)
-FPSCounterBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+FPSCounterBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 FPSCounterBtn.Text = "FPS COUNTER"
 FPSCounterBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 FPSCounterBtn.TextSize = 11
@@ -1963,7 +2113,7 @@ AutoAFKBtn = Instance.new("TextButton")
 AutoAFKBtn.Name = "AutoAFKBtn"
 AutoAFKBtn.Size = UDim2.new(1, -215, 0, 32)
 AutoAFKBtn.Position = UDim2.new(0, 0, 0, 169)
-AutoAFKBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+AutoAFKBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 AutoAFKBtn.Text = "ANTI-AFK: OFF"
 AutoAFKBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 AutoAFKBtn.TextSize = 11
@@ -2067,7 +2217,7 @@ AUTO_MINE_CONFIG = {
 AutoMineBtn = Instance.new("TextButton")
 AutoMineBtn.Size = UDim2.new(0.49, 0, 0, 32)
 AutoMineBtn.Position = UDim2.new(0, 0, 0, 411)
-AutoMineBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+AutoMineBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 AutoMineBtn.Text = "AUTO MINE: OFF"
 AutoMineBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 AutoMineBtn.TextSize = 11
@@ -2081,7 +2231,7 @@ AutoMineBtnCorner.Parent = AutoMineBtn
 AutoMineSellerBtn = Instance.new("TextButton")
 AutoMineSellerBtn.Size = UDim2.new(0.49, 0, 0, 32)
 AutoMineSellerBtn.Position = UDim2.new(0.51, 0, 0, 411)
-AutoMineSellerBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+AutoMineSellerBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 AutoMineSellerBtn.Text = "GO TO SELLER"
 AutoMineSellerBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 AutoMineSellerBtn.TextSize = 11
@@ -2747,13 +2897,18 @@ function autoMineTpSeller()
         return
     end
 
-    -- TP vendeur uniquement, sans interaction avec le Prompt.
-    pcall(function()
-        local frontPos = buyerRoot.Position + (buyerRoot.CFrame.LookVector * 4) + Vector3.new(0, 1.5, 0)
-        r.CFrame = CFrame.lookAt(frontPos, buyerRoot.Position + Vector3.new(0, 1, 0))
+    -- [patch P21] déplacement progressif (60 studs/s) au lieu d'un saut d'une frame
+    local frontPos = buyerRoot.Position + (buyerRoot.CFrame.LookVector * 4) + Vector3.new(0, 1.5, 0)
+    local destination = CFrame.lookAt(frontPos, buyerRoot.Position + Vector3.new(0, 1, 0))
+    autoMineStatus("Moving to seller (60)")
+    task.spawn(function()
+        local called, moved = pcall(directTeleportTo, destination, 60)
+        if called and moved == true then
+            autoMineStatus("✓ Moved to seller")
+        else
+            autoMineStatus("Could not reach the seller")
+        end
     end)
-
-    autoMineStatus("✓ Moved to seller")
 end
 
 function autoMineStop()
@@ -2772,7 +2927,7 @@ function autoMineStop()
     autoMineRestorePreviousFly()
 
     AutoMineBtn.Text = "AUTO MINE: OFF"
-    AutoMineBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+    AutoMineBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
     autoMineStatus("OFF")
 end
 
@@ -2806,7 +2961,7 @@ function autoMineStart()
 
     AutoMineRunning = true
     AutoMineBtn.Text = "AUTO MINE: ON"
-    AutoMineBtn.BackgroundColor3 = Color3.fromRGB(40, 145, 75)
+    AutoMineBtn.BackgroundColor3 = Color3.fromRGB(34, 176, 98)
 
     task.spawn(function()
         while running and AutoMineRunning do
@@ -2965,12 +3120,29 @@ function findPushupsGui()
     return mainGui:FindFirstChild("Pushups", true)
 end
 
-function getTrackObjects()
-    local pushups = findPushupsGui()
+-- [patch P11] cache des objets de l'interface Pompes : plus de recherche récursive toutes les 10 ms
+PushupObjectCache = {pushups = nil, zone = nil, needle = nil, nextResolveAt = 0}
 
+function getTrackObjects()
+    local cache = PushupObjectCache
+    if cache.pushups and cache.pushups.Parent and cache.zone and cache.zone.Parent
+        and cache.needle and cache.needle.Parent then
+        return cache.pushups, cache.zone, cache.needle
+    end
+
+    -- Recherche récursive coûteuse : au plus 2 fois par seconde.
+    local now = os.clock()
+    if now < cache.nextResolveAt then
+        return nil, nil, nil
+    end
+    cache.nextResolveAt = now + 0.5
+    cache.pushups, cache.zone, cache.needle = nil, nil, nil
+
+    local pushups = findPushupsGui()
     if not pushups then
         return nil, nil, nil
     end
+    cache.pushups = pushups
 
     local track = pushups:FindFirstChild("Track", true)
     if not track then
@@ -2979,7 +3151,7 @@ function getTrackObjects()
 
     local zone = track:FindFirstChild("Zone", true)
     local needle = track:FindFirstChild("Needle", true)
-
+    cache.zone, cache.needle = zone, needle
     return pushups, zone, needle
 end
 
@@ -3169,7 +3341,7 @@ end
 MovementTitle = Instance.new("TextLabel")
 MovementTitle.Size = UDim2.new(1, 0, 0, 24)
 MovementTitle.Position = UDim2.new(0, 0, 0, 565)
-MovementTitle.BackgroundColor3 = Color3.fromRGB(28, 38, 45)
+MovementTitle.BackgroundColor3 = Color3.fromRGB(29, 19, 45)
 MovementTitle.Text = "MOVEMENT"
 MovementTitle.TextColor3 = Color3.fromRGB(100, 210, 255)
 MovementTitle.TextSize = 12
@@ -3179,7 +3351,7 @@ MovementTitle.Parent = Content
 MovementSpeedBox = Instance.new("TextBox")
 MovementSpeedBox.Size = UDim2.new(0.49, 0, 0, 32)
 MovementSpeedBox.Position = UDim2.new(0, 0, 0, 595)
-MovementSpeedBox.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+MovementSpeedBox.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 MovementSpeedBox.Text = "50"
 MovementSpeedBox.PlaceholderText = "SpeedHack"
 MovementSpeedBox.TextColor3 = Color3.fromRGB(235, 235, 235)
@@ -3195,7 +3367,7 @@ MovementSpeedBox.Parent = Content
 MovementFlySpeedBox = Instance.new("TextBox")
 MovementFlySpeedBox.Size = UDim2.new(0.49, 0, 0, 32)
 MovementFlySpeedBox.Position = UDim2.new(0, 0, 0, 633)
-MovementFlySpeedBox.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+MovementFlySpeedBox.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 MovementFlySpeedBox.Text = "80"
 MovementFlySpeedBox.PlaceholderText = "Fly Speed"
 MovementFlySpeedBox.TextColor3 = Color3.fromRGB(235, 235, 235)
@@ -3207,7 +3379,7 @@ MovementFlySpeedBox.Parent = Content
 MovementSpeedBtn = Instance.new("TextButton")
 MovementSpeedBtn.Size = UDim2.new(0.49, 0, 0, 32)
 MovementSpeedBtn.Position = UDim2.new(0.51, 0, 0, 595)
-MovementSpeedBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+MovementSpeedBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 MovementSpeedBtn.Text = "SPEEDHACK : OFF"
 MovementSpeedBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 MovementSpeedBtn.TextSize = 11
@@ -3220,7 +3392,7 @@ MovementSpeedBtn.Parent = Content
 MovementFlyBtn = Instance.new("TextButton")
 MovementFlyBtn.Size = UDim2.new(0.49, 0, 0, 32)
 MovementFlyBtn.Position = UDim2.new(0.51, 0, 0, 633)
-MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 MovementFlyBtn.Text = "FLY"
 MovementFlyBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 MovementFlyBtn.TextSize = 11
@@ -3230,7 +3402,7 @@ MovementFlyBtn.Parent = Content
 MovementNoclipBtn = Instance.new("TextButton")
 MovementNoclipBtn.Size = UDim2.new(0.49, 0, 0, 32)
 MovementNoclipBtn.Position = UDim2.new(0, 0, 0, 671)
-MovementNoclipBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+MovementNoclipBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 MovementNoclipBtn.Text = "NOCLIP : OFF"
 MovementNoclipBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 MovementNoclipBtn.TextSize = 11
@@ -3541,7 +3713,7 @@ function movementStopFly(keepPose)
         pcall(function() movementSetNoclip(false) end)
         if MovementNoclipBtn then
             MovementNoclipBtn.Text = "NOCLIP : OFF"
-            MovementNoclipBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            MovementNoclipBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
         end
     end
 end
@@ -3555,7 +3727,7 @@ function movementStartFly()
         MovementFlyEnabled = false
         if MovementFlyBtn then
             MovementFlyBtn.Text = "FLY"
-            MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
         end
         return false
     end
@@ -3570,7 +3742,7 @@ function movementStartFly()
         MovementFlyEnabled = false
         if MovementFlyBtn then
             MovementFlyBtn.Text = "FLY"
-            MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            MovementFlyBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
         end
         return false
     end
@@ -3662,7 +3834,7 @@ MovementSpeedBtn.MouseButton1Click:Connect(function()
     MovementWalkSpeedEnabled = not MovementWalkSpeedEnabled
     movementApplyWalkSpeed()
     MovementSpeedBtn.Text = MovementWalkSpeedEnabled and ("SPEEDHACK : ON (" .. MovementWalkSpeed .. ")") or "SPEEDHACK : OFF"
-    MovementSpeedBtn.BackgroundColor3 = MovementWalkSpeedEnabled and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(45, 48, 62)
+    MovementSpeedBtn.BackgroundColor3 = MovementWalkSpeedEnabled and Color3.fromRGB(57, 255, 136) or Color3.fromRGB(45, 35, 62)
 end)
 
 MovementSpeedBox.FocusLost:Connect(function()
@@ -3698,13 +3870,13 @@ MovementFlyBtn.MouseButton1Click:Connect(function()
         movementStopFly()
     end
     MovementFlyBtn.Text = "FLY"
-    MovementFlyBtn.BackgroundColor3 = MovementFlyEnabled and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(45, 48, 62)
+    MovementFlyBtn.BackgroundColor3 = MovementFlyEnabled and Color3.fromRGB(57, 255, 136) or Color3.fromRGB(45, 35, 62)
 end)
 
 MovementNoclipBtn.MouseButton1Click:Connect(function()
     movementSetNoclip(not MovementNoclipEnabled)
     MovementNoclipBtn.Text = MovementNoclipEnabled and "NOCLIP : ON" or "NOCLIP : OFF"
-    MovementNoclipBtn.BackgroundColor3 = MovementNoclipEnabled and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(45, 48, 62)
+    MovementNoclipBtn.BackgroundColor3 = MovementNoclipEnabled and Color3.fromRGB(57, 255, 136) or Color3.fromRGB(45, 35, 62)
 end)
 
 MovementInputBegan = MovementUserInputService.InputBegan:Connect(function(input, processed)
@@ -3829,6 +4001,71 @@ StaffJoinToastLayout.VerticalAlignment = Enum.VerticalAlignment.Bottom
 StaffJoinToastLayout.SortOrder = Enum.SortOrder.LayoutOrder
 StaffJoinToastLayout.Padding = UDim.new(0, 7)
 StaffJoinToastLayout.Parent = StaffJoinToastHost
+
+-- [patch P07] Toast générique (messages de statut lisibles, ex. Auto Buy)
+function PRISONRP_HubToast(message)
+    pcall(function()
+        message = tostring(message or "")
+        if message == "" then return end
+        if not (StaffJoinToastHost and StaffJoinToastHost.Parent) then return end
+
+        local existing = {}
+        for _, child in ipairs(StaffJoinToastHost:GetChildren()) do
+            if child.Name == "HubToast" then existing[#existing + 1] = child end
+        end
+        table.sort(existing, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+        while #existing >= 3 do
+            local oldest = table.remove(existing, 1)
+            if oldest and oldest.Parent then oldest:Destroy() end
+        end
+
+        StaffJoinToastSequence = StaffJoinToastSequence + 1
+        local toast = Instance.new("Frame")
+        toast.Name = "HubToast"
+        toast.LayoutOrder = StaffJoinToastSequence
+        toast.Size = UDim2.new(1, 0, 0, 44)
+        toast.BackgroundColor3 = Color3.fromRGB(25, 19, 36)
+        toast.BackgroundTransparency = 0.08
+        toast.BorderSizePixel = 0
+        toast.ZIndex = 301
+        toast.Parent = StaffJoinToastHost
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 9)
+        corner.Parent = toast
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(150, 92, 255)
+        stroke.Transparency = 0.5
+        stroke.Thickness = 1
+        stroke.Parent = toast
+
+        local label = Instance.new("TextLabel")
+        label.AutoLocalize = false
+        label.BackgroundTransparency = 1
+        label.Position = UDim2.fromOffset(12, 4)
+        label.Size = UDim2.new(1, -24, 1, -8)
+        label.Text = message
+        label.TextColor3 = Color3.fromRGB(240, 244, 250)
+        label.TextSize = 12
+        label.Font = Enum.Font.GothamMedium
+        label.TextWrapped = true
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Center
+        label.ZIndex = 302
+        label.Parent = toast
+
+        task.delay(4.5, function()
+            if not (toast and toast.Parent) then return end
+            local tweenService = game:GetService("TweenService")
+            local fade = PRISONRP_UITweenInfo(0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+            pcall(function() tweenService:Create(toast, fade, {BackgroundTransparency = 1}):Play() end)
+            pcall(function() tweenService:Create(stroke, fade, {Transparency = 1}):Play() end)
+            pcall(function() tweenService:Create(label, fade, {TextTransparency = 1}):Play() end)
+            task.wait(0.27)
+            if toast and toast.Parent then toast:Destroy() end
+        end)
+    end)
+end
 
 StaffJoinNotificationSound = Instance.new("Sound")
 StaffJoinNotificationSound.Name = "PRISONRP_StaffJoinNotificationSound"
@@ -4082,7 +4319,7 @@ local function staffShowJoinNotification(player)
         toast.Name = "StaffJoinToast"
         toast.LayoutOrder = StaffJoinToastSequence
         toast.Size = UDim2.new(1, 0, 0, 70)
-        toast.BackgroundColor3 = Color3.fromRGB(25, 29, 36)
+        toast.BackgroundColor3 = Color3.fromRGB(25, 19, 36)
         toast.BackgroundTransparency = 0.08
         toast.BorderSizePixel = 0
         toast.ZIndex = 301
@@ -4186,7 +4423,7 @@ StaffTitle.Parent = Content
 StaffESPBtn = Instance.new("TextButton")
 StaffESPBtn.Size = UDim2.new(0.49, 0, 0, 32)
 StaffESPBtn.Position = UDim2.new(0, 0, 0, 755)
-StaffESPBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+StaffESPBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 StaffESPBtn.Text="ESP STAFF"
 StaffESPBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 StaffESPBtn.TextSize = 11
@@ -4196,7 +4433,7 @@ StaffESPBtn.Parent = Content
 StaffAutoLeaveBtn = Instance.new("TextButton")
 StaffAutoLeaveBtn.Size = UDim2.new(0.49, 0, 0, 32)
 StaffAutoLeaveBtn.Position = UDim2.new(0.51, 0, 0, 755)
-StaffAutoLeaveBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+StaffAutoLeaveBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 StaffAutoLeaveBtn.Text = "AUTO-LEAVE : OFF"
 StaffAutoLeaveBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
 StaffAutoLeaveBtn.TextSize = 11
@@ -4501,7 +4738,7 @@ function staffRefreshList()
             }, "|")
         end
     end
-    local signature = table.concat(signatureParts, "\31")
+    local signature = table.concat(signatureParts, "\31") .. "|" .. tostring(_G.PRISONRP_LANG_VALUE)
     if signature == StaffLastListSignature and StaffListRows and StaffListRows.Parent then
         return
     end
@@ -4547,7 +4784,7 @@ function staffRefreshList()
     if StaffListRows then
         StaffListRows.Visible = true
         if rowCount == 0 then
-            staffCreateListText(StaffListRows, "EmptyState", "No staff detected", 0,
+            staffCreateListText(StaffListRows, "EmptyState", PRISONRP_TR("No staff detected", "Aucun staff détecté"), 0,
                 Color3.fromRGB(205, 213, 224))
         end
     end
@@ -4983,7 +5220,7 @@ function stopStaffESP()
     for player in pairs(StaffESPData) do destroyStaffESP(player) end
     staffRefreshList()
     StaffESPBtn.Text = "ESP STAFF"
-    StaffESPBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+    StaffESPBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
 end
 
 if _G.PRISONRP_STAFF_ESP_STOP then
@@ -5033,7 +5270,7 @@ StaffAutoLeaveBtn.MouseButton1Click:Connect(function()
     StaffAutoLeaveBtn.Text = StaffAutoLeaveEnabled and "AUTO-LEAVE : ON" or "AUTO-LEAVE : OFF"
     StaffAutoLeaveBtn.BackgroundColor3 = StaffAutoLeaveEnabled
         and Color3.fromRGB(150, 45, 55)
-        or Color3.fromRGB(45, 48, 62)
+        or Color3.fromRGB(45, 35, 62)
 end)
 
 task.spawn(function()
@@ -5093,9 +5330,12 @@ function updateUI()
     StatusLabel.Text = "Status: " .. translatedStatus
 
     local statusLower = string.lower(rawStatus)
-    if string.find(rawStatus, "", 1, true)
-        or rawStatus == "No Rod Found!"
-        or string.find(statusLower, "unavailable", 1, true) then
+    if rawStatus == "No Rod Found!"
+        or string.find(statusLower, "unavailable", 1, true)
+        or string.find(statusLower, "failed", 1, true)
+        or string.find(statusLower, "stuck", 1, true)
+        or string.find(statusLower, "could not", 1, true)
+        or string.find(statusLower, "not found", 1, true) then
         StatusLabel.TextColor3 = Color3.fromRGB(255, 177, 100)
     elseif rawStatus == "Running..."
         or rawStatus == "Equipping Rod..."
@@ -5105,7 +5345,6 @@ function updateUI()
         or rawStatus == "Fish Caught!"
         or rawStatus == "Sold All Fish!"
         or rawStatus == "Auto Eat / Drink: ON (Eat " .. tostring(AUTO_EAT_THRESHOLD) .. " / Drink " .. tostring(AUTO_DRINK_THRESHOLD) .. ")"
-        or rawStatus == "Auto Eat / Drink: ON (Eat 55 / Drink 30)"
         or string.find(statusLower, "sending request", 1, true) then
         StatusLabel.TextColor3 = Color3.fromRGB(145, 225, 165)
     else
@@ -5134,15 +5373,15 @@ function updateUI()
 
     -- V213 : les intitulés restent stables ; l'interrupteur animé montre l'état ON/OFF.
     ToggleFishBtn.Text = "AUTO-FISH"
-    ToggleFishBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
+    ToggleFishBtn.BackgroundColor3 = Color3.fromRGB(38, 31, 50)
     ToggleFishBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 
     AutoSellBtn.Text = "AUTO-SELL"
-    AutoSellBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
+    AutoSellBtn.BackgroundColor3 = Color3.fromRGB(38, 31, 50)
     AutoSellBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 
     ESPToggleBtn.Text = "ESP BLACK MARKET"
-    ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
+    ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 31, 50)
     ESPToggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 end
 
@@ -5181,11 +5420,11 @@ end)
 function updateAutoPushupUI()
     if _G.AutoPushupEnabled then
         AutoPushupBtn.Text = "AUTO PUSH-UPS: ON"
-        AutoPushupBtn.BackgroundColor3 = Color3.fromRGB(40, 145, 75)
+        AutoPushupBtn.BackgroundColor3 = Color3.fromRGB(34, 176, 98)
         AutoPushupBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     else
         AutoPushupBtn.Text = "AUTO PUSH-UPS: OFF"
-        AutoPushupBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+        AutoPushupBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
         AutoPushupBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
     end
 end
@@ -5206,14 +5445,12 @@ function startAutoPushup()
     AutoPushupWorker = task.spawn(function()
         while running and _G.AutoPushupEnabled do
             local pushups, zone, needle = getTrackObjects()
-
-            if pushups and pushups.Visible and zone and needle then
-                if needleIsInsidePushupZone(zone, needle) then
-                    pressPushupSpace()
-                end
+            local trackActive = pushups ~= nil and pushups.Visible and zone ~= nil and needle ~= nil
+            if trackActive and needleIsInsidePushupZone(zone, needle) then
+                pressPushupSpace()
             end
-
-            task.wait(PUSHUP_CHECK_INTERVAL)
+            -- [patch P11] interface absente : on ne scrute plus qu'à ~7 Hz
+            task.wait(trackActive and PUSHUP_CHECK_INTERVAL or 0.15)
         end
     end)
 end
@@ -5300,7 +5537,7 @@ ESPToggleBtn.MouseButton1Click:Connect(function()
     toggleBlackMarketESP()
     updateUI()
 
-        ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 43, 50)
+        ESPToggleBtn.BackgroundColor3 = Color3.fromRGB(38, 31, 50)
     end)
 
 -- V270 : séquence confirmée par le test indépendant V4.
@@ -5920,9 +6157,14 @@ local function getVendingTargetCFrame()
     return nil
 end
 
-local function setAutoBuyStatus(message)
-    if FoodText then FoodText.Text = tostring(message) end
-    if DrinkText then DrinkText.Text = tostring(message) end
+local function setAutoBuyStatus(message, final)
+    message = tostring(message or "")
+    stats.status = message
+    pcall(updateUI)
+    -- [patch P07] la barre de statut est réécrite en permanence : les messages finaux / d'erreur passent aussi par un toast
+    if final == true or string.sub(message, 1, 9) == "Purchase:" or message == "Auto Buy cancelled." then
+        if type(PRISONRP_HubToast) == "function" then pcall(PRISONRP_HubToast, message) end
+    end
 end
 
 local autoBuyOpenEventConnection = nil
@@ -5938,7 +6180,7 @@ end
 local function finishAutoBuy(token, message)
     if token ~= remoteBuyRunToken then return end
     disconnectAutoBuyOpenListener()
-    if message then setAutoBuyStatus(message) end
+    if message then setAutoBuyStatus(message, true) end
     buyRequest = false
     isBuying = false
     if StartBtn then
@@ -6335,6 +6577,18 @@ function getNamedNeedValue(root, names)
         end
     end
 
+    -- [patch P13] « Water Bottle x3 » n'est pas une jauge : après retrait des mots-clés il ne doit plus rester de lettres
+    local function looksLikeGauge(textValue)
+        local lowered = string.lower(tostring(textValue or ""))
+        for _, keyword in ipairs(names) do
+            local plain = string.lower((string.gsub(tostring(keyword), "[^%w]", "")))
+            if plain ~= "" then
+                lowered = string.gsub(lowered, plain, "")
+            end
+        end
+        return not string.find(lowered, "%a")
+    end
+
     local descendants = {}
     local okDesc, result = pcall(function() return root:GetDescendants() end)
     if okDesc and result then descendants = result end
@@ -6366,14 +6620,16 @@ function getNamedNeedValue(root, names)
             if nameMatches(contextName) or nameMatches(textValue) then
                 local numericText = string.match(textValue, "[-+]?%d+%.?%d*")
                 local numeric = getNumeric(numericText)
-                if numeric ~= nil then return numeric end
+                if numeric ~= nil and (nameMatches(contextName) or looksLikeGauge(textValue)) then
+                    return numeric
+                end
             end
         end
     end
     return nil
 end
 
-function readNeedValues()
+function readNeedValuesUncached()
     local char = LocalPlayer and LocalPlayer.Character
     local food = getNamedNeedValue(LocalPlayer, FOOD_NAMES)
     local water = getNamedNeedValue(LocalPlayer, WATER_NAMES)
@@ -6382,10 +6638,23 @@ function readNeedValues()
     return food, water
 end
 
+-- [patch P13] lecture limitée à ~2,5 Hz (le scan parcourt tout le PlayerGui) ; valeurs introuvables : 1 essai / 3 s
+NeedValuesCache = {at = -math.huge, food = nil, water = nil}
+function readNeedValues()
+    local cache = NeedValuesCache
+    local now = os.clock()
+    local interval = (cache.food == nil and cache.water == nil) and 3 or 0.4
+    if now - cache.at >= interval then
+        cache.at = now
+        cache.food, cache.water = readNeedValuesUncached()
+    end
+    return cache.food, cache.water
+end
+
 function updateAutoEatDrinkUI()
     -- V213 : même libellé/couleur dans les deux états ; le switch vert/gris fait foi.
     AutoEatDrinkBtn.Text = "AUTO EAT (" .. tostring(AUTO_EAT_THRESHOLD) .. ") / DRINK (" .. tostring(AUTO_DRINK_THRESHOLD) .. ")"
-    AutoEatDrinkBtn.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+    AutoEatDrinkBtn.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
     AutoEatDrinkBtn.TextColor3 = Color3.fromRGB(236, 240, 248)
 end
 
@@ -6731,45 +7000,11 @@ MainFrame.Size = HubFullSize
 -- Les corrections successives compensent les variations de layout/UIScale apres chaque resize.
 local HubExpandedPosition = MainFrame.Position
 local HubMinimizedPosition = nil
-local MinimizeCursorLockToken = 0
-local function keepMinimizeClickPointUnderCursor(mousePosition, clickOffset)
-    MinimizeCursorLockToken += 1
-    local token = MinimizeCursorLockToken
-    task.spawn(function()
-        -- Laisser Roblox recalculer le layout apres le changement de taille.
-        RunService.Heartbeat:Wait()
-        RunService.Heartbeat:Wait()
-        for _ = 1, 6 do
-            if token ~= MinimizeCursorLockToken or HubExpanded then return end
-            if not MainFrame or not MainFrame.Parent or not CloseBtn or not CloseBtn.Parent then return end
-
-            local buttonPosition = CloseBtn.AbsolutePosition
-            local currentClickPoint = Vector2.new(
-                buttonPosition.X + clickOffset.X,
-                buttonPosition.Y + clickOffset.Y
-            )
-            local dx = mousePosition.X - currentClickPoint.X
-            local dy = mousePosition.Y - currentClickPoint.Y
-            if math.abs(dx) < 0.5 and math.abs(dy) < 0.5 then break end
-
-            -- Offset en boucle fermee : si UIScale/layout absorbe une partie du deplacement,
-            -- la passe suivante corrige le residu au lieu de laisser un decalage visible.
-            local position = MainFrame.Position
-            MainFrame.Position = UDim2.new(
-                position.X.Scale, position.X.Offset + dx,
-                position.Y.Scale, position.Y.Offset + dy
-            )
-            RunService.Heartbeat:Wait()
-        end
-
-        if token == MinimizeCursorLockToken and not HubExpanded then
-            HubMinimizedPosition = MainFrame.Position
-        end
-    end)
-end
-
-CloseBtn.Text = "−"
+CloseBtn.Text = "\u{2212}"
 local function toggleHubMinimize()
+    if type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+        pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+    end
     local v7BodyRef = MainFrame:FindFirstChild("V7Body")
     local v7SidebarRef = v7BodyRef and v7BodyRef:FindFirstChild("V7Sidebar")
 
@@ -6894,7 +7129,7 @@ UnloadConfirmCard.Name = "UnloadConfirmCard"
 UnloadConfirmCard.Size = UDim2.fromOffset(280, 150)
 UnloadConfirmCard.AnchorPoint = Vector2.new(0.5, 0.5)
 UnloadConfirmCard.Position = UDim2.fromScale(0.5, 0.5)
-UnloadConfirmCard.BackgroundColor3 = Color3.fromRGB(24, 28, 36)
+UnloadConfirmCard.BackgroundColor3 = Color3.fromRGB(24, 18, 36)
 UnloadConfirmCard.BorderSizePixel = 0
 UnloadConfirmCard.ZIndex = 501
 UnloadConfirmCard.Parent = UnloadConfirmOverlay
@@ -6932,7 +7167,7 @@ UnloadConfirmText.Parent = UnloadConfirmCard
 UnloadNoBtn = Instance.new("TextButton")
 UnloadNoBtn.Size = UDim2.fromOffset(112, 32)
 UnloadNoBtn.Position = UDim2.fromOffset(14, 102)
-UnloadNoBtn.BackgroundColor3 = Color3.fromRGB(55, 61, 74)
+UnloadNoBtn.BackgroundColor3 = Color3.fromRGB(55, 44, 74)
 UnloadNoBtn.Text = "CANCEL"
 UnloadNoBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 UnloadNoBtn.TextSize = 10
@@ -7215,6 +7450,8 @@ _G.CombinedHubCleanup = function()
     -- cela évite la limite Luau de 200 registres/upvalues.
     _G.CombinedHubLoaded = false
     _G.CombinedHubReady = false
+    _G.PRISONRP_UI_V2_SHOW = nil
+    _G.PRISONRP_UI_V2 = nil
 
     pcall(function()
         if _G.PRISONRP_STAFF_ESP_STOP then
@@ -7261,6 +7498,12 @@ _G.CombinedHubCleanup = function()
         end
     end)
     pcall(function()
+        if ESPOverlayGui then
+            ESPOverlayGui:Destroy()
+            ESPOverlayGui = nil
+        end
+    end)
+    pcall(function()
         local player = game:GetService("Players").LocalPlayer
         local pg = player and player:FindFirstChildOfClass("PlayerGui")
         local gui = pg and pg:FindFirstChild("CombinedHubUI")
@@ -7297,7 +7540,12 @@ local RESCUE_TRIGGER = 0.5
 local RESCUE_TARGET = 0.25
 local DEBUG_REEL = true
 local forceCatchHoldActive = false
+local basicMissDoneThisReel = false
+local basicMissUntil = 0
 local perfectPendingForCatch = false
+local AutoFishCatchMode = "Perfect"
+local ActiveAutoFishCatchMode = "Perfect"
+local refreshCatchModeOptions
 local getFishingState
 local autoFishApplyHolding
 local autoFishRelease
@@ -7559,7 +7807,12 @@ autoFishApplyHolding = function()
     if type(sim) ~= "table" then
         return false
     end
-    if sim.perfect == true then perfectPendingForCatch = true end
+    if ActiveAutoFishCatchMode == "Basic" then
+        perfectPendingForCatch = false
+        sim.perfect = false
+    elseif sim.perfect == true then
+        perfectPendingForCatch = true
+    end
     local fishPos = tonumber(sim.fishPos)
     local zonePos = tonumber(sim.zonePos)
     local zoneVel = tonumber(sim.zoneVel) or 0
@@ -7574,9 +7827,44 @@ autoFishApplyHolding = function()
     local now = os.clock()
     local dt = c.lastT and (now - c.lastT) or nil
 
+    if ActiveAutoFishCatchMode == "Basic" then
+        perfectPendingForCatch = false
+        sim.perfect = false
+        if not basicMissDoneThisReel then
+            basicMissDoneThisReel = true
+            basicMissUntil = now + 0.22
+        end
+        if now < basicMissUntil then
+            guiLockActive = false
+            setHoldIfChanged(false)
+            local offset = (tonumber(sim.zoneHalf) or zoneHalf) + 0.05
+            local side = fishPos <= 0.5 and 1 or -1
+            local offZone = math.clamp(fishPos + side * offset, zoneHalf, 1 - zoneHalf)
+            if math.abs(offZone - fishPos) <= zoneHalf then
+                side = -side
+                offZone = math.clamp(fishPos + side * offset, zoneHalf, 1 - zoneHalf)
+            end
+            pcall(function()
+                sim.zonePos = offZone
+                sim.zoneVel = 0
+                sim.inside = false
+                sim.perfect = false
+            end)
+            c.lastT, c.lastFish, c.decision = now, fishPos, false
+            return true
+        end
+    else
+        basicMissDoneThisReel = false
+        basicMissUntil = 0
+    end
+
     -- Plusieurs boucles appellent cette fonction dans la même image : une seule décision par image.
     if dt and dt < 0.004 then
         setHoldIfChanged(c.decision)
+        if ActiveAutoFishCatchMode == "Basic" then
+            sim.perfect = false
+            perfectPendingForCatch = false
+        end
         stickGuiZoneToMarker()
         return true
     end
@@ -7626,6 +7914,10 @@ autoFishApplyHolding = function()
 
     c.lastT, c.lastFish, c.decision = now, fishPos, shouldHold
     setHoldIfChanged(shouldHold)
+    if ActiveAutoFishCatchMode == "Basic" then
+        sim.perfect = false
+        perfectPendingForCatch = false
+    end
 
     local progress = tonumber(state.progress) or tonumber(sim.progress) or 0
     if now - c.lastInfoAt >= 0.25 then
@@ -7650,6 +7942,8 @@ autoFishRelease = function()
     reelCtl.lastT = nil
     reelCtl.streak = 0
     stats.reelInfo = nil
+    basicMissDoneThisReel = false
+    basicMissUntil = 0
     local releaseForceCatchMouse = forceCatchHoldActive
     forceCatchHoldActive = false
     if MinigameSystem and MinigameSystem.SetHolding then
@@ -7786,6 +8080,10 @@ end
 
 local function forceCatchStep()
     if not FORCE_CATCH or not running then return end
+    if ActiveAutoFishCatchMode ~= "Perfect" then
+        if forceCatchHoldActive then autoFishRelease() end
+        return
+    end
     if not _G.AutoFishingEnabled then
         if forceCatchHoldActive then autoFishRelease() end
         return
@@ -8214,6 +8512,7 @@ local function runAutoFishingWorker()
             -- Ferme la fenêtre au début d'un nouveau cycle de pêche.
             AutoFishingCatchWindow = false
             perfectPendingForCatch = false
+            ActiveAutoFishCatchMode = AutoFishCatchMode
             local fishCaughtThisCycle = false
             local catchCountAtCycleStart = tonumber(_G.PRISONRP_FISHING_CATCH_COUNT) or 0
 
@@ -8472,6 +8771,9 @@ local function runAutoFishingWorker()
                 local freshPreRoll = not requireFreshPreRoll
                     or preCastFishSignature == nil
                     or (fishSignature ~= nil and fishSignature ~= preCastFishSignature)
+                if fishSignature ~= nil and preCastFishSignature ~= nil and fishSignature ~= preCastFishSignature then
+                    RodStaleRollStreak = 0
+                end
 
                 -- Certains builds réutilisent la même table PreRolledFish. Deux poissons
                 -- consécutifs identiques ont alors exactement la même signature ; après
@@ -8482,6 +8784,12 @@ local function runAutoFishingWorker()
                     freshPreRoll = true
                     if not unchangedPreRollFallbackLogged then
                         unchangedPreRollFallbackLogged = true
+                        RodStaleRollStreak = (RodStaleRollStreak or 0) + 1
+                        if RodStaleRollStreak >= 3 then
+                            -- Même fiche 3 casts de suite : fonctions / état probablement périmés, on rescanne.
+                            RodStaleRollStreak = 0
+                            invalidateRodCache()
+                        end
                         print("[Auto-Fish] same PreRolledFish signature reused; treating it as the confirmed current cast")
                     end
                 end
@@ -8638,7 +8946,8 @@ local function runAutoFishingWorker()
                 markRelaunch("skip")
                 autoFishRelease()
                 resetRod()
-                invalidateRodCache()
+                -- [patch P12] cache conservé (même Tool) : plus de scan GC complet à chaque skip ;
+                -- l'auto-réparation ci-dessous rescanne si la fiche PreRolledFish ne change plus.
                 if waitMinigameIdle(1.0) then
                     suppressShakeResume = false
                 else
@@ -8860,7 +9169,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     StaffJoinNotificationBtn.Name = "StaffJoinNotificationBtn"
     StaffJoinNotificationBtn.Size = UDim2.new(1, -8, 0, 34)
     StaffJoinNotificationBtn.Position = UDim2.fromOffset(0, 300)
-    StaffJoinNotificationBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+    StaffJoinNotificationBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
     StaffJoinNotificationBtn.BorderSizePixel = 0
     StaffJoinNotificationBtn.AutoButtonColor = true
     StaffJoinNotificationBtn.Text = "STAFF NOTIFICATIONS"
@@ -9012,7 +9321,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpSpecPanel.Name = "OmegaTPSpecPanel"
     tpSpecPanel.Size = UDim2.new(1, 0, 0, 292)
     tpSpecPanel.Position = UDim2.fromOffset(0, 0)
-    tpSpecPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 28)
+    tpSpecPanel.BackgroundColor3 = Color3.fromRGB(25, 23, 28)
     tpSpecPanel.BorderSizePixel = 0
     tpSpecPanel.ZIndex = 12
     tpSpecPanel.Parent = movementPage
@@ -9022,7 +9331,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpPanelCorner.Parent = tpSpecPanel
 
     local tpPanelStroke = Instance.new("UIStroke")
-    tpPanelStroke.Color = Color3.fromRGB(55, 55, 60)
+    tpPanelStroke.Color = Color3.fromRGB(54, 51, 60)
     tpPanelStroke.Thickness = 1
     tpPanelStroke.Parent = tpSpecPanel
 
@@ -9042,7 +9351,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpSearchBox.Name = "PlayerSearchBox"
     tpSearchBox.Size = UDim2.new(1, -12, 0, 24)
     tpSearchBox.Position = UDim2.fromOffset(6, 25)
-    tpSearchBox.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+    tpSearchBox.BackgroundColor3 = Color3.fromRGB(18, 16, 20)
     tpSearchBox.BorderSizePixel = 0
     tpSearchBox.ClearTextOnFocus = false
     tpSearchBox.PlaceholderText = "Search players..."
@@ -9065,14 +9374,14 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpSearchCorner.Parent = tpSearchBox
 
     local tpSearchStroke = Instance.new("UIStroke")
-    tpSearchStroke.Color = Color3.fromRGB(55, 55, 60)
+    tpSearchStroke.Color = Color3.fromRGB(54, 51, 60)
     tpSearchStroke.Thickness = 1
     tpSearchStroke.Parent = tpSearchBox
 
     local tpListFrame = Instance.new("Frame")
     tpListFrame.Size = UDim2.new(1, -12, 0, 134)
     tpListFrame.Position = UDim2.fromOffset(6, 53)
-    tpListFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+    tpListFrame.BackgroundColor3 = Color3.fromRGB(18, 16, 20)
     tpListFrame.BorderSizePixel = 0
     tpListFrame.ZIndex = 13
     tpListFrame.Parent = tpSpecPanel
@@ -9161,7 +9470,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     local function updateTpSpecSwitch(animated)
         if not tpSpecSwitch or not tpSpecKnob or not tpSpecKnob.Parent then return end
         local target = TPSpecEnabled and UDim2.new(1, -19, 0, 3) or UDim2.fromOffset(3, 3)
-        local targetColor = TPSpecEnabled and Color3.fromRGB(40, 150, 80) or Color3.fromRGB(70, 80, 94)
+        local targetColor = TPSpecEnabled and Color3.fromRGB(57, 255, 136) or Color3.fromRGB(70, 56, 94)
         if animated then
             TweenService:Create(tpSpecKnob, PRISONRP_AdjustUITweenInfo(tpSpecSwitchTween), {Position = target}):Play()
             TweenService:Create(tpSpecSwitch, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {BackgroundColor3 = targetColor}):Play()
@@ -9400,26 +9709,32 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         if not tpSelected or not tpSelected.Parent then return end
 
         local player = TPSpecSelectedPlayer
-        if not player or not player.Parent then
-            if tpSelected.Text ~= "Selected: none" then
-                tpSelected.Text = "Selected: none"
-            end
-            if type(_G.PRISONRP_GiveMoneyUI.RefreshLanguage) == "function" then
-                pcall(_G.PRISONRP_GiveMoneyUI.RefreshLanguage)
-            end
+        local hasPlayer = player ~= nil and player.Parent ~= nil
+        local infoKey = hasPlayer and (tostring(player.UserId) .. (TPSpecEnabled and ":spec" or ":sel")) or "none"
+        local now = os.clock()
+        TPSpecInfoState = TPSpecInfoState or {}
+        local state = TPSpecInfoState
+        -- [patch P14] appelé à chaque frame pendant le SPEC : rien n'est réécrit tant que rien n'a changé
+        if state.key == infoKey and state.lang == _G.PRISONRP_LANG_VALUE and now - (state.at or 0) < 1 then
+            return
+        end
+        state.key, state.lang, state.at = infoKey, _G.PRISONRP_LANG_VALUE, now
+
+        local giveUI = _G.PRISONRP_GiveMoneyUI
+        if type(giveUI) == "table" and type(giveUI.RefreshLanguage) == "function" then
+            pcall(giveUI.RefreshLanguage)
             return
         end
 
-        local rpPseudo = tpSpecGetRPPseudo(player)
-        local prefix = TPSpecEnabled and "Observation : " or "Selected: "
-        local infoText = prefix .. tostring(rpPseudo or player.DisplayName or player.Name)
+        -- Secours : panneau Give Money pas encore construit
+        if not hasPlayer then
+            tpSelected.Text = PRISONRP_TR("Selected: none", "Sélection : aucune")
+            return
+        end
+        local prefix = TPSpecEnabled and PRISONRP_TR("Observing: ", "Observation : ")
+            or PRISONRP_TR("Selected: ", "Sélection : ")
+        tpSelected.Text = prefix .. tostring(tpSpecGetRPPseudo(player) or player.DisplayName or player.Name)
             .. "  @" .. tostring(player.Name)
-        if tpSelected.Text ~= infoText then
-            tpSelected.Text = infoText
-        end
-        if type(_G.PRISONRP_GiveMoneyUI.RefreshLanguage) == "function" then
-            pcall(_G.PRISONRP_GiveMoneyUI.RefreshLanguage)
-        end
     end
     local function tpSpecStop()
         TPSpecEnabled = false
@@ -9533,7 +9848,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
                 local button = Instance.new("TextButton")
                 button.Size = UDim2.new(1, -2, 0, 32)
                 button.BackgroundTransparency = 0
-                button.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+                button.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
                 button.BorderSizePixel = 0
                 button.AutoButtonColor = false
                 button.Active = true
@@ -9592,7 +9907,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
                     for _, b in pairs(TPSpecPlayerButtons) do
                         if b and b.Parent then
                             b.BackgroundTransparency = 0
-                            b.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+                            b.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
                         end
                     end
                     button.BackgroundTransparency = 0
@@ -9610,25 +9925,35 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     tpButton.Activated:Connect(function()
         local player = TPSpecSelectedPlayer
         if not player then
-            tpSelected.Text = "Sélection : aucune"
+            tpSelected.Text = PRISONRP_TR("Selected: none", "Sélection : aucune")
             return
         end
         local localRoot = tpSpecGetRoot(LocalPlayer)
         local targetRoot = tpSpecGetRoot(player)
         if not localRoot then
-            tpSelected.Text = "Erreur : ton personnage est introuvable"
+            tpSelected.Text = PRISONRP_TR("Error: your character was not found", "Erreur : ton personnage est introuvable")
             return
         end
         if not targetRoot then
-            tpSelected.Text = "Erreur : personnage non chargé"
+            tpSelected.Text = PRISONRP_TR("Error: character not loaded", "Erreur : personnage non chargé")
             return
         end
-        pcall(function()
-            localRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 4)
-            localRoot.AssemblyLinearVelocity = Vector3.zero
-            localRoot.AssemblyAngularVelocity = Vector3.zero
+        -- [patch P21] déplacement progressif (comme TP Lake / TP Mine) : un saut d'une frame est rejeté par le serveur
+        local destination = targetRoot.CFrame * CFrame.new(0, 0, 4)
+        local label = tostring(tpSpecGetRPPseudo(player)) .. "  @" .. player.Name
+        MoveToTargetToken = MoveToTargetToken + 1
+        local token = MoveToTargetToken
+        tpSelected.Text = PRISONRP_TR("Moving to ", "Déplacement vers ") .. label
+        task.spawn(function()
+            local moved = robustTeleportTo(destination, 60, function()
+                return not running or token ~= MoveToTargetToken
+            end)
+            if token ~= MoveToTargetToken then return end
+            if tpSelected and tpSelected.Parent then
+                tpSelected.Text = (moved and PRISONRP_TR("TP done: ", "TP effectué : ")
+                    or PRISONRP_TR("TP failed: ", "TP échoué : ")) .. label
+            end
         end)
-        tpSelected.Text = "TP → " .. tpSpecGetRPPseudo(player) .. "  @" .. player.Name
     end)
 
     tpSpecTrackConnection(MovementUserInputService.InputBegan:Connect(function(input, processed)
@@ -9679,7 +10004,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             if TPSpecEnabled then tpSpecStop() end
             TPSpecSelectedPlayer = nil
             if tpSelected and tpSelected.Parent then
-                tpSelected.Text = "Sélection : aucune"
+                tpSelected.Text = PRISONRP_TR("Selected: none", "Sélection : aucune")
             end
             tpSpecUpdateInfo()
         end
@@ -9728,7 +10053,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     MoneyViewBtn.Name = "MoneyViewBtn"
     MoneyViewBtn.Size = UDim2.new(1, 0, 0, 32)
     MoneyViewBtn.Position = UDim2.fromOffset(0, 264)
-    MoneyViewBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+    MoneyViewBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
     MoneyViewBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
     MoneyViewBtn.TextSize = 11
     MoneyViewBtn.Font = Enum.Font.GothamBold
@@ -9755,7 +10080,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         local track = Instance.new("Frame")
         track.Size = UDim2.new(1, 0, 0, 8)
         track.Position = UDim2.fromOffset(0, y + 27)
-        track.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+        track.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
         track.BorderSizePixel = 0
         track.ZIndex = 12
         track.Active = true
@@ -9793,14 +10118,14 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         local dragging = false
         local value = math.clamp(tonumber(initialValue) or minValue, minValue, maxValue)
 
-        local function setValue(newValue, fire)
+        local function setValue(newValue, fire, fromUser)
             value = math.clamp(math.floor(tonumber(newValue) or minValue + 0.5), minValue, maxValue)
             local ratio = (value - minValue) / (maxValue - minValue)
             fill.Size = UDim2.new(ratio, 0, 1, 0)
             knob.Position = UDim2.new(ratio, 0, 0.5, 0)
             title.Text = labelText .. " : " .. tostring(value)
             if fire and onChanged then
-                onChanged(value)
+                onChanged(value, fromUser == true)
             end
         end
 
@@ -9809,7 +10134,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             local width = track.AbsoluteSize.X
             if width <= 0 then return end
             local ratio = math.clamp((x - left) / width, 0, 1)
-            setValue(minValue + ratio * (maxValue - minValue), true)
+            setValue(minValue + ratio * (maxValue - minValue), true, true)
         end
 
         MoneyViewUIConnections[#MoneyViewUIConnections + 1] = track.InputBegan:Connect(function(input)
@@ -9939,7 +10264,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         bill.StudsOffset = Vector3.new(0, 4.5, 0)
         bill.AlwaysOnTop = true
         bill.MaxDistance = MoneyViewMaxDistance
-        bill.Parent = ScreenGui
+        bill.Parent = ESPOverlayGui or ScreenGui
 
         local label = Instance.new("TextLabel")
         label.Size = UDim2.fromScale(1, 1)
@@ -9999,7 +10324,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         MoneyViewEnabled = state and true or false
         _G.MoneyViewEnabledValue = MoneyViewEnabled
         MoneyViewBtn.Text = MoneyViewEnabled and "MONEY VIEW : ON" or "MONEY VIEW : OFF"
-        MoneyViewBtn.BackgroundColor3 = MoneyViewEnabled and Color3.fromRGB(45, 110, 65) or Color3.fromRGB(45, 48, 62)
+        MoneyViewBtn.BackgroundColor3 = MoneyViewEnabled and Color3.fromRGB(30, 140, 84) or Color3.fromRGB(45, 35, 62)
 
         if not MoneyViewEnabled then
             for player in pairs(MoneyViewLabels) do
@@ -10095,7 +10420,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     local movementTitle = Instance.new("TextLabel")
     movementTitle.Size = UDim2.new(1, 0, 0, 30)
     movementTitle.Position = UDim2.fromOffset(0, 224)
-    movementTitle.BackgroundColor3 = Color3.fromRGB(28, 38, 45)
+    movementTitle.BackgroundColor3 = Color3.fromRGB(29, 19, 45)
     movementTitle.Text = "MOVEMENT"
     movementTitle.TextColor3 = Color3.fromRGB(100, 210, 255)
     movementTitle.TextSize = 13
@@ -10105,9 +10430,10 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
 
     local speedSlider = createMouseSlider(
         movementPage, 259, "WalkSpeed", 1, 250, MovementWalkSpeed,
-        function(value)
+        function(value, fromUser)
             MovementWalkSpeed = value
-            _G.PRISONRP_WALKSPEED_TOUCHED_THIS_RUN = true
+            -- [patch P01] seul un vrai geste protège la valeur contre le chargement du profil
+            if fromUser then _G.PRISONRP_WALKSPEED_TOUCHED_THIS_RUN = true end
             MovementSpeedBox.Text = tostring(value)
             if MovementWalkSpeedEnabled then
                 movementApplyWalkSpeed()
@@ -10147,7 +10473,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     speedBtn = Instance.new("TextButton")
     speedBtn.Size = UDim2.new(1, -281, 0, 34)
     speedBtn.Position = UDim2.new(0, 0, 0, 389)
-    speedBtn.BackgroundColor3 = Color3.fromRGB(45,48,62)
+    speedBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
     speedBtn.Text = ""
     speedBtn.TextColor3 = Color3.fromRGB(255,255,255)
     speedBtn.TextSize = 11
@@ -10181,7 +10507,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     flyBtn = Instance.new("TextButton")
     flyBtn.Size = UDim2.new(1, -281, 0, 34)
     flyBtn.Position = UDim2.new(0.51, 0, 0, 389)
-    flyBtn.BackgroundColor3 = Color3.fromRGB(45,48,62)
+    flyBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
     flyBtn.Text = "FLY"
     flyBtn.TextColor3 = Color3.fromRGB(200,200,200)
     flyBtn.TextSize = 11
@@ -10192,7 +10518,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     noclipBtn = Instance.new("TextButton")
     noclipBtn.Size = UDim2.new(1, -281, 0, 34)
     noclipBtn.Position = UDim2.new(0, 0, 0, 431)
-    noclipBtn.BackgroundColor3 = Color3.fromRGB(45,48,62)
+    noclipBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
     noclipBtn.Text = "NOCLIP : OFF"
     noclipBtn.TextColor3 = Color3.fromRGB(200,200,200)
     noclipBtn.TextSize = 11
@@ -10225,8 +10551,8 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
 
         flyBtn.Text = "FLY"
         flyBtn.BackgroundColor3 = MovementFlyEnabled
-            and Color3.fromRGB(40,150,80)
-            or Color3.fromRGB(45,48,62)
+            and Color3.fromRGB(57, 255, 136)
+            or Color3.fromRGB(45, 35, 62)
     end)
 
     noclipBtn.MouseButton1Click:Connect(function()
@@ -10234,13 +10560,16 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
 
         noclipBtn.Text = MovementNoclipEnabled and "NOCLIP : ON" or "NOCLIP : OFF"
         noclipBtn.BackgroundColor3 = MovementNoclipEnabled
-            and Color3.fromRGB(40,150,80)
-            or Color3.fromRGB(45,48,62)
+            and Color3.fromRGB(57, 255, 136)
+            or Color3.fromRGB(45, 35, 62)
     end)
 
     local function selectPage(page)
         page = math.clamp(math.floor(tonumber(page) or 1), 1, 4)
         _G.PRISONRP_ACTIVE_UI_PAGE = page
+        if page ~= 1 and type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+            pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+        end
         Content.Visible = page == 1
         movementPage.Visible = page == 2
         espPage.Visible = page == 3
@@ -10281,17 +10610,17 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
     --==============================================================
     -- V96 : palette plus propre et plus contrastée.
     local C = {
-        bg = Color3.fromRGB(16, 19, 25),
-        panel = Color3.fromRGB(22, 27, 35),
-        card = Color3.fromRGB(31, 38, 48),
-        card2 = Color3.fromRGB(38, 46, 58),
-        border = Color3.fromRGB(62, 73, 88),
-        accent = Color3.fromRGB(38, 135, 235),
-        accent2 = Color3.fromRGB(0, 190, 255),
+        bg = Color3.fromRGB(16, 11, 25),
+        panel = Color3.fromRGB(22, 15, 35),
+        card = Color3.fromRGB(31, 22, 48),
+        card2 = Color3.fromRGB(39, 27, 58),
+        border = Color3.fromRGB(62, 48, 88),
+        accent = Color3.fromRGB(138, 84, 240),
+        accent2 = Color3.fromRGB(190, 132, 255),
         white = Color3.fromRGB(255, 255, 255),
         soft = Color3.fromRGB(238, 241, 245),
-        muted = Color3.fromRGB(165, 174, 188),
-        off = Color3.fromRGB(70, 80, 94),
+        muted = Color3.fromRGB(172, 164, 200),
+        off = Color3.fromRGB(70, 56, 94),
     }
 
     MainFrame.Size = UDim2.fromOffset(720, 480)
@@ -10553,7 +10882,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         box.Parent = Content
         box.Position = UDim2.new(x == 0 and 0 or 0.51, 0, 0, 250)
         box.Size = UDim2.new(0.49, 0, 0, 38)
-        box.BackgroundColor3 = Color3.fromRGB(35, 38, 48)
+        box.BackgroundColor3 = Color3.fromRGB(35, 28, 48)
         box.BorderSizePixel = 0
         box.ZIndex = 20
         round(box, 8)
@@ -11244,7 +11573,7 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
             local targetPos = on and UDim2.new(1, -19, 0, 3) or UDim2.fromOffset(3, 3)
             -- État visible et cohérent : gris à l'arrêt, vert en marche.
             -- Le fond de la carte reste neutre pour tous les automatismes.
-            local targetColor = on and Color3.fromRGB(40, 150, 80) or C.off
+            local targetColor = on and Color3.fromRGB(57, 255, 136) or C.off
             local knobColor = C.white
 
             -- Chaque nouvel état prend immédiatement le dessus sur le tween
@@ -11295,6 +11624,10 @@ local __uiBuildOk, __uiBuildErr = pcall(function()
         end
         switch.Activated:Connect(activateToggle)
         blocker.Activated:Connect(activateToggle)
+
+        -- [patch P02] action enregistrée : les binds appellent directement le toggle
+        _G.PRISONRP_GDP_ACTIONS = _G.PRISONRP_GDP_ACTIONS or setmetatable({}, {__mode = "k"})
+        _G.PRISONRP_GDP_ACTIONS[btn] = activateToggle
 
         -- Ne pas rafraîchir sur chaque changement de texte : plusieurs fonctions
         -- changent leur label pendant le toggle, ce qui cassait l'animation.
@@ -11994,6 +12327,12 @@ connections[3] = LocalPlayer.CharacterAdded:Connect(function()
     IsInvisible = false
     CycleRunning = false
     DisableQueued = false
+    -- [patch P05] le switch du hub doit refléter l'état réel (OFF) après le respawn
+    pcall(function()
+        if InvisibleCard and type(_G.PRISONRP_REFRESH_GDP_TOGGLE) == "function" then
+            _G.PRISONRP_REFRESH_GDP_TOGGLE(InvisibleCard, true)
+        end
+    end)
 
     if StatusButton then
         StatusButton.Text = "Invisible: OFF"
@@ -12189,6 +12528,186 @@ end)
         end
     )
 
+do
+    local modeArrow = Instance.new("TextButton")
+    modeArrow.Name = "AutoFishCatchModeArrow"
+    modeArrow.Size = UDim2.fromOffset(22, 20)
+    modeArrow.Position = UDim2.new(1, -79, 0.5, -10)
+    modeArrow.BackgroundColor3 = Color3.fromRGB(115, 125, 145)
+    modeArrow.BackgroundTransparency = 1
+    modeArrow.BorderSizePixel = 0
+    modeArrow.Text = ""
+    modeArrow.AutoButtonColor = false
+    modeArrow.ZIndex = ToggleFishBtn.ZIndex + 6
+    modeArrow.Parent = ToggleFishBtn
+    local modeArrowCorner = Instance.new("UICorner")
+    modeArrowCorner.CornerRadius = UDim.new(0, 4)
+    modeArrowCorner.Parent = modeArrow
+    local arrowBaseColor = Color3.fromRGB(185, 195, 210)
+    local arrowHoverColor = Color3.fromRGB(255, 255, 255)
+    local arrowIcon = Instance.new("Frame")
+    arrowIcon.Name = "AutoFishCatchModeArrowIcon"
+    arrowIcon.Size = UDim2.fromOffset(18, 20)
+    arrowIcon.Position = UDim2.new(0.5, -9, 0.5, -10)
+    arrowIcon.BackgroundTransparency = 1
+    arrowIcon.BorderSizePixel = 0
+    arrowIcon.ZIndex = modeArrow.ZIndex + 1
+    arrowIcon.Parent = modeArrow
+    local arrowLeftStroke = Instance.new("Frame")
+    arrowLeftStroke.Name = "ArrowLeftStroke"
+    arrowLeftStroke.Size = UDim2.fromOffset(7, 1.5)
+    arrowLeftStroke.Position = UDim2.fromOffset(3, 9)
+    arrowLeftStroke.Rotation = 45
+    arrowLeftStroke.BackgroundColor3 = arrowBaseColor
+    arrowLeftStroke.BorderSizePixel = 0
+    arrowLeftStroke.ZIndex = arrowIcon.ZIndex + 1
+    arrowLeftStroke.Parent = arrowIcon
+    local arrowRightStroke = Instance.new("Frame")
+    arrowRightStroke.Name = "ArrowRightStroke"
+    arrowRightStroke.Size = UDim2.fromOffset(7, 1.5)
+    arrowRightStroke.Position = UDim2.fromOffset(8, 9)
+    arrowRightStroke.Rotation = -45
+    arrowRightStroke.BackgroundColor3 = arrowBaseColor
+    arrowRightStroke.BorderSizePixel = 0
+    arrowRightStroke.ZIndex = arrowIcon.ZIndex + 1
+    arrowRightStroke.Parent = arrowIcon
+    local TweenService = game:GetService("TweenService")
+    local arrowTween
+    local function animateCatchModeArrow(open)
+        if arrowTween then pcall(function() arrowTween:Cancel() end) end
+        arrowTween = TweenService:Create(
+            arrowIcon,
+            TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            {Rotation = open and -90 or 0}
+        )
+        arrowTween:Play()
+    end
+    modeArrow.MouseEnter:Connect(function()
+        modeArrow.BackgroundTransparency = 0.72
+        arrowLeftStroke.BackgroundColor3 = arrowHoverColor
+        arrowRightStroke.BackgroundColor3 = arrowHoverColor
+    end)
+    modeArrow.MouseLeave:Connect(function()
+        modeArrow.BackgroundTransparency = 1
+        arrowLeftStroke.BackgroundColor3 = arrowBaseColor
+        arrowRightStroke.BackgroundColor3 = arrowBaseColor
+    end)
+
+    local modeMenu = Instance.new("Frame")
+    modeMenu.Name = "AutoFishCatchModeMenu"
+    modeMenu.Size = UDim2.fromOffset(170, 66)
+    modeMenu.Position = UDim2.fromOffset(0, 0)
+    modeMenu.BackgroundColor3 = Color3.fromRGB(27, 19, 41)
+    modeMenu.BorderSizePixel = 0
+    modeMenu.Visible = false
+    modeMenu.Active = true
+    modeMenu.ZIndex = 200
+    modeMenu.Parent = ScreenGui
+    local modeMenuCorner = Instance.new("UICorner")
+    modeMenuCorner.CornerRadius = UDim.new(0, 7)
+    modeMenuCorner.Parent = modeMenu
+    local modeMenuStroke = Instance.new("UIStroke")
+    modeMenuStroke.Color = Color3.fromRGB(80, 62, 112)
+    modeMenuStroke.Transparency = 0.15
+    modeMenuStroke.Thickness = 1
+    modeMenuStroke.Parent = modeMenu
+    local function closeCatchModeMenu()
+        modeMenu.Visible = false
+        animateCatchModeArrow(false)
+    end
+    _G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU = closeCatchModeMenu
+
+    local function makeCatchModeOption(name, y)
+        local option = Instance.new("TextButton")
+        option.Name = name
+        option.Size = UDim2.new(1, -8, 0, 27)
+        option.Position = UDim2.fromOffset(4, y)
+        option.BackgroundColor3 = Color3.fromRGB(43, 33, 62)
+        option.BorderSizePixel = 0
+        option.TextColor3 = Color3.fromRGB(245, 245, 248)
+        option.TextSize = 10
+        option.Font = Enum.Font.GothamMedium
+        option.TextXAlignment = Enum.TextXAlignment.Left
+        option.AutoButtonColor = true
+        option.ZIndex = modeMenu.ZIndex + 1
+        option.Parent = modeMenu
+        local optionCorner = Instance.new("UICorner")
+        optionCorner.CornerRadius = UDim.new(0, 5)
+        optionCorner.Parent = option
+        return option
+    end
+
+    local perfectModeOption = makeCatchModeOption("PerfectCatchesOption", 4)
+    local basicModeOption = makeCatchModeOption("BasicCatchOption", 35)
+    refreshCatchModeOptions = function()
+        perfectModeOption.Text = (AutoFishCatchMode == "Perfect" and "✓  " or "    ") .. "Perfect catches"
+        basicModeOption.Text = (AutoFishCatchMode == "Basic" and "✓  " or "    ") .. "Basic catch"
+    end
+    local function chooseCatchMode(mode)
+        AutoFishCatchMode = mode
+        refreshCatchModeOptions()
+        modeMenu.Visible = false
+        animateCatchModeArrow(false)
+    end
+    local function positionCatchModeMenu()
+        local arrowPosition = modeArrow.AbsolutePosition
+        local arrowSize = modeArrow.AbsoluteSize
+        local rootPosition = ScreenGui.AbsolutePosition
+        local x = arrowPosition.X - rootPosition.X
+        local y = arrowPosition.Y - rootPosition.Y + arrowSize.Y + 12
+        local camera = workspace.CurrentCamera
+        if camera then
+            x = math.clamp(
+                x,
+                8,
+                math.max(8, camera.ViewportSize.X - rootPosition.X - modeMenu.AbsoluteSize.X - 8)
+            )
+            local maxY = math.max(8, camera.ViewportSize.Y - rootPosition.Y - modeMenu.AbsoluteSize.Y - 8)
+            if y > maxY then
+                local aboveArrowY = arrowPosition.Y - rootPosition.Y - modeMenu.AbsoluteSize.Y - 12
+                y = math.clamp(aboveArrowY >= 8 and aboveArrowY or maxY, 8, maxY)
+            end
+        end
+        modeMenu.Position = UDim2.fromOffset(x, y)
+    end
+    refreshCatchModeOptions()
+    modeArrow.Activated:Connect(function()
+        if (tonumber(_G.PRISONRP_ACTIVE_UI_PAGE) or 1) ~= 1 then
+            modeMenu.Visible = false
+            animateCatchModeArrow(false)
+            return
+        end
+        modeMenu.Visible = not modeMenu.Visible
+        if modeMenu.Visible then positionCatchModeMenu() end
+        animateCatchModeArrow(modeMenu.Visible)
+    end)
+    modeArrow:GetPropertyChangedSignal("AbsolutePosition"):Connect(function()
+        if modeMenu.Visible then positionCatchModeMenu() end
+    end)
+    modeArrow:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        if modeMenu.Visible then positionCatchModeMenu() end
+    end)
+    local currentCamera = workspace.CurrentCamera
+    if currentCamera then
+        currentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            if modeMenu.Visible then positionCatchModeMenu() end
+        end)
+    end
+    perfectModeOption.Activated:Connect(function() chooseCatchMode("Perfect") end)
+    basicModeOption.Activated:Connect(function() chooseCatchMode("Basic") end)
+    task.spawn(function()
+        while ScreenGui and ScreenGui.Parent do
+            if modeMenu.Visible and (
+                (tonumber(_G.PRISONRP_ACTIVE_UI_PAGE) or 1) ~= 1
+                or HubExpanded == false
+                or not MainFrame.Visible
+            ) then
+                closeCatchModeMenu()
+            end
+            task.wait(0.1)
+        end
+    end)
+end
     gdpCheckbox(AutoEatDrinkBtn,
         function() return AutoEatDrinkEnabled == true end,
         function()
@@ -12388,7 +12907,7 @@ end)
         tpSpecKnob = tpSpecSwitch and tpSpecSwitch:FindFirstChild("Knob") or nil
 
         if tpSpecSwitch then
-            tpSpecSwitch.Activated:Connect(function()
+            local function toggleTpSpecFromUI()
                 if TPSpecEnabled then
                     tpSpecStop()
                 else
@@ -12397,12 +12916,16 @@ end)
                 task.defer(function()
                     updateTpSpecSwitch(true)
                 end)
-            end)
+            end
+            tpSpecSwitch.Activated:Connect(toggleTpSpecFromUI)
+            -- [patch P24] le clone de FLY garde un GDPClickBlocker sans action : on le branche aussi
+            local specBlocker = tpSpecButton:FindFirstChild("GDPClickBlocker")
+            if specBlocker then specBlocker.Activated:Connect(toggleTpSpecFromUI) end
             updateTpSpecSwitch(false)
         end
     end
 
-    -- Garantie finale V30 : SPEC en haut, TP en bas, même police et écart uniforme.
+    -- Garantie finale : SPEC en haut, TP en bas, même police et écart uniforme.
     if tpSpecButton and tpSpecPanel then
         tpSpecButton.Parent = tpSpecPanel
         tpSpecButton.Position = UDim2.fromOffset(6, 211)
@@ -12555,7 +13078,7 @@ end)
             local color = obj.BackgroundColor3
             if size.X.Scale == 1 and size.X.Offset == 0
                 and size.Y.Scale == 0 and size.Y.Offset == 2
-                and color == Color3.fromRGB(45, 48, 62) then
+                and color == Color3.fromRGB(45, 35, 62) then
                 obj:Destroy()
             end
         end
@@ -12612,7 +13135,7 @@ end)
     V7Sidebar.Parent = V7Body
     V7Sidebar.Position = UDim2.fromOffset(8, 8)
     V7Sidebar.Size = UDim2.fromOffset(43, (V7Body.AbsoluteSize.Y / MainFrameScale.Scale) - 16)
-    V7Sidebar.BackgroundColor3 = Color3.fromRGB(15, 18, 24)
+    V7Sidebar.BackgroundColor3 = Color3.fromRGB(15, 10, 24)
     V7Sidebar.BackgroundTransparency = 0.02
     V7Sidebar.BorderSizePixel = 0
     V7Sidebar.ZIndex = 100
@@ -12623,7 +13146,7 @@ end)
     v7Corner.Parent = V7Sidebar
 
     local v7Stroke = Instance.new("UIStroke")
-    v7Stroke.Color = Color3.fromRGB(35, 39, 47)
+    v7Stroke.Color = Color3.fromRGB(35, 28, 47)
     v7Stroke.Transparency = 0.55
     v7Stroke.Thickness = 1
     v7Stroke.Parent = V7Sidebar
@@ -12632,7 +13155,7 @@ end)
     v7Line.Parent = V7Sidebar
     v7Line.Position = UDim2.new(1, -1, 0, 4)
     v7Line.Size = UDim2.new(0, 1, 1, -8)
-    v7Line.BackgroundColor3 = Color3.fromRGB(31, 34, 42)
+    v7Line.BackgroundColor3 = Color3.fromRGB(31, 25, 42)
     v7Line.BorderSizePixel = 0
     v7Line.ZIndex = 101
 
@@ -12658,7 +13181,7 @@ end)
     v7Marker.Parent = V7Sidebar
     v7Marker.Position = UDim2.fromOffset(0, 10)
     v7Marker.Size = UDim2.fromOffset(2, 22)
-    v7Marker.BackgroundColor3 = Color3.fromRGB(79, 142, 255)
+    v7Marker.BackgroundColor3 = Color3.fromRGB(150, 92, 255)
     v7Marker.BorderSizePixel = 0
     v7Marker.ZIndex = 104
 
@@ -12670,7 +13193,7 @@ end)
     v7Glow.Parent = V7Sidebar
     v7Glow.Position = UDim2.fromOffset(0, 10)
     v7Glow.Size = UDim2.fromOffset(2, 22)
-    v7Glow.BackgroundColor3 = Color3.fromRGB(79, 142, 255)
+    v7Glow.BackgroundColor3 = Color3.fromRGB(150, 92, 255)
     v7Glow.BackgroundTransparency = 0.78
     v7Glow.BorderSizePixel = 0
     v7Glow.ZIndex = 103
@@ -12712,6 +13235,9 @@ end)
     local function v7Select(page)
         v7Selected = page
         _G.PRISONRP_ACTIVE_UI_PAGE = page
+        if page ~= 1 and type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+            pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+        end
 
         -- C'est la vraie fonction de navigation du V102.
         -- On l'appelle directement depuis cette nouvelle sidebar.
@@ -12735,10 +13261,10 @@ end)
             -- Le fond de l'onglet ne s'affiche que lorsque la sidebar est ouverte.
             -- En mode compact, il reste limité à la zone de l'emoji.
             button.BackgroundTransparency = (v7Expanded and active) and 0.72 or 1
-            button.BackgroundColor3 = Color3.fromRGB(25, 29, 37)
+            button.BackgroundColor3 = Color3.fromRGB(25, 18, 37)
             local icon = button:FindFirstChild("V7Icon")
             if icon then
-                icon.TextColor3 = active and Color3.fromRGB(132, 165, 230) or Color3.fromRGB(92, 97, 108)
+                icon.TextColor3 = active and Color3.fromRGB(192, 160, 255) or Color3.fromRGB(91, 82, 108)
             end
         end
     end
@@ -12751,7 +13277,7 @@ end)
         local visualIndex = i == 4 and 5 or i
         button.Position = UDim2.fromOffset(6, 5 + (visualIndex - 1) * 31)
         button.Size = UDim2.fromOffset(31, 27)
-        button.BackgroundColor3 = Color3.fromRGB(25, 29, 37)
+        button.BackgroundColor3 = Color3.fromRGB(25, 18, 37)
         button.BackgroundTransparency = 1
         button.BorderSizePixel = 0
         button.AutoButtonColor = false
@@ -12769,7 +13295,7 @@ end)
         icon.Size = UDim2.fromOffset(31, 31)
         icon.BackgroundTransparency = 1
         icon.Text = data[1]
-        icon.TextColor3 = Color3.fromRGB(92, 97, 108)
+        icon.TextColor3 = Color3.fromRGB(91, 82, 108)
         icon.Font = Enum.Font.GothamBold
         icon.TextSize = 18
         icon.TextXAlignment = Enum.TextXAlignment.Center
@@ -13272,7 +13798,7 @@ end)
             local f = Instance.new("Frame")
             f.Size = UDim2.new(1, -8, 0, h)
             f.Position = UDim2.fromOffset(4, y)
-            f.BackgroundColor3 = Color3.fromRGB(25, 25, 28)
+            f.BackgroundColor3 = Color3.fromRGB(25, 23, 28)
             f.BorderSizePixel = 0
             f.ZIndex = 96
             f.Parent = ESPContent
@@ -13282,7 +13808,7 @@ end)
             c.Parent = f
 
             local st = Instance.new("UIStroke")
-            st.Color = Color3.fromRGB(55, 55, 60)
+            st.Color = Color3.fromRGB(54, 51, 60)
             st.Transparency = 0.25
             st.Parent = f
             return f
@@ -13370,7 +13896,7 @@ end)
             local cardH = 48
             b.Size = UDim2.fromOffset(cardW, cardH)
             b.Position = UDim2.fromOffset(4 + col * 144, 68 + row * 52)
-            b.BackgroundColor3 = Color3.fromRGB(34, 40, 51)
+            b.BackgroundColor3 = Color3.fromRGB(34, 25, 51)
             b.BorderSizePixel = 0
             b.ZIndex = 98
             b.Parent = espOptions
@@ -13393,7 +13919,7 @@ end)
             c.Parent = b
 
             local stroke = Instance.new("UIStroke")
-            stroke.Color = Color3.fromRGB(65, 75, 92)
+            stroke.Color = Color3.fromRGB(65, 50, 92)
             stroke.Transparency = 0.35
             stroke.Parent = b
 
@@ -13405,7 +13931,7 @@ end)
             local box = Instance.new("Frame")
             box.Size = UDim2.fromOffset(16, 16)
             box.Position = UDim2.fromOffset(7, 16)
-            box.BackgroundColor3 = Color3.fromRGB(52, 59, 72)
+            box.BackgroundColor3 = Color3.fromRGB(52, 41, 72)
             box.BorderSizePixel = 0
             box.Active = false
             box.ZIndex = 100
@@ -13443,7 +13969,7 @@ end)
             local sw = Instance.new("Frame")
             sw.Size = UDim2.fromOffset(32, 18)
             sw.Position = UDim2.fromOffset(100, 15)
-            sw.BackgroundColor3 = Color3.fromRGB(70, 76, 88)
+            sw.BackgroundColor3 = Color3.fromRGB(70, 59, 88)
             sw.BorderSizePixel = 0
             sw.Active = false
             sw.ZIndex = 100
@@ -13513,11 +14039,11 @@ end)
 
             local function refresh(animated)
                 local on = getter() == true
-                local selectedColor = Color3.fromRGB(35, 125, 75)
-                local unselectedColor = Color3.fromRGB(52, 59, 72)
+                local selectedColor = Color3.fromRGB(30, 160, 92)
+                local unselectedColor = Color3.fromRGB(52, 41, 72)
                 local targetSwitchColor = on
-                    and Color3.fromRGB(40, 150, 80)
-                    or Color3.fromRGB(70, 76, 88)
+                    and Color3.fromRGB(57, 255, 136)
+                    or Color3.fromRGB(70, 59, 88)
                 local targetKnobPosition = on
                     and UDim2.new(1, -16, 0, 2)
                     or UDim2.fromOffset(2, 2)
@@ -13794,7 +14320,7 @@ end)
         local master = Instance.new("TextButton")
         master.Size = UDim2.fromOffset(286, 24)
         master.Position = UDim2.fromOffset(4, 280)
-        master.BackgroundColor3 = Color3.fromRGB(43, 49, 61)
+        master.BackgroundColor3 = Color3.fromRGB(43, 33, 61)
         master.Text = ""
         master.BorderSizePixel = 0
         master.AutoButtonColor = false
@@ -13808,7 +14334,7 @@ end)
         local mb = Instance.new("TextLabel")
         mb.Size = UDim2.fromOffset(16, 16)
         mb.Position = UDim2.fromOffset(6, 4)
-        mb.BackgroundColor3 = Color3.fromRGB(52, 59, 72)
+        mb.BackgroundColor3 = Color3.fromRGB(52, 41, 72)
         mb.BorderSizePixel = 0
         mb.Text = ""
         mb.ZIndex = 100
@@ -13847,11 +14373,11 @@ end)
             _G.PRISONRP_ESP_CHECKED_MASTER_STATE = masterState
             mcheck.Visible = masterState
             mb.BackgroundColor3 = masterState
-                and Color3.fromRGB(35,125,75)
-                or Color3.fromRGB(52,59,72)
+                and Color3.fromRGB(30, 160, 92)
+                or Color3.fromRGB(52, 41, 72)
             master.BackgroundColor3 = masterState
                 and Color3.fromRGB(38,56,48)
-                or Color3.fromRGB(43,49,61)
+                or Color3.fromRGB(43, 33, 61)
             for _, c in ipairs(optionControls) do c.refresh() end
         end
 
@@ -13916,7 +14442,7 @@ end)
             StaffList.Size = UDim2.fromOffset(270, 315)
             StaffList.Visible = true
             StaffList.ZIndex = 98
-            StaffList.BackgroundColor3 = Color3.fromRGB(25, 25, 28)
+            StaffList.BackgroundColor3 = Color3.fromRGB(25, 23, 28)
             StaffList.TextXAlignment = Enum.TextXAlignment.Left
             StaffList.TextYAlignment = Enum.TextYAlignment.Top
             StaffList.TextWrapped = true
@@ -13952,6 +14478,8 @@ local StaffESPObjects = {}
 local Connections = {}
 local StaffStateCache = {}
 local StaffStateCacheTime = {}
+-- [patch P10] anti-rebond : un joueur non-staff n'est réévalué que toutes les 0,5 s
+StaffSetupNextAt = setmetatable({}, {__mode = "k"})
 local RPNameCache = {}
 local RPNameCacheTime = {}
 local STAFF_CACHE_INTERVAL = 8.0
@@ -14084,7 +14612,7 @@ local STAFF_KEYWORDS = {
 }
 local tracerContainer = Instance.new("Folder")
 tracerContainer.Name = "Tracers"
-tracerContainer.Parent = ScreenGui
+tracerContainer.Parent = ESPOverlayGui or ScreenGui
 
 local function isStaff(player)
     if not ESPConfig.StaffDetection or not player then
@@ -14096,15 +14624,7 @@ local function isStaff(player)
     end
 
     -- Groupe utilisé dans le script Staff ESP précédent.
-    pcall(function()
-        if player:IsInGroup(STAFF_GROUP_ID)
-            and player:GetRankInGroup(STAFF_GROUP_ID) >= STAFF_MIN_RANK then
-            return true
-        end
-    end)
-
-    -- Le pcall ci-dessus ne peut pas retourner depuis cette fonction,
-    -- donc on vérifie séparément.
+    -- [patch P10] IsInGroup retiré : un return dans un pcall ne sort pas de isStaff (code mort + appel réseau inutile)
     local ok, rank = pcall(function()
         return player:GetRankInGroup(STAFF_GROUP_ID)
     end)
@@ -14516,12 +15036,13 @@ local function removeStaffESP(player)
     StaffESPObjects[player] = nil
 end
 
-local function setupStaffESP(player)
+local function setupStaffESP(player, force)
     if player == LocalPlayer then return end
     removeStaffESP(player)
 
     if not ESPConfig.StaffDetection then return end
-    if not cachedIsStaff(player, true) then return end
+    -- [patch P10] force uniquement à l'apparition du personnage ; sinon cache (8 s)
+    if not cachedIsStaff(player, force == true) then return end
 
     local character = player.Character
     local root = getRoot(character)
@@ -14625,14 +15146,14 @@ local function hookPlayer(player)
     if player.Character then
         task.defer(function()
             setupESP(player)
-            setupStaffESP(player)
+            setupStaffESP(player, true)
         end)
     end
 
     Connections[player] = player.CharacterAdded:Connect(function()
         task.wait(0.15)
         setupESP(player)
-        setupStaffESP(player)
+            setupStaffESP(player, true)
     end)
 end
 
@@ -14662,15 +15183,13 @@ Connections.Render = RunService.RenderStepped:Connect(function()
     -- prêt au moment du CharacterAdded (cas fréquent lors d'un respawn).
     for _, player in ipairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character and not ESPObjects[player] then
-            pcall(function() setupESP(player) end)
+            pcall(setupESP, player)
         end
     end
 
     for player, data in pairs(ESPObjects) do
         if player and player.Parent then
-            pcall(function()
-                updateESP(data)
-            end)
+            pcall(updateESP, data)
         else
             removeESP(player)
         end
@@ -14680,8 +15199,9 @@ Connections.Render = RunService.RenderStepped:Connect(function()
     if ESPConfig.StaffDetection then
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= LocalPlayer then
-                if not StaffESPObjects[player] then
-                    pcall(function() setupStaffESP(player) end)
+                if not StaffESPObjects[player] and (StaffSetupNextAt[player] or 0) <= os.clock() then
+                    StaffSetupNextAt[player] = os.clock() + 0.5
+                    pcall(setupStaffESP, player)
                 end
             end
         end
@@ -14693,17 +15213,26 @@ Connections.Render = RunService.RenderStepped:Connect(function()
 
     for player, data in pairs(StaffESPObjects) do
         if player and player.Parent then
-            pcall(function()
-                updateStaffESP(data)
-            end)
+            pcall(updateStaffESP, data)
         else
             removeStaffESP(player)
         end
     end
 
-    ESPStatusLabel.Text = ESPConfig.ESPEnabled
-        and ("ESP actif • " .. tostring(#Players:GetPlayers() - 1) .. " joueur(s)")
-        or "ESP désactivé"
+    -- [patch P14] texte d'état ESP : recalculé 2 fois par seconde, traduit, écrit seulement s'il change
+    local statusNow = os.clock()
+    if statusNow >= (ESPStatusNextAt or 0) then
+        ESPStatusNextAt = statusNow + 0.5
+        local statusText
+        if ESPConfig.ESPEnabled then
+            local others = math.max(0, #Players:GetPlayers() - 1)
+            statusText = PRISONRP_TR("ESP active • " .. tostring(others) .. " player(s)",
+                "ESP actif • " .. tostring(others) .. " joueur(s)")
+        else
+            statusText = PRISONRP_TR("ESP disabled", "ESP désactivé")
+        end
+        if ESPStatusLabel.Text ~= statusText then ESPStatusLabel.Text = statusText end
+    end
 end)
 
 -- =========================
@@ -15022,7 +15551,7 @@ end)
         local function toMoneyNumber(value)
             local amount = tonumber(value)
             if not amount then
-                amount = tonumber(tostring(value or ""):gsub("[^%d]", ""))
+                amount = tonumber((tostring(value or ""):gsub("[^%d]", "")))
             end
             if amount and amount >= 0 then return math.floor(amount) end
             return nil
@@ -15136,7 +15665,7 @@ end)
             GiveMoneyAmount.Position = UDim2.new()
             GiveMoneyAmount.Size = UDim2.new(0.26, -3, 1, 0)
             GiveMoneyAmount.LayoutOrder = 1
-            GiveMoneyAmount.BackgroundColor3 = Color3.fromRGB(35, 37, 45)
+            GiveMoneyAmount.BackgroundColor3 = Color3.fromRGB(35, 29, 45)
             GiveMoneyAmount.BorderSizePixel = 0
             GiveMoneyAmount.PlaceholderText = translate("Amount", "Montant")
             GiveMoneyAmount.PlaceholderColor3 = Color3.fromRGB(145, 150, 160)
@@ -15195,12 +15724,13 @@ end)
                 button.Position = UDim2.new()
                 button.Size = UDim2.new(widthScale, -3, 1, 0)
                 button.LayoutOrder = order
-                button.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+                button.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
                 button.BorderSizePixel = 0
                 button.AutoButtonColor = true
                 button.Text = text
                 button.TextColor3 = Color3.fromRGB(245, 245, 245)
-                button.TextSize = 8
+                button.TextSize = 11
+                PRISONRP_FitButtonText(button, 8, 13)
                 button.Font = Enum.Font.GothamBold
                 button.ZIndex = 15
                 button.Parent = GiveMoneyRow
@@ -15213,7 +15743,7 @@ end)
             local presets = {
                 {en = "1%", fr = "1%", fraction = 0.01, width = 0.11},
                 {en = "10%", fr = "10%", fraction = 0.10, width = 0.13},
-                {en = "25%", fr = "25%", fraction = 0.25, width = 0.13},
+                {en = "98%", fr = "98%", fraction = 0.98, width = 0.13},
                 {en = "ALL", fr = "TOUT", fraction = 1, width = 0.16},
             }
             local presetButtons = {}
@@ -15589,7 +16119,7 @@ end)
     -- avec AUTO POMPES.
     --==============================================================
     pcall(function()
-        local neutral = Color3.fromRGB(45, 48, 62)
+        local neutral = Color3.fromRGB(45, 35, 62)
         local white = Color3.fromRGB(255, 255, 255)
 
         if BlackMarketBtn then
@@ -16089,17 +16619,17 @@ Connections.RenderStepped =
 --------------------------------------------------
 
 local AIM_C = {
-    bg = Color3.fromRGB(16, 19, 25),
-    panel = Color3.fromRGB(22, 27, 35),
-    card = Color3.fromRGB(31, 38, 48),
-    card2 = Color3.fromRGB(38, 46, 58),
-    border = Color3.fromRGB(62, 73, 88),
-    accent = Color3.fromRGB(38, 135, 235),
+    bg = Color3.fromRGB(16, 11, 25),
+    panel = Color3.fromRGB(22, 15, 35),
+    card = Color3.fromRGB(31, 22, 48),
+    card2 = Color3.fromRGB(39, 27, 58),
+    border = Color3.fromRGB(62, 48, 88),
+    accent = Color3.fromRGB(138, 84, 240),
     white = Color3.fromRGB(255, 255, 255),
     soft = Color3.fromRGB(238, 241, 245),
-    muted = Color3.fromRGB(165, 174, 188),
-    off = Color3.fromRGB(70, 80, 94),
-    on = Color3.fromRGB(40, 145, 78),
+    muted = Color3.fromRGB(172, 164, 200),
+    off = Color3.fromRGB(70, 56, 94),
+    on = Color3.fromRGB(34, 176, 98),
 }
 
 local mainHub = MainFrame
@@ -16125,7 +16655,7 @@ aimPage.Parent = v7Body or mainHub
 aimPage.BackgroundTransparency = 1
 aimPage.BorderSizePixel = 0
 aimPage.ScrollBarThickness = 3
-aimPage.ScrollBarImageColor3 = Color3.fromRGB(79, 142, 255)
+aimPage.ScrollBarImageColor3 = Color3.fromRGB(150, 92, 255)
 aimPage.CanvasSize = UDim2.new(0, 0, 0, 0)
 aimPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
 aimPage.ScrollingDirection = Enum.ScrollingDirection.Y
@@ -16173,6 +16703,8 @@ if v7Sidebar then
     end)
 end
 
+-- [patch P34] page Aimbot refaite dans le style V2 : cartes de 54 px, une phrase sous chaque option,
+-- titres de sections, textes FR/EN, touche (HOTKEY) validée, index du cycle resynchronisé
 local function aimStroke(obj)
     local s = Instance.new("UIStroke")
     s.Color = AIM_C.border
@@ -16189,432 +16721,610 @@ local function aimCorner(obj, radius)
     return c
 end
 
-local function aimSection(_text)
-    -- V220 : aucun élément vide pour les titres masqués.
-    -- Les faux en-têtes occupaient encore des interstices dans l'UIListLayout.
-    return nil
-end
-
-local function newRow(height)
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, -6, 0, height)
-    row.BackgroundTransparency = 1
-    row.BorderSizePixel = 0
-    row.ZIndex = 93
-    row.LayoutOrder = 1
-    row.Parent = aimPage
-    return row
-end
-
-local function cardBase(parent, x, width, height)
-    local card = Instance.new("TextButton")
-    card.Size = UDim2.new(width, -6, 0, height)
-    card.Position = UDim2.new(x, x == 0 and 0 or 6, 0, 0)
-    card.BackgroundColor3 = AIM_C.card
-    card.Text = ""
-    card.AutoButtonColor = false
-    card.BorderSizePixel = 0
-    card.ZIndex = 94
-    card.Parent = parent
-    aimCorner(card, 7)
-    aimStroke(card)
-    return card
-end
-
-_G.PRISONRP_AIM_CONTROLS = {}
-local function registerAimControl(kind, text, getter, setter, refresh)
-    table.insert(_G.PRISONRP_AIM_CONTROLS, {Kind=kind, Name=text, Get=getter, Set=setter, Refresh=refresh})
-end
-
-local function addToggle(parent, x, text, getter, setter)
-    local card = cardBase(parent, x, 0.5, 36)
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -50, 1, 0)
-    label.Position = UDim2.fromOffset(5, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = AIM_C.white
-    label.TextSize = 12
-    label.Font = Enum.Font.GothamBold
-    label.TextXAlignment = Enum.TextXAlignment.Center
-    label.TextYAlignment = Enum.TextYAlignment.Center
-    label.ZIndex = 95
-    label.Parent = card
-
-    local sw = Instance.new("Frame")
-    sw.Size = UDim2.fromOffset(38, 20)
-    sw.Position = UDim2.new(1, -44, 0.5, -10)
-    sw.BackgroundColor3 = AIM_C.off
-    sw.BorderSizePixel = 0
-    sw.ZIndex = 96
-    sw.Parent = card
-    aimCorner(sw, 99)
-
-    local knob = Instance.new("Frame")
-    knob.Size = UDim2.fromOffset(14, 14)
-    knob.Position = UDim2.fromOffset(3, 3)
-    knob.BackgroundColor3 = AIM_C.white
-    knob.BorderSizePixel = 0
-    knob.ZIndex = 97
-    knob.Parent = sw
-    aimCorner(knob, 99)
-
-    local function refresh()
-        local on = getter()
-        game:GetService("TweenService"):Create(sw, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            BackgroundColor3 = on and AIM_C.on or AIM_C.off
-        }):Play()
-        game:GetService("TweenService"):Create(knob, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-            Position = on and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3)
-        }):Play()
+do
+    local AIM_ON_COLOR = Color3.fromRGB(57, 255, 136)
+    local aimOrder = 0
+    local function aimNextOrder()
+        aimOrder = aimOrder + 1
+        return aimOrder
     end
 
-    card.MouseButton1Click:Connect(function()
-        setter(not getter())
+    local function aimSection(en, fr)
+        local head = Instance.new("Frame")
+        head.Name = "AimSection"
+        head.Size = UDim2.new(1, -6, 0, 26)
+        head.BackgroundTransparency = 1
+        head.BorderSizePixel = 0
+        head.ZIndex = 93
+        head.LayoutOrder = aimNextOrder()
+        head.Parent = aimPage
+
+        local bar = Instance.new("Frame")
+        bar.Size = UDim2.fromOffset(3, 14)
+        bar.Position = UDim2.new(0, 0, 0.5, -7)
+        bar.BackgroundColor3 = AIM_C.accent
+        bar.BorderSizePixel = 0
+        bar.ZIndex = 94
+        bar.Parent = head
+        aimCorner(bar, 2)
+
+        local label = Instance.new("TextLabel")
+        label.AutoLocalize = false
+        label.Position = UDim2.fromOffset(12, 0)
+        label.Size = UDim2.new(1, -12, 1, 0)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = AIM_C.soft
+        label.TextSize = 13
+        label.Font = Enum.Font.GothamBold
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Center
+        label.ZIndex = 94
+        label.Parent = head
+        PRISONRP_BindText(label, en, fr)
+
+        local line = Instance.new("Frame")
+        line.Size = UDim2.new(1, 0, 0, 1)
+        line.Position = UDim2.new(0, 0, 1, -1)
+        line.BackgroundColor3 = AIM_C.border
+        line.BackgroundTransparency = 0.5
+        line.BorderSizePixel = 0
+        line.ZIndex = 94
+        line.Parent = head
+        return head
+    end
+
+    local function newRow(height)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -6, 0, height)
+        row.BackgroundTransparency = 1
+        row.BorderSizePixel = 0
+        row.ZIndex = 93
+        row.LayoutOrder = aimNextOrder()
+        row.Parent = aimPage
+        return row
+    end
+
+    local function cardBase(parent, x, width, height)
+        local card = Instance.new("TextButton")
+        card.Size = UDim2.new(width, -6, 0, height)
+        card.Position = UDim2.new(x, x == 0 and 0 or 6, 0, 0)
+        card.BackgroundColor3 = AIM_C.card
+        card.Text = ""
+        card.AutoButtonColor = false
+        card.BorderSizePixel = 0
+        card.ZIndex = 94
+        card.Parent = parent
+        aimCorner(card, 9)
+        aimStroke(card)
+        return card
+    end
+
+    local function cardTexts(card, titleEn, titleFr, descEn, descFr, rightPad)
+        local title = Instance.new("TextLabel")
+        title.Name = "Title"
+        title.AutoLocalize = false
+        title.Size = UDim2.new(1, -(14 + rightPad), 0, 22)
+        title.Position = UDim2.fromOffset(14, 6)
+        title.BackgroundTransparency = 1
+        title.TextColor3 = AIM_C.white
+        title.TextSize = 13
+        title.Font = Enum.Font.GothamBold
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.TextYAlignment = Enum.TextYAlignment.Center
+        title.TextTruncate = Enum.TextTruncate.AtEnd
+        title.ZIndex = 95
+        title.Parent = card
+        PRISONRP_BindText(title, titleEn, titleFr)
+        if descEn then
+            local desc = Instance.new("TextLabel")
+            desc.Name = "Desc"
+            desc.AutoLocalize = false
+            desc.Size = UDim2.new(1, -(14 + rightPad), 0, 18)
+            desc.Position = UDim2.fromOffset(14, 28)
+            desc.BackgroundTransparency = 1
+            desc.TextColor3 = AIM_C.muted
+            desc.TextSize = 11
+            desc.Font = Enum.Font.GothamMedium
+            desc.TextXAlignment = Enum.TextXAlignment.Left
+            desc.TextYAlignment = Enum.TextYAlignment.Center
+            desc.TextTruncate = Enum.TextTruncate.AtEnd
+            desc.ZIndex = 95
+            desc.Parent = card
+            PRISONRP_BindText(desc, descEn, descFr)
+        end
+        return title
+    end
+
+    -- API utilisée par les binds et par « Tout arrêter » : Kind / Name / Get / Set / Refresh (Name reste en anglais)
+    _G.PRISONRP_AIM_CONTROLS = {}
+    local function registerAimControl(kind, name, getter, setter, refresh)
+        table.insert(_G.PRISONRP_AIM_CONTROLS, {Kind = kind, Name = name, Get = getter, Set = setter, Refresh = refresh})
+    end
+
+    local function addToggle(parent, x, name, titleEn, titleFr, descEn, descFr, getter, setter)
+        local card = cardBase(parent, x, 0.5, 54)
+        cardTexts(card, titleEn, titleFr, descEn, descFr, 64)
+
+        local sw = Instance.new("Frame")
+        sw.Size = UDim2.fromOffset(42, 22)
+        sw.Position = UDim2.new(1, -52, 0.5, -11)
+        sw.BackgroundColor3 = AIM_C.off
+        sw.BorderSizePixel = 0
+        sw.ZIndex = 96
+        sw.Parent = card
+        aimCorner(sw, 99)
+
+        local knob = Instance.new("Frame")
+        knob.Size = UDim2.fromOffset(16, 16)
+        knob.Position = UDim2.fromOffset(3, 3)
+        knob.BackgroundColor3 = AIM_C.white
+        knob.BorderSizePixel = 0
+        knob.ZIndex = 97
+        knob.Parent = sw
+        aimCorner(knob, 99)
+
+        local function refresh()
+            local on = getter() == true
+            TweenService:Create(sw, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                BackgroundColor3 = on and AIM_ON_COLOR or AIM_C.off
+            }):Play()
+            TweenService:Create(knob, PRISONRP_UITweenInfo(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                Position = on and UDim2.new(1, -19, 0, 3) or UDim2.fromOffset(3, 3)
+            }):Play()
+        end
+
+        card.MouseButton1Click:Connect(function()
+            setter(not getter())
+            refresh()
+        end)
         refresh()
-    end)
-    refresh()
-    registerAimControl("toggle", text, getter, setter, refresh)
-    return card
-end
-
-local function addCycle(parent, x, text, getter, setter, list)
-    local card = cardBase(parent, x, 0.5, 36)
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.58, 0, 1, 0)
-    label.Position = UDim2.fromOffset(6, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = AIM_C.white
-    label.TextSize = 12
-    label.Font = Enum.Font.GothamBold
-    label.TextXAlignment = Enum.TextXAlignment.Center
-    label.ZIndex = 95
-    label.Parent = card
-
-    local value = Instance.new("TextLabel")
-    value.Size = UDim2.new(0.38, -6, 1, -8)
-    value.Position = UDim2.new(0.60, 0, 0, 4)
-    value.BackgroundColor3 = Color3.fromRGB(22, 27, 35)
-    value.TextColor3 = AIM_C.soft
-    value.TextSize = 10
-    value.Font = Enum.Font.GothamMedium
-    value.TextXAlignment = Enum.TextXAlignment.Center
-    value.TextYAlignment = Enum.TextYAlignment.Center
-    value.BorderSizePixel = 0
-    value.ZIndex = 96
-    value.Parent = card
-    aimCorner(value, 5)
-
-    local index = 1
-    for i, v in ipairs(list) do
-        if v == getter() then index = i break end
+        registerAimControl("toggle", name, getter, setter, refresh)
+        return card
     end
 
-    local function refresh()
-        value.Text = tostring(getter())
-    end
+    local function addCycle(parent, x, name, titleEn, titleFr, descEn, descFr, getter, setter, list)
+        local card = cardBase(parent, x, 0.5, 54)
+        cardTexts(card, titleEn, titleFr, descEn, descFr, 128)
 
-    card.MouseButton1Click:Connect(function()
-        index = index + 1
-        if index > #list then index = 1 end
-        setter(list[index])
+        local value = Instance.new("TextLabel")
+        value.Size = UDim2.fromOffset(112, 26)
+        value.Position = UDim2.new(1, -122, 0.5, -13)
+        value.BackgroundColor3 = AIM_C.panel
+        value.TextColor3 = AIM_C.soft
+        value.TextSize = 11
+        value.Font = Enum.Font.GothamMedium
+        value.TextXAlignment = Enum.TextXAlignment.Center
+        value.TextYAlignment = Enum.TextYAlignment.Center
+        value.TextTruncate = Enum.TextTruncate.AtEnd
+        value.BorderSizePixel = 0
+        value.ZIndex = 96
+        value.Parent = card
+        aimCorner(value, 6)
+
+        local function refresh()
+            value.Text = tostring(getter())
+        end
+
+        card.MouseButton1Click:Connect(function()
+            -- Repartir de la valeur réelle (profil chargé, RESET) avant d'avancer
+            local index = 0
+            local current = getter()
+            for i, v in ipairs(list) do
+                if v == current then
+                    index = i
+                    break
+                end
+            end
+            index = (index % #list) + 1
+            setter(list[index])
+            refresh()
+        end)
         refresh()
-    end)
-    refresh()
-    registerAimControl("cycle", text, getter, setter, refresh)
-    return card
-end
+        registerAimControl("cycle", name, getter, setter, refresh)
+        return card
+    end
 
-local function addTextbox(parent, x, text, getter, setter)
-    local card = cardBase(parent, x, 0.5, 36)
+    local function addTextbox(parent, x, name, titleEn, titleFr, descEn, descFr, getter, setter, validator)
+        local card = cardBase(parent, x, 0.5, 54)
+        cardTexts(card, titleEn, titleFr, descEn, descFr, 128)
 
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.42, 0, 1, 0)
-    label.Position = UDim2.fromOffset(6, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = AIM_C.white
-    label.TextSize = 12
-    label.Font = Enum.Font.GothamBold
-    label.TextXAlignment = Enum.TextXAlignment.Center
-    label.ZIndex = 95
-    label.Parent = card
-
-    local box = Instance.new("TextBox")
-    box.Size = UDim2.new(0.44, -2, 0, 26)
-    box.Position = UDim2.new(0.50, 0, 0.5, -13)
-    box.BackgroundColor3 = Color3.fromRGB(22, 27, 35)
-    box.TextColor3 = AIM_C.soft
-    box.PlaceholderColor3 = AIM_C.muted
-    box.TextSize = 10
-    box.Font = Enum.Font.GothamMedium
-    box.Text = tostring(getter())
-    box.ClearTextOnFocus = false
-    box.BorderSizePixel = 0
-    box.ZIndex = 96
-    box.Parent = card
-    aimCorner(box, 5)
-
-    box.FocusLost:Connect(function()
-        if box.Text ~= "" then setter(box.Text) end
+        local box = Instance.new("TextBox")
+        box.Size = UDim2.fromOffset(112, 26)
+        box.Position = UDim2.new(1, -122, 0.5, -13)
+        box.BackgroundColor3 = AIM_C.panel
+        box.TextColor3 = AIM_C.soft
+        box.PlaceholderColor3 = AIM_C.muted
+        box.TextSize = 11
+        box.Font = Enum.Font.GothamMedium
         box.Text = tostring(getter())
-    end)
-    registerAimControl("textbox", text, getter, setter, function() box.Text = tostring(getter()) end)
-    return card
-end
+        box.ClearTextOnFocus = false
+        box.BorderSizePixel = 0
+        box.ZIndex = 96
+        box.Parent = card
+        aimCorner(box, 6)
 
-local function addSlider(parent, x, text, getter, setter, minValue, maxValue, decimals)
-    local card = cardBase(parent, x, 0.5, 52)
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -14, 0, 20)
-    label.Position = UDim2.fromOffset(7, 2)
-    label.BackgroundTransparency = 1
-    label.TextColor3 = AIM_C.white
-    label.TextSize = 11
-    label.Font = Enum.Font.GothamBold
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.ZIndex = 95
-    label.Parent = card
-
-    local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(1, -14, 0, 6)
-    bar.Position = UDim2.fromOffset(7, 38)
-    bar.BackgroundColor3 = AIM_C.off
-    bar.BorderSizePixel = 0
-    bar.ZIndex = 95
-    bar.Parent = card
-    aimCorner(bar, 99)
-
-    local fill = Instance.new("Frame")
-    fill.BackgroundColor3 = AIM_C.accent
-    fill.BorderSizePixel = 0
-    fill.ZIndex = 96
-    fill.Parent = bar
-    aimCorner(fill, 99)
-
-    local dragging = false
-    local function refresh()
-        local v = getter()
-        local alpha = math.clamp((v - minValue) / (maxValue - minValue), 0, 1)
-        fill.Size = UDim2.new(alpha, 0, 1, 0)
-        local fmt = "%.." -- replaced below
-        if decimals == 0 then
-            label.Text = string.format("%s  %d", text, math.floor(v + 0.5))
-        else
-            label.Text = string.format("%s  %%.%df", text, decimals):format(v)
-        end
+        box.FocusLost:Connect(function()
+            local typed = box.Text
+            if typed ~= "" then
+                local accepted = typed
+                if validator then accepted = validator(typed) end
+                if accepted ~= nil then
+                    setter(accepted)
+                else
+                    -- Valeur refusée : clignotement rouge, l'ancienne valeur est conservée
+                    box.BackgroundColor3 = Color3.fromRGB(120, 42, 52)
+                    TweenService:Create(box, PRISONRP_UITweenInfo(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                        BackgroundColor3 = AIM_C.panel
+                    }):Play()
+                end
+            end
+            box.Text = tostring(getter())
+        end)
+        registerAimControl("textbox", name, getter, setter, function() box.Text = tostring(getter()) end)
+        return card
     end
 
-    local function setFromX(px)
-        local alpha = math.clamp((px - bar.AbsolutePosition.X) / math.max(1, bar.AbsoluteSize.X), 0, 1)
-        local v = minValue + (maxValue - minValue) * alpha
-        if decimals == 0 then
-            v = math.floor(v + 0.5)
-        else
-            local m = 10 ^ decimals
-            v = math.floor(v * m + 0.5) / m
+    local function addSlider(parent, x, name, titleEn, titleFr, getter, setter, minValue, maxValue, decimals)
+        local card = cardBase(parent, x, 0.5, 54)
+
+        local label = Instance.new("TextLabel")
+        label.AutoLocalize = false
+        label.Size = UDim2.new(1, -28, 0, 22)
+        label.Position = UDim2.fromOffset(14, 6)
+        label.BackgroundTransparency = 1
+        label.TextColor3 = AIM_C.white
+        label.TextSize = 13
+        label.Font = Enum.Font.GothamBold
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Center
+        label.TextTruncate = Enum.TextTruncate.AtEnd
+        label.ZIndex = 95
+        label.Parent = card
+
+        local bar = Instance.new("Frame")
+        bar.Size = UDim2.new(1, -28, 0, 6)
+        bar.Position = UDim2.fromOffset(14, 38)
+        bar.BackgroundColor3 = AIM_C.off
+        bar.BorderSizePixel = 0
+        bar.ZIndex = 95
+        bar.Parent = card
+        aimCorner(bar, 99)
+
+        local fill = Instance.new("Frame")
+        fill.BackgroundColor3 = AIM_C.accent
+        fill.BorderSizePixel = 0
+        fill.ZIndex = 96
+        fill.Parent = bar
+        aimCorner(fill, 99)
+
+        local dragging = false
+        local function refresh()
+            local v = tonumber(getter()) or minValue
+            local alpha = math.clamp((v - minValue) / (maxValue - minValue), 0, 1)
+            fill.Size = UDim2.new(alpha, 0, 1, 0)
+            local shown
+            if decimals == 0 then
+                shown = string.format("%d", math.floor(v + 0.5))
+            else
+                shown = string.format("%." .. tostring(decimals) .. "f", v)
+            end
+            label.Text = PRISONRP_TR(titleEn, titleFr) .. "  " .. shown
         end
-        setter(v)
+
+        local function setFromX(px)
+            local alpha = math.clamp((px - bar.AbsolutePosition.X) / math.max(1, bar.AbsoluteSize.X), 0, 1)
+            local v = minValue + (maxValue - minValue) * alpha
+            if decimals == 0 then
+                v = math.floor(v + 0.5)
+            else
+                local m = 10 ^ decimals
+                v = math.floor(v * m + 0.5) / m
+            end
+            setter(v)
+            refresh()
+        end
+
+        local function isPress(input)
+            return input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+        end
+
+        bar.InputBegan:Connect(function(input)
+            if isPress(input) then
+                dragging = true
+                setFromX(input.Position.X)
+            end
+        end)
+        Connections[#Connections + 1] = UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+                setFromX(input.Position.X)
+            end
+        end)
+        Connections[#Connections + 1] = UserInputService.InputEnded:Connect(function(input)
+            if isPress(input) then dragging = false end
+        end)
+
         refresh()
+        table.insert(PRISONRP_LANG_HOOKS, refresh)
+        registerAimControl("slider", name, getter, setter, refresh)
+        return card
     end
 
-    bar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            setFromX(input.Position.X)
-        end
-    end)
-    Connections[#Connections + 1] = UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            setFromX(input.Position.X)
-        end
-    end)
-    Connections[#Connections + 1] = UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
+    local function addColorCycle(parent, x, name, titleEn, titleFr, descEn, descFr, getter, setter)
+        local colors = {
+            Color3.fromRGB(255, 255, 255),
+            Color3.fromRGB(255, 70, 70),
+            Color3.fromRGB(80, 150, 255),
+            Color3.fromRGB(80, 220, 120),
+            Color3.fromRGB(255, 210, 50),
+            Color3.fromRGB(190, 80, 255),
+        }
+        local card = cardBase(parent, x, 0.5, 54)
+        cardTexts(card, titleEn, titleFr, descEn, descFr, 64)
 
-    refresh()
-    registerAimControl("slider", text, getter, setter, refresh)
-    return card
-end
-
-local function addColorCycle(parent, x, text, getter, setter)
-    local colors = {
-        Color3.fromRGB(255,255,255),
-        Color3.fromRGB(255,70,70),
-        Color3.fromRGB(79,142,255),
-        Color3.fromRGB(80,220,120),
-        Color3.fromRGB(255,210,50),
-        Color3.fromRGB(190,80,255),
-    }
-    local card = cardBase(parent, x, 0.5, 36)
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.72, 0, 1, 0)
-    label.Position = UDim2.fromOffset(5, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = AIM_C.white
-    label.TextSize = 12
-    label.Font = Enum.Font.GothamBold
-    label.TextXAlignment = Enum.TextXAlignment.Center
-    label.Parent = card
-
-    local preview = Instance.new("Frame")
-    preview.Size = UDim2.fromOffset(28, 22)
-    preview.Position = UDim2.new(1, -35, 0.5, -11)
-    preview.BackgroundColor3 = getter()
-    preview.BorderSizePixel = 0
-    preview.Parent = card
-    aimCorner(preview, 5)
-
-    local idx = 1
-    for i, c in ipairs(colors) do
-        if c == getter() then idx = i break end
-    end
-    card.MouseButton1Click:Connect(function()
-        idx = idx + 1
-        if idx > #colors then idx = 1 end
-        setter(colors[idx])
+        local preview = Instance.new("Frame")
+        preview.Size = UDim2.fromOffset(34, 22)
+        preview.Position = UDim2.new(1, -44, 0.5, -11)
         preview.BackgroundColor3 = getter()
-        UpdateFOV()
-    end)
-    registerAimControl("color", text, getter, setter, function() preview.BackgroundColor3 = getter() end)
-    return card
-end
+        preview.BorderSizePixel = 0
+        preview.ZIndex = 96
+        preview.Parent = card
+        aimCorner(preview, 6)
 
-local function addAction(parent, x, text, callback)
-    local card = cardBase(parent, x, 0.5, 36)
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = AIM_C.white
-    label.TextSize = 12
-    label.Font = Enum.Font.GothamBold
-    label.TextXAlignment = Enum.TextXAlignment.Center
-    label.TextYAlignment = Enum.TextYAlignment.Center
-    label.Parent = card
-    card.MouseButton1Click:Connect(callback)
-    return card
-end
+        local function refresh()
+            preview.BackgroundColor3 = getter()
+        end
 
--- V220 : la bannière interne AIMBOT est retirée pour placer les réglages
--- directement en haut de la page et libérer de la place utile.
-
--- Compact rows : aucun onglet Neptune séparé pour les fonctions.
-aimSection("AIMBOT")
-local r1 = newRow(36)
-addToggle(r1, 0, "AIMBOT", function() return Aimbot.Settings.Enabled end, function(v)
-    Aimbot.Settings.Enabled = v
-    if not v then Running = false; CancelLock() end
-    UpdateFOV()
-end)
-addToggle(r1, 0.5, "TOGGLE", function() return Aimbot.Settings.Toggle end, function(v)
-    Aimbot.Settings.Toggle = v
-end)
-
-local r2 = newRow(36)
-addCycle(r2, 0, "LOCK PART", function() return Aimbot.Settings.LockPart end, function(v)
-    Aimbot.Settings.LockPart = v
-    CancelLock()
-end, BodyParts)
-addTextbox(r2, 0.5, "HOTKEY", function() return Aimbot.Settings.TriggerKey end, function(v)
-    Aimbot.Settings.TriggerKey = v
-    CancelLock()
-end)
-
-local r3 = newRow(52)
-addSlider(r3, 0, "SENSITIVITY", function() return Aimbot.Settings.Sensitivity end, function(v) Aimbot.Settings.Sensitivity = v end, 0, 1, 2)
-addSlider(r3, 0.5, "3P SENS", function() return Aimbot.Settings.ThirdPersonSensitivity end, function(v) Aimbot.Settings.ThirdPersonSensitivity = v end, 0.1, 5, 1)
-
-aimSection("CHECKS")
-local r4 = newRow(36)
-addToggle(r4, 0, "TEAM CHECK", function() return Aimbot.Settings.TeamCheck end, function(v) Aimbot.Settings.TeamCheck = v; CancelLock() end)
-addToggle(r4, 0.5, "WALL CHECK", function() return Aimbot.Settings.WallCheck end, function(v) Aimbot.Settings.WallCheck = v; CancelLock() end)
-local r5 = newRow(36)
-addToggle(r5, 0, "ALIVE CHECK", function() return Aimbot.Settings.AliveCheck end, function(v) Aimbot.Settings.AliveCheck = v; CancelLock() end)
-addToggle(r5, 0.5, "THIRD PERSON", function() return Aimbot.Settings.ThirdPerson end, function(v) Aimbot.Settings.ThirdPerson = v end)
-
-aimSection("FOV")
-local r6 = newRow(36)
-addToggle(r6, 0, "FOV", function() return Aimbot.FOVSettings.Enabled end, function(v) Aimbot.FOVSettings.Enabled = v; CancelLock(); UpdateFOV() end)
-addToggle(r6, 0.5, "FOV VISIBLE", function() return Aimbot.FOVSettings.Visible end, function(v) Aimbot.FOVSettings.Visible = v; UpdateFOV() end)
-local r7 = newRow(52)
-addSlider(r7, 0, "FOV SIZE", function() return Aimbot.FOVSettings.Amount end, function(v) Aimbot.FOVSettings.Amount = v; UpdateFOV() end, 10, 300, 0)
-addSlider(r7, 0.5, "TRANSPARENCY", function() return Aimbot.FOVSettings.Transparency end, function(v) Aimbot.FOVSettings.Transparency = v; UpdateFOV() end, 0, 1, 1)
-local r8 = newRow(52)
-addSlider(r8, 0, "SIDES", function() return Aimbot.FOVSettings.Sides end, function(v) Aimbot.FOVSettings.Sides = v; UpdateFOV() end, 3, 60, 0)
-addSlider(r8, 0.5, "THICKNESS", function() return Aimbot.FOVSettings.Thickness end, function(v) Aimbot.FOVSettings.Thickness = v; UpdateFOV() end, 1, 20, 0)
-local r9 = newRow(36)
-addToggle(r9, 0, "FILLED FOV", function() return Aimbot.FOVSettings.Filled end, function(v) Aimbot.FOVSettings.Filled = v; UpdateFOV() end)
-addColorCycle(r9, 0.5, "COLOR", function() return Aimbot.FOVSettings.Color end, function(v) Aimbot.FOVSettings.Color = v end)
-local r10 = newRow(36)
-addColorCycle(r10, 0, "LOCK COLOR", function() return Aimbot.FOVSettings.LockedColor end, function(v) Aimbot.FOVSettings.LockedColor = v end)
-addAction(r10, 0.5, "RESET", function()
-    Aimbot.Settings.Enabled = false
-    Aimbot.Settings.Toggle = false
-    Aimbot.Settings.LockPart = "Head"
-    Aimbot.Settings.TriggerKey = "MouseButton2"
-    Aimbot.Settings.Sensitivity = 0
-    Aimbot.Settings.TeamCheck = false
-    Aimbot.Settings.WallCheck = false
-    Aimbot.Settings.AliveCheck = true
-    Aimbot.Settings.ThirdPerson = false
-    Aimbot.Settings.ThirdPersonSensitivity = 3
-    Aimbot.FOVSettings.Enabled = true
-    Aimbot.FOVSettings.Visible = true
-    Aimbot.FOVSettings.Amount = 90
-    Aimbot.FOVSettings.Filled = false
-    Aimbot.FOVSettings.Transparency = 0.5
-    Aimbot.FOVSettings.Sides = 60
-    Aimbot.FOVSettings.Thickness = 1
-    Aimbot.FOVSettings.Color = Color3.fromRGB(255,255,255)
-    Aimbot.FOVSettings.LockedColor = Color3.fromRGB(255,70,70)
-    Running = false
-    CancelLock()
-    for _, control in ipairs(_G.PRISONRP_AIM_CONTROLS or {}) do
-        if control and type(control.Refresh) == "function" then pcall(control.Refresh) end
+        card.MouseButton1Click:Connect(function()
+            local index = 0
+            local current = getter()
+            for i, c in ipairs(colors) do
+                if c == current then
+                    index = i
+                    break
+                end
+            end
+            index = (index % #colors) + 1
+            setter(colors[index])
+            refresh()
+            UpdateFOV()
+        end)
+        registerAimControl("color", name, getter, setter, refresh)
+        return card
     end
-    UpdateFOV()
-end)
 
-aimSection("ACTIONS")
-local r11 = newRow(36)
-addAction(r11, 0, "RESTART AIMBOT", function()
-    Running = false
-    CancelLock()
+    local function addAction(parent, x, titleEn, titleFr, descEn, descFr, actionEn, actionFr, callback)
+        local card = cardBase(parent, x, 0.5, 54)
+        cardTexts(card, titleEn, titleFr, descEn, descFr, 84)
 
-    local triggerHeld = Aimbot.Settings.Toggle == true
-    if not triggerHeld then
-        local triggerKey = tostring(Aimbot.Settings.TriggerKey or "MouseButton2")
-        local mouseType = Enum.UserInputType[triggerKey]
-        if mouseType then
-            local ok, held = pcall(function() return UserInputService:IsMouseButtonPressed(mouseType) end)
-            triggerHeld = ok and held == true
-        else
-            local keyCode = Enum.KeyCode[triggerKey]
-            if keyCode then
-                local ok, held = pcall(function() return UserInputService:IsKeyDown(keyCode) end)
-                triggerHeld = ok and held == true
+        local act = Instance.new("TextLabel")
+        act.AutoLocalize = false
+        act.Size = UDim2.new(0, 70, 1, 0)
+        act.Position = UDim2.new(1, -82, 0, 0)
+        act.BackgroundTransparency = 1
+        act.TextColor3 = AIM_C.accent
+        act.TextSize = 11
+        act.Font = Enum.Font.GothamBold
+        act.TextXAlignment = Enum.TextXAlignment.Right
+        act.TextYAlignment = Enum.TextYAlignment.Center
+        act.ZIndex = 95
+        act.Parent = card
+        PRISONRP_BindText(act, actionEn, actionFr)
+
+        card.MouseButton1Click:Connect(callback)
+        return card
+    end
+
+    -- Touche : accepte MouseButton1/2/3 (et alias mouse1, rmb...) ou le nom d'une touche du clavier ; sinon refus
+    local function resolveHotkey(typed)
+        local key = string.gsub(tostring(typed or ""), "%s+", "")
+        if key == "" then return nil end
+        local lowered = string.lower(key)
+        local aliases = {
+            mouse1 = "MouseButton1", mouse2 = "MouseButton2", mouse3 = "MouseButton3",
+            mousebutton1 = "MouseButton1", mousebutton2 = "MouseButton2", mousebutton3 = "MouseButton3",
+            lmb = "MouseButton1", rmb = "MouseButton2", mmb = "MouseButton3",
+            leftclick = "MouseButton1", rightclick = "MouseButton2", middleclick = "MouseButton3",
+        }
+        if aliases[lowered] then return aliases[lowered] end
+        for _, item in ipairs(Enum.KeyCode:GetEnumItems()) do
+            if item ~= Enum.KeyCode.Unknown and string.lower(item.Name) == lowered then
+                return item.Name
             end
         end
+        return nil
     end
-    -- En mode maintien, redémarre uniquement si le déclencheur est encore tenu.
-    -- En mode Toggle, le redémarrage réactive le verrouillage.
-    Running = Aimbot.Settings.Enabled == true and triggerHeld
-    UpdateFOV()
-end)
-addAction(r11, 0.5, "STOP AIMBOT", function()
-    Running = false
-    CancelLock()
-    UpdateFOV()
-end)
+
+    local BodyPartsList = BodyParts
+    local row
+
+    aimSection("Aimbot", "Aimbot")
+    if not FOVCircle then
+        local noteRow = newRow(22)
+        local note = Instance.new("TextLabel")
+        note.AutoLocalize = false
+        note.Size = UDim2.fromScale(1, 1)
+        note.BackgroundTransparency = 1
+        note.TextColor3 = Color3.fromRGB(235, 175, 120)
+        note.TextSize = 11
+        note.Font = Enum.Font.GothamMedium
+        note.TextXAlignment = Enum.TextXAlignment.Left
+        note.TextTruncate = Enum.TextTruncate.AtEnd
+        note.ZIndex = 94
+        note.Parent = noteRow
+        PRISONRP_BindText(note, "FOV circle unavailable: this executor has no Drawing library.",
+            "Cercle FOV indisponible : cet exécuteur n'a pas la bibliothèque Drawing.")
+    end
+
+    row = newRow(54)
+    addToggle(row, 0, "AIMBOT", "Aimbot", "Aimbot",
+        "Master switch for the aim assist", "Interrupteur principal de l'aide à la visée",
+        function() return Aimbot.Settings.Enabled end,
+        function(v)
+            Aimbot.Settings.Enabled = v
+            if not v then Running = false; CancelLock() end
+            UpdateFOV()
+        end)
+    addToggle(row, 0.5, "TOGGLE", "Toggle mode", "Mode bascule",
+        "One press locks on, the next one releases", "Un appui verrouille, le suivant relâche",
+        function() return Aimbot.Settings.Toggle end,
+        function(v)
+            Aimbot.Settings.Toggle = v
+            if not v then Running = false; CancelLock() end
+        end)
+
+    row = newRow(54)
+    addCycle(row, 0, "LOCK PART", "Target part", "Zone visée",
+        "Body part the aim locks onto", "Partie du corps visée",
+        function() return Aimbot.Settings.LockPart end,
+        function(v)
+            Aimbot.Settings.LockPart = v
+            CancelLock()
+        end, BodyPartsList)
+    addTextbox(row, 0.5, "HOTKEY", "Hotkey", "Touche",
+        "e.g. MouseButton2, Q, E", "ex. MouseButton2, Q, E",
+        function() return Aimbot.Settings.TriggerKey end,
+        function(v)
+            Aimbot.Settings.TriggerKey = v
+            CancelLock()
+        end, resolveHotkey)
+
+    row = newRow(54)
+    addSlider(row, 0, "SENSITIVITY", "Smoothing", "Lissage",
+        function() return Aimbot.Settings.Sensitivity end,
+        function(v) Aimbot.Settings.Sensitivity = v end, 0, 1, 2)
+    addSlider(row, 0.5, "3P SENS", "3rd-person speed", "Vitesse 3e personne",
+        function() return Aimbot.Settings.ThirdPersonSensitivity end,
+        function(v) Aimbot.Settings.ThirdPersonSensitivity = v end, 0.1, 5, 1)
+
+    aimSection("Checks", "Vérifications")
+    row = newRow(54)
+    addToggle(row, 0, "TEAM CHECK", "Team check", "Ignorer les alliés",
+        "Skip players on your team", "Ignore les joueurs de ton équipe",
+        function() return Aimbot.Settings.TeamCheck end,
+        function(v) Aimbot.Settings.TeamCheck = v; CancelLock() end)
+    addToggle(row, 0.5, "WALL CHECK", "Wall check", "Vérifier les murs",
+        "Skip targets behind walls", "Ignore les cibles derrière un mur",
+        function() return Aimbot.Settings.WallCheck end,
+        function(v) Aimbot.Settings.WallCheck = v; CancelLock() end)
+    row = newRow(54)
+    addToggle(row, 0, "ALIVE CHECK", "Alive check", "Vérifier la vie",
+        "Skip dead players", "Ignore les joueurs morts",
+        function() return Aimbot.Settings.AliveCheck end,
+        function(v) Aimbot.Settings.AliveCheck = v; CancelLock() end)
+    addToggle(row, 0.5, "THIRD PERSON", "Third person", "Troisième personne",
+        "Moves the mouse instead of the camera", "Déplace la souris au lieu de la caméra",
+        function() return Aimbot.Settings.ThirdPerson end,
+        function(v) Aimbot.Settings.ThirdPerson = v end)
+
+    aimSection("FOV circle", "Cercle FOV")
+    row = newRow(54)
+    addToggle(row, 0, "FOV", "FOV limit", "Limite FOV",
+        "Only targets inside the circle", "Seules les cibles dans le cercle",
+        function() return Aimbot.FOVSettings.Enabled end,
+        function(v) Aimbot.FOVSettings.Enabled = v; CancelLock(); UpdateFOV() end)
+    addToggle(row, 0.5, "FOV VISIBLE", "Show circle", "Afficher le cercle",
+        "Draws the circle on screen", "Dessine le cercle à l'écran",
+        function() return Aimbot.FOVSettings.Visible end,
+        function(v) Aimbot.FOVSettings.Visible = v; UpdateFOV() end)
+    row = newRow(54)
+    addSlider(row, 0, "FOV SIZE", "Circle size", "Taille du cercle",
+        function() return Aimbot.FOVSettings.Amount end,
+        function(v) Aimbot.FOVSettings.Amount = v; UpdateFOV() end, 10, 300, 0)
+    addSlider(row, 0.5, "TRANSPARENCY", "Transparency", "Transparence",
+        function() return Aimbot.FOVSettings.Transparency end,
+        function(v) Aimbot.FOVSettings.Transparency = v; UpdateFOV() end, 0, 1, 1)
+    row = newRow(54)
+    addSlider(row, 0, "SIDES", "Sides", "Côtés",
+        function() return Aimbot.FOVSettings.Sides end,
+        function(v) Aimbot.FOVSettings.Sides = v; UpdateFOV() end, 3, 60, 0)
+    addSlider(row, 0.5, "THICKNESS", "Thickness", "Épaisseur",
+        function() return Aimbot.FOVSettings.Thickness end,
+        function(v) Aimbot.FOVSettings.Thickness = v; UpdateFOV() end, 1, 20, 0)
+    row = newRow(54)
+    addToggle(row, 0, "FILLED FOV", "Filled circle", "Cercle plein",
+        "Fills the circle", "Remplit le cercle",
+        function() return Aimbot.FOVSettings.Filled end,
+        function(v) Aimbot.FOVSettings.Filled = v; UpdateFOV() end)
+    addColorCycle(row, 0.5, "COLOR", "Circle color", "Couleur du cercle",
+        "Click to change", "Clique pour changer",
+        function() return Aimbot.FOVSettings.Color end,
+        function(v) Aimbot.FOVSettings.Color = v end)
+    row = newRow(54)
+    addColorCycle(row, 0, "LOCK COLOR", "Locked color", "Couleur verrouillée",
+        "Color while locked on a target", "Couleur quand une cible est verrouillée",
+        function() return Aimbot.FOVSettings.LockedColor end,
+        function(v) Aimbot.FOVSettings.LockedColor = v end)
+    addAction(row, 0.5, "Reset", "Réinitialiser",
+        "Restore the default settings", "Restaure les réglages par défaut",
+        "Reset", "Réinit.",
+        function()
+            Aimbot.Settings.Enabled = false
+            Aimbot.Settings.Toggle = false
+            Aimbot.Settings.LockPart = "Head"
+            Aimbot.Settings.TriggerKey = "MouseButton2"
+            Aimbot.Settings.Sensitivity = 0
+            Aimbot.Settings.TeamCheck = false
+            Aimbot.Settings.WallCheck = false
+            Aimbot.Settings.AliveCheck = true
+            Aimbot.Settings.ThirdPerson = false
+            Aimbot.Settings.ThirdPersonSensitivity = 3
+            Aimbot.FOVSettings.Enabled = true
+            Aimbot.FOVSettings.Visible = true
+            Aimbot.FOVSettings.Amount = 90
+            Aimbot.FOVSettings.Filled = false
+            Aimbot.FOVSettings.Transparency = 0.5
+            Aimbot.FOVSettings.Sides = 60
+            Aimbot.FOVSettings.Thickness = 1
+            Aimbot.FOVSettings.Color = Color3.fromRGB(255, 255, 255)
+            Aimbot.FOVSettings.LockedColor = Color3.fromRGB(255, 70, 70)
+            Running = false
+            CancelLock()
+            for _, control in ipairs(_G.PRISONRP_AIM_CONTROLS or {}) do
+                if control and type(control.Refresh) == "function" then pcall(control.Refresh) end
+            end
+            UpdateFOV()
+        end)
+
+    aimSection("Actions", "Actions")
+    row = newRow(54)
+    addAction(row, 0, "Restart aimbot", "Relancer l'aimbot",
+        "Clears the lock and starts again", "Efface le verrou et recommence",
+        "Run", "Lancer",
+        function()
+            Running = false
+            CancelLock()
+
+            local triggerHeld = Aimbot.Settings.Toggle == true
+            if not triggerHeld then
+                local triggerKey = tostring(Aimbot.Settings.TriggerKey or "MouseButton2")
+                local okType, mouseType = pcall(function() return Enum.UserInputType[triggerKey] end)
+                if okType and mouseType then
+                    local ok, held = pcall(function() return UserInputService:IsMouseButtonPressed(mouseType) end)
+                    triggerHeld = ok and held == true
+                else
+                    local okKey, keyCode = pcall(function() return Enum.KeyCode[triggerKey] end)
+                    if okKey and keyCode then
+                        local ok, held = pcall(function() return UserInputService:IsKeyDown(keyCode) end)
+                        triggerHeld = ok and held == true
+                    end
+                end
+            end
+            -- En mode maintien, redémarre uniquement si le déclencheur est encore tenu.
+            -- En mode Toggle, le redémarrage réactive le verrouillage.
+            Running = Aimbot.Settings.Enabled == true and triggerHeld
+            UpdateFOV()
+        end)
+    addAction(row, 0.5, "Stop aimbot", "Arrêter l'aimbot",
+        "Releases the lock immediately", "Relâche le verrou immédiatement",
+        "Stop", "Stop",
+        function()
+            Running = false
+            CancelLock()
+            UpdateFOV()
+        end)
+end
 
 -- Diagnostic discret : ne rajoute pas de texte dans la page Aimbot.
 if not FOVCircle then
@@ -16631,7 +17341,7 @@ if v7Sidebar then
     aimTab.Parent = v7Sidebar
     aimTab.Position = UDim2.fromOffset(6, 5 + (3 * 31))
     aimTab.Size = UDim2.fromOffset(31, 27)
-    aimTab.BackgroundColor3 = Color3.fromRGB(25, 29, 37)
+    aimTab.BackgroundColor3 = Color3.fromRGB(25, 18, 37)
     aimTab.BackgroundTransparency = 1
     aimTab.BorderSizePixel = 0
     aimTab.AutoButtonColor = false
@@ -16646,7 +17356,7 @@ if v7Sidebar then
     aimIcon.Size = UDim2.fromOffset(31, 31)
     aimIcon.BackgroundTransparency = 1
     aimIcon.Text = "🎯"
-    aimIcon.TextColor3 = Color3.fromRGB(92, 97, 108)
+    aimIcon.TextColor3 = Color3.fromRGB(91, 82, 108)
     aimIcon.Font = Enum.Font.GothamBold
     aimIcon.TextSize = 18
     aimIcon.TextXAlignment = Enum.TextXAlignment.Center
@@ -16670,13 +17380,13 @@ if v7Sidebar then
     local function styleAimbotTab(active)
         if not aimTab or not aimTab.Parent then return end
         aimTab.BackgroundTransparency = active and 0.72 or 1
-        aimIcon.TextColor3 = active and Color3.fromRGB(132,165,230) or Color3.fromRGB(92,97,108)
+        aimIcon.TextColor3 = active and Color3.fromRGB(192, 160, 255) or Color3.fromRGB(91, 82, 108)
         if active then
             for i = 1, 4 do
                 local b = v7Sidebar:FindFirstChild("V7Tab_" .. tostring(i))
                 local icon = b and b:FindFirstChild("V7Icon")
                 if b then b.BackgroundTransparency = 1 end
-                if icon then icon.TextColor3 = Color3.fromRGB(92,97,108) end
+                if icon then icon.TextColor3 = Color3.fromRGB(91, 82, 108) end
             end
         end
         if active then
@@ -16711,6 +17421,9 @@ if v7Sidebar then
         end
         aimPage.Visible = true
         _G.PRISONRP_ACTIVE_UI_PAGE = 5
+        if type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+            pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+        end
         if type(_G.PRISONRP_ENFORCE_ACTIVE_PAGE) == "function" then
             pcall(_G.PRISONRP_ENFORCE_ACTIVE_PAGE, 5)
         end
@@ -16773,7 +17486,7 @@ do
         settingsPage.BackgroundTransparency = 1
         settingsPage.BorderSizePixel = 0
         settingsPage.ScrollBarThickness = 3
-        settingsPage.ScrollBarImageColor3 = Color3.fromRGB(79, 142, 255)
+        settingsPage.ScrollBarImageColor3 = Color3.fromRGB(150, 92, 255)
         settingsPage.CanvasSize = UDim2.new(0, 0, 0, 0)
         settingsPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
         settingsPage.ScrollingDirection = Enum.ScrollingDirection.Y
@@ -16815,7 +17528,7 @@ do
         local title = Instance.new("TextLabel")
         title.LayoutOrder = 1
         title.Size = UDim2.new(1, -4, 0, 42)
-        title.BackgroundColor3 = Color3.fromRGB(22, 27, 35)
+        title.BackgroundColor3 = Color3.fromRGB(22, 15, 35)
         title.BorderSizePixel = 0
         title.Text = "SETTINGS"
         title.TextColor3 = Color3.fromRGB(255,255,255)
@@ -16837,7 +17550,7 @@ do
         slotsTitle.Size = UDim2.new(1, -4, 0, 26)
         slotsTitle.BackgroundTransparency = 1
         slotsTitle.Text = "SAVED PROFILES"
-        slotsTitle.TextColor3 = Color3.fromRGB(170,178,190)
+        slotsTitle.TextColor3 = Color3.fromRGB(176, 168, 204)
         slotsTitle.TextSize = 11
         slotsTitle.Font = Enum.Font.GothamBold
         slotsTitle.TextXAlignment = Enum.TextXAlignment.Left
@@ -16853,7 +17566,7 @@ do
         status.Size = UDim2.new(1, -4, 0, 34)
         status.BackgroundTransparency = 1
         status.Text = ""
-        status.TextColor3 = Color3.fromRGB(170,178,190)
+        status.TextColor3 = Color3.fromRGB(176, 168, 204)
         status.TextSize = 10
         status.Font = Enum.Font.GothamMedium
         status.TextWrapped = true
@@ -16867,7 +17580,7 @@ do
         interfaceScaleRow.Name = "InterfaceScaleSetting"
         interfaceScaleRow.LayoutOrder = 10
         interfaceScaleRow.Size = UDim2.new(1, -4, 0, 52)
-        interfaceScaleRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        interfaceScaleRow.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         interfaceScaleRow.BorderSizePixel = 0
         interfaceScaleRow.ZIndex = 92
         interfaceScaleRow.Parent = settingsPage
@@ -16889,7 +17602,7 @@ do
         interfaceScaleValue.Size = UDim2.new(1, -96, 0, 18)
         interfaceScaleValue.Position = UDim2.fromOffset(10, 27)
         interfaceScaleValue.BackgroundTransparency = 1
-        interfaceScaleValue.TextColor3 = Color3.fromRGB(170, 178, 190)
+        interfaceScaleValue.TextColor3 = Color3.fromRGB(176, 168, 204)
         interfaceScaleValue.TextSize = 9
         interfaceScaleValue.Font = Enum.Font.GothamMedium
         interfaceScaleValue.TextXAlignment = Enum.TextXAlignment.Left
@@ -16949,8 +17662,8 @@ do
                 if math.abs(x - framePosition.X) > 1 or math.abs(y - framePosition.Y) > 1 then
                     local anchorPoint = MainFrame.AnchorPoint
                     MainFrame.Position = UDim2.fromOffset(
-                        (x + frameSize.X * anchorPoint.X) / math.max(effectiveScale, 0.01),
-                        (y + frameSize.Y * anchorPoint.Y) / math.max(effectiveScale, 0.01)
+                        PRISONRP_UiPixelsToOffset(x + frameSize.X * anchorPoint.X),
+                        PRISONRP_UiPixelsToOffset(y + frameSize.Y * anchorPoint.Y)
                     )
                     if HubExpanded ~= false then HubExpandedPosition = MainFrame.Position end
                 end
@@ -16971,14 +17684,14 @@ do
 
             
         end
-    _G.PRISONRP_V7_SELECT_PAGE = v7Select
+    
 
         local function makeScaleButton(name, text, xOffset, delta)
             local button = Instance.new("TextButton")
             button.Name = name
             button.Size = UDim2.fromOffset(32, 30)
             button.Position = UDim2.new(1, xOffset, 0.5, -15)
-            button.BackgroundColor3 = Color3.fromRGB(58, 67, 82)
+            button.BackgroundColor3 = Color3.fromRGB(58, 45, 82)
             button.BorderSizePixel = 0
             button.AutoButtonColor = true
             button.Text = text
@@ -17012,7 +17725,7 @@ do
         appearanceTitle.Size = UDim2.new(1, -4, 0, 26)
         appearanceTitle.BackgroundTransparency = 1
         appearanceTitle.Text = "APPEARANCE & ACCESSIBILITY"
-        appearanceTitle.TextColor3 = Color3.fromRGB(170, 178, 190)
+        appearanceTitle.TextColor3 = Color3.fromRGB(176, 168, 204)
         appearanceTitle.TextSize = 11
         appearanceTitle.Font = Enum.Font.GothamBold
         appearanceTitle.TextXAlignment = Enum.TextXAlignment.Left
@@ -17026,7 +17739,7 @@ do
         textScaleRow.Name = "TextScaleSetting"
         textScaleRow.LayoutOrder = 11
         textScaleRow.Size = UDim2.new(1, -4, 0, 52)
-        textScaleRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        textScaleRow.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         textScaleRow.BorderSizePixel = 0
         textScaleRow.ZIndex = 92
         textScaleRow.Parent = settingsPage
@@ -17048,7 +17761,7 @@ do
         textScaleValue.Size = UDim2.new(1, -96, 0, 18)
         textScaleValue.Position = UDim2.fromOffset(10, 27)
         textScaleValue.BackgroundTransparency = 1
-        textScaleValue.TextColor3 = Color3.fromRGB(170, 178, 190)
+        textScaleValue.TextColor3 = Color3.fromRGB(176, 168, 204)
         textScaleValue.TextSize = 9
         textScaleValue.Font = Enum.Font.GothamMedium
         textScaleValue.TextXAlignment = Enum.TextXAlignment.Left
@@ -17070,7 +17783,7 @@ do
             button.Name = name
             button.Size = UDim2.fromOffset(32, 30)
             button.Position = UDim2.new(1, xOffset, 0.5, -15)
-            button.BackgroundColor3 = Color3.fromRGB(58, 67, 82)
+            button.BackgroundColor3 = Color3.fromRGB(58, 45, 82)
             button.BorderSizePixel = 0
             button.AutoButtonColor = true
             button.Text = text
@@ -17094,7 +17807,7 @@ do
         contrastRow.Name = "HighContrastSetting"
         contrastRow.LayoutOrder = 12
         contrastRow.Size = UDim2.new(1, -4, 0, 48)
-        contrastRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        contrastRow.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         contrastRow.BorderSizePixel = 0
         contrastRow.ZIndex = 92
         contrastRow.Parent = settingsPage
@@ -17117,7 +17830,7 @@ do
         contrastHint.Position = UDim2.fromOffset(10, 27)
         contrastHint.BackgroundTransparency = 1
         contrastHint.Text = "Brighter neutral text"
-        contrastHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+        contrastHint.TextColor3 = Color3.fromRGB(176, 168, 204)
         contrastHint.TextSize = 9
         contrastHint.Font = Enum.Font.GothamMedium
         contrastHint.TextXAlignment = Enum.TextXAlignment.Left
@@ -17141,8 +17854,8 @@ do
             _G.PRISONRP_HIGH_CONTRAST = enabled == true
             contrastButton.Text = _G.PRISONRP_HIGH_CONTRAST and "ON" or "OFF"
             contrastButton.BackgroundColor3 = _G.PRISONRP_HIGH_CONTRAST
-                and Color3.fromRGB(40, 130, 75)
-                or Color3.fromRGB(58, 67, 82)
+                and Color3.fromRGB(30, 160, 92)
+                or Color3.fromRGB(58, 45, 82)
             if type(_G.PRISONRP_APPLY_TEXT_READABILITY) == "function" then
                 pcall(_G.PRISONRP_APPLY_TEXT_READABILITY, MainFrame)
             end
@@ -17158,7 +17871,7 @@ do
         touchRow.Name = "TouchModeSetting"
         touchRow.LayoutOrder = 13
         touchRow.Size = UDim2.new(1, -4, 0, 48)
-        touchRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        touchRow.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         touchRow.BorderSizePixel = 0
         touchRow.ZIndex = 92
         touchRow.Parent = settingsPage
@@ -17181,7 +17894,7 @@ do
         touchHint.Position = UDim2.fromOffset(10, 27)
         touchHint.BackgroundTransparency = 1
         touchHint.Text = "Enlarges the menu when screen space allows"
-        touchHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+        touchHint.TextColor3 = Color3.fromRGB(176, 168, 204)
         touchHint.TextSize = 9
         touchHint.Font = Enum.Font.GothamMedium
         touchHint.TextXAlignment = Enum.TextXAlignment.Left
@@ -17204,8 +17917,8 @@ do
             _G.PRISONRP_TOUCH_MODE = enabled == true
             touchButton.Text = _G.PRISONRP_TOUCH_MODE and "ON" or "OFF"
             touchButton.BackgroundColor3 = _G.PRISONRP_TOUCH_MODE
-                and Color3.fromRGB(40, 130, 75)
-                or Color3.fromRGB(58, 67, 82)
+                and Color3.fromRGB(30, 160, 92)
+                or Color3.fromRGB(58, 45, 82)
             applyResponsiveInterfaceScale()
         end
         touchButton.Activated:Connect(function()
@@ -17217,7 +17930,7 @@ do
         motionRow.Name = "ReducedMotionSetting"
         motionRow.LayoutOrder = 14
         motionRow.Size = UDim2.new(1, -4, 0, 48)
-        motionRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        motionRow.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         motionRow.BorderSizePixel = 0
         motionRow.ZIndex = 92
         motionRow.Parent = settingsPage
@@ -17240,7 +17953,7 @@ do
         motionHint.Position = UDim2.fromOffset(10, 27)
         motionHint.BackgroundTransparency = 1
         motionHint.Text = "Shorter transitions"
-        motionHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+        motionHint.TextColor3 = Color3.fromRGB(176, 168, 204)
         motionHint.TextSize = 9
         motionHint.Font = Enum.Font.GothamMedium
         motionHint.TextXAlignment = Enum.TextXAlignment.Left
@@ -17263,8 +17976,8 @@ do
             _G.PRISONRP_REDUCED_MOTION = enabled == true
             motionButton.Text = _G.PRISONRP_REDUCED_MOTION and "ON" or "OFF"
             motionButton.BackgroundColor3 = _G.PRISONRP_REDUCED_MOTION
-                and Color3.fromRGB(40, 130, 75)
-                or Color3.fromRGB(58, 67, 82)
+                and Color3.fromRGB(30, 160, 92)
+                or Color3.fromRGB(58, 45, 82)
         end
         motionButton.Activated:Connect(function()
             setReducedMotion(not (_G.PRISONRP_REDUCED_MOTION == true))
@@ -17275,7 +17988,7 @@ do
         autoReloadRow.Name = "AutoReloadSetting"
         autoReloadRow.LayoutOrder = 15
         autoReloadRow.Size = UDim2.new(1, -4, 0, 48)
-        autoReloadRow.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        autoReloadRow.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         autoReloadRow.BorderSizePixel = 0
         autoReloadRow.ZIndex = 92
         autoReloadRow.Parent = settingsPage
@@ -17296,7 +18009,7 @@ do
         autoReloadHint.Position = UDim2.fromOffset(10, 27)
         autoReloadHint.BackgroundTransparency = 1
         autoReloadHint.Text = "Reload after server teleport"
-        autoReloadHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+        autoReloadHint.TextColor3 = Color3.fromRGB(176, 168, 204)
         autoReloadHint.TextSize = 9
         autoReloadHint.Font = Enum.Font.GothamMedium
         autoReloadHint.TextXAlignment = Enum.TextXAlignment.Left
@@ -17318,8 +18031,8 @@ do
             _G.PRISONRP_AUTO_RELOAD_ENABLED = enabled == true
             autoReloadButton.Text = _G.PRISONRP_AUTO_RELOAD_ENABLED and "ON" or "OFF"
             autoReloadButton.BackgroundColor3 = _G.PRISONRP_AUTO_RELOAD_ENABLED
-                and Color3.fromRGB(40, 130, 75)
-                or Color3.fromRGB(58, 67, 82)
+                and Color3.fromRGB(30, 160, 92)
+                or Color3.fromRGB(58, 45, 82)
             local otherToggle = _G.PRISONRP_AUTO_CHANGE_SERVER_BUTTON
             if otherToggle and type(_G.PRISONRP_REFRESH_GDP_TOGGLE) == "function" then
                 pcall(_G.PRISONRP_REFRESH_GDP_TOGGLE, otherToggle, false)
@@ -17341,7 +18054,7 @@ do
                     _G.PRISONRP_INVALIDATE_AUTO_RELOAD_QUEUE()
                 end
                 autoReloadHint.Text = "Reload after server teleport"
-                autoReloadHint.TextColor3 = Color3.fromRGB(170, 178, 190)
+                autoReloadHint.TextColor3 = Color3.fromRGB(176, 168, 204)
             end
         end
         autoReloadButton.Activated:Connect(function()
@@ -18160,12 +18873,12 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
         profileMetadata.Format = function(index)
             local entry = profileMetadata.Values[index] or {}
-            local dateText = "never"
+            local dateText = PRISONRP_TR("never", "jamais")
             if tonumber(entry.ModifiedAt) then
                 pcall(function() dateText = os.date("%d/%m/%y", tonumber(entry.ModifiedAt)) end)
             end
             local description = profileMetadata.Clean(entry.Description)
-            return "Modified " .. dateText .. (description ~= "" and ("  •  " .. description) or "  •  sans description")
+            return PRISONRP_TR("Modified ", "Modifié ") .. dateText .. (description ~= "" and ("  •  " .. description) or PRISONRP_TR("  •  no description", "  •  sans description"))
         end
 
         profileMetadata.RefreshLabel = function(index)
@@ -18184,6 +18897,10 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
         loadSlotNames()
         profileMetadata.Load()
+
+        table.insert(PRISONRP_LANG_HOOKS, function()
+            for index = 1, 5 do profileMetadata.RefreshLabel(index) end
+        end)
 
         local function numberClamp(value, minValue, maxValue, fallback)
             local n = tonumber(value)
@@ -18262,15 +18979,12 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                             and ("SPEEDHACK : ON (" .. tostring(MovementWalkSpeed) .. ")")
                             or "SPEEDHACK : OFF"
                         MovementSpeedBtn.BackgroundColor3 = MovementWalkSpeedEnabled
-                            and Color3.fromRGB(40, 150, 80)
-                            or Color3.fromRGB(45, 48, 62)
+                            and Color3.fromRGB(57, 255, 136)
+                            or Color3.fromRGB(45, 35, 62)
                     end
 
                     -- Synchronise le switch visible avec l’état réel du SpeedHack.
-                    local refresh = GDPRefreshers and GDPRefreshers[speedBtn]
-                    if type(refresh) == "function" then
-                        pcall(refresh, true)
-                    end
+                    refreshBoundToggle(nil, speedBtn)
                 end,
             },
             Fly = {label="FLY", key=nil, button=flyBtn},
@@ -18409,6 +19123,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
         local function isValidBindName(name)
             if type(name) ~= "string" or name == "" then return false end
+            if string.upper(name) == "RIGHT SHIFT" or name == "RightShift" then return false end
             if BindInputMap[name] ~= nil then return true end
             local ok, item = pcall(function() return Enum.KeyCode[name] end)
             return ok and typeof(item) == "EnumItem" and item.EnumType == Enum.KeyCode
@@ -18457,6 +19172,14 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             local btn = entry.button
             if not btn or not btn.Parent then return end
 
+            -- [patch P02] toggle direct (GuiButton:Activate n'existe pas)
+            local gdpActions = _G.PRISONRP_GDP_ACTIONS
+            local gdpAction = type(gdpActions) == "table" and gdpActions[btn] or nil
+            if type(gdpAction) == "function" then
+                pcall(gdpAction)
+                return
+            end
+
             -- La carte parente est volontairement bloquée dans cette interface.
             -- Il faut déclencher le vrai switch enfant pour exécuter son onToggle.
             local nestedSwitch = btn:FindFirstChild("GDPCheckbox", true)
@@ -18473,6 +19196,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
         local BindInputConnection = UserInputService.InputBegan:Connect(function(input, processed)
             -- En mode capture, accepter les touches clavier ET les deux boutons souris annoncés dans l'interface.
             if bindCaptureEntry then
+                -- [patch P22] pas de capture pendant une saisie dans une zone de texte ; Right Shift reste réservé au hub
+                if UserInputService:GetFocusedTextBox() ~= nil then return end
+                if input.KeyCode == Enum.KeyCode.RightShift then return end
                 local entry = bindCaptureEntry
                 local keyButton = bindCaptureButton
                 local isKeyboard = input.UserInputType == Enum.UserInputType.Keyboard
@@ -18513,7 +19239,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 bindCaptureButton = nil
                 activeBindDropdown = nil
                 if keyButton and keyButton.Parent then
-                    keyButton.BackgroundColor3 = Color3.fromRGB(45,54,67)
+                    keyButton.BackgroundColor3 = Color3.fromRGB(46, 33, 67)
                 end
                 if refreshBindsUI then pcall(refreshBindsUI) end
                 if BindPages and type(BindPages.RefreshDirty) == "function" then
@@ -18625,6 +19351,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 WalkSpeedText=MovementSpeedBox and tostring(MovementSpeedBox.Text) or tostring(MovementWalkSpeed),
                 FlySpeedText=MovementFlySpeedBox and tostring(MovementFlySpeedBox.Text) or tostring(MovementFlySpeed),
                 MinRarityIndex=getAutoFishMinimumRarityIndex(),
+                AutoFishCatchMode=(AutoFishCatchMode == "Basic" and "Basic" or "Perfect"),
                 AutoEatThreshold=tonumber(AUTO_EAT_THRESHOLD) or 5,
                 AutoDrinkThreshold=tonumber(AUTO_DRINK_THRESHOLD) or 30,
                 MoneyViewDistance=tonumber(MoneyViewMaxDistance) or 125,
@@ -18719,7 +19446,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             for _,c in ipairs(_G.PRISONRP_AIM_CONTROLS) do pcall(c.Refresh) end
         end
 
-        local function applyLoadedSettings(data, forceESPProfile, preserveEarlyWalkSpeed, deferESPStartup)
+        local function applyLoadedSettings(data, forceESPProfile, preserveEarlyWalkSpeed, isAutoLoad)
             if type(data)~="table" then return end
             local keepUserWalkSpeed = preserveEarlyWalkSpeed == true
                 and _G.PRISONRP_WALKSPEED_TOUCHED_THIS_RUN == true
@@ -18760,6 +19487,14 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             if not keepUserWalkSpeed and MovementSpeedBox then MovementSpeedBox.Text=tostring(data.WalkSpeedText or MovementWalkSpeed) end
             if MovementFlySpeedBox then MovementFlySpeedBox.Text=tostring(data.FlySpeedText or MovementFlySpeed) end
             setAutoFishMinimumRarityIndex(data.MinRarityIndex ~= nil and data.MinRarityIndex or getAutoFishMinimumRarityIndex())
+            if data.AutoFishCatchMode == "Basic" or data.AutoFishCatchMode == "Perfect" then
+                AutoFishCatchMode = data.AutoFishCatchMode
+            else
+                AutoFishCatchMode = "Perfect"
+            end
+            if type(refreshCatchModeOptions) == "function" then
+                pcall(refreshCatchModeOptions)
+            end
             local savedEatThreshold = tonumber(data.AutoEatThreshold)
             if savedEatThreshold == 45 or savedEatThreshold == 55 then savedEatThreshold = 5 end
             AUTO_EAT_THRESHOLD=5 -- seuil Auto Eat fixé à 5, même si un ancien profil contient une autre valeur
@@ -19010,15 +19745,12 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             -- FREECAM : restaure séparément l’état du switch et celui de la caméra.
             if t.FreecamArmed ~= nil or t.FreecamEnabled ~= nil then
                 pcall(function()
-                    local shouldArm = t.FreecamArmed == true
-                    local shouldEnable = t.FreecamEnabled
-                    -- Compatibilité avec les cinq anciennes sauvegardes.
-                    if shouldEnable == nil then shouldEnable = shouldArm end
-                    specSetArmed(shouldArm)
-                    if shouldEnable == true and not Spec.Enabled then
-                        specEnable()
-                    elseif shouldEnable ~= true and Spec.Enabled then
-                        specDisable()
+                    local wantFreecam = (t.FreecamEnabled ~= nil and t.FreecamEnabled == true)
+                        or (t.FreecamEnabled == nil and t.FreecamArmed == true)
+                    -- [patch P09] jamais d'activation automatique au démarrage : la caméra libre fige le personnage
+                    if isAutoLoad == true and wantFreecam then return end
+                    if type(_G.PRISONRP_SET_SPEC_STATE) == "function" then
+                        _G.PRISONRP_SET_SPEC_STATE({Armed = wantFreecam})
                     end
                 end)
             end
@@ -19090,8 +19822,8 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             -- IMPORTANT : cette partie est exécutée hors du gros pcall principal ;
             -- elle ne peut donc pas dépendre de locaux comme C ou GDPRefreshers.
             local function refreshSavedSwitchVisuals()
-                local neutralCard = Color3.fromRGB(45, 48, 62)
-                local activeCard = Color3.fromRGB(40, 150, 80)
+                local neutralCard = Color3.fromRGB(45, 35, 62)
+                local activeCard = Color3.fromRGB(57, 255, 136)
 
                 local function syncSwitchVisual(btn, on)
                     if not btn or not btn.Parent then return end
@@ -19105,8 +19837,8 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                         and UDim2.new(1, -19, 0, 3)
                         or UDim2.fromOffset(3, 3)
                     sw.BackgroundColor3 = wantedOn
-                        and Color3.fromRGB(40, 150, 80)
-                        or Color3.fromRGB(70, 80, 94)
+                        and Color3.fromRGB(57, 255, 136)
+                        or Color3.fromRGB(70, 56, 94)
                     knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                     if btn == ToggleFishBtn then
                         btn.BackgroundColor3 = wantedOn and activeCard or neutralCard
@@ -19143,8 +19875,8 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                         and UDim2.new(1, -19, 0, 3)
                         or UDim2.fromOffset(3, 3)
                     tpSpecSwitch.BackgroundColor3 = TPSpecEnabled
-                        and Color3.fromRGB(40, 150, 80)
-                        or Color3.fromRGB(70, 80, 94)
+                        and Color3.fromRGB(57, 255, 136)
+                        or Color3.fromRGB(70, 56, 94)
                     tpSpecKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
                 elseif tpSpecButton then
                     syncSwitchVisual(tpSpecButton, TPSpecEnabled == true)
@@ -19188,18 +19920,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             end
             pcall(updateUI); pcall(updateAutoEatDrinkUI)
             pcall(function() RarityBtn.Text="Catch rarity: "..tostring(RarityList[_G.MinRarityIndex] or RarityList[1]) end)
-            if data.CurrentPage then
-                local page = math.clamp(math.floor(tonumber(data.CurrentPage) or 1), 1, 7)
-                if page == 7 then
-                    if showBindsPage then pcall(showBindsPage) end
-                elseif page == 6 then
-                    pcall(showSettingsPage)
-                elseif page == 5 and type(showAimbotPage)=="function" then
-                    pcall(showAimbotPage)
-                elseif page <= 4 and type(selectPage)=="function" then
-                    pcall(selectPage, page)
-                end
-            end
+            -- [patch P09] page courante non restaurée : les profils sont sauvés depuis Réglages, on y atterrirait à chaque démarrage
         end
 
         local function writeSettingsData(path, data)
@@ -19327,13 +20048,13 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             panel.AnchorPoint = Vector2.new(0.5, 0.5)
             panel.Position = UDim2.fromScale(0.5, 0.5)
             panel.Size = UDim2.new(1, -28, 0, 210)
-            panel.BackgroundColor3 = Color3.fromRGB(24, 29, 38)
+            panel.BackgroundColor3 = Color3.fromRGB(24, 17, 38)
             panel.BorderSizePixel = 0
             panel.ZIndex = 201
             panel.Parent = overlay
             makeCorner(panel, 10)
             local outline = Instance.new("UIStroke")
-            outline.Color = Color3.fromRGB(72, 112, 175)
+            outline.Color = Color3.fromRGB(112, 82, 192)
             outline.Transparency = 0.25
             outline.Thickness = 1
             outline.Parent = panel
@@ -19354,7 +20075,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             input.Name = "SaveNameInput"
             input.Size = UDim2.new(1, -20, 0, 32)
             input.Position = UDim2.fromOffset(10, 46)
-            input.BackgroundColor3 = Color3.fromRGB(35, 42, 54)
+            input.BackgroundColor3 = Color3.fromRGB(36, 25, 54)
             input.BorderSizePixel = 0
             input.ClearTextOnFocus = false
             input.Text = slotNames[slotIndex] or ("Profile " .. tostring(slotIndex))
@@ -19376,7 +20097,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             descriptionInput.Name = "ProfileDescriptionInput"
             descriptionInput.Size = UDim2.new(1, -20, 0, 34)
             descriptionInput.Position = UDim2.fromOffset(10, 86)
-            descriptionInput.BackgroundColor3 = Color3.fromRGB(35, 42, 54)
+            descriptionInput.BackgroundColor3 = Color3.fromRGB(36, 25, 54)
             descriptionInput.BorderSizePixel = 0
             descriptionInput.ClearTextOnFocus = false
             descriptionInput.Text = profileMetadata.Clean(profileMetadata.Values[slotIndex] and profileMetadata.Values[slotIndex].Description)
@@ -19412,8 +20133,8 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 return button
             end
 
-            local saveNameButton = makeModalButton("ConfirmRename", "SAVE", Color3.fromRGB(40, 145, 78), 0)
-            local cancelNameButton = makeModalButton("CancelRename", "CANCEL", Color3.fromRGB(58, 66, 80), 0.5)
+            local saveNameButton = makeModalButton("ConfirmRename", "SAVE", Color3.fromRGB(34, 176, 98), 0)
+            local cancelNameButton = makeModalButton("CancelRename", "CANCEL", Color3.fromRGB(58, 46, 80), 0.5)
 
             local committed = false
             local function commitRename()
@@ -19484,13 +20205,13 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             panel.AnchorPoint = Vector2.new(0.5, 0.5)
             panel.Position = UDim2.fromScale(0.5, 0.5)
             panel.Size = UDim2.new(1, -28, 0, 172)
-            panel.BackgroundColor3 = Color3.fromRGB(24, 29, 38)
+            panel.BackgroundColor3 = Color3.fromRGB(24, 17, 38)
             panel.BorderSizePixel = 0
             panel.ZIndex = 211
             panel.Parent = overlay
             makeCorner(panel, 10)
             local outline = Instance.new("UIStroke")
-            outline.Color = isReset and Color3.fromRGB(180, 90, 70) or Color3.fromRGB(72, 112, 175)
+            outline.Color = isReset and Color3.fromRGB(180, 90, 70) or Color3.fromRGB(112, 82, 192)
             outline.Transparency = 0.2
             outline.Thickness = 1
             outline.Parent = panel
@@ -19527,7 +20248,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             cancelButton.Name = "CancelSlotAction"
             cancelButton.Size = UDim2.new(0.5, -15, 0, 32)
             cancelButton.Position = UDim2.new(0, 10, 1, -42)
-            cancelButton.BackgroundColor3 = Color3.fromRGB(58, 66, 80)
+            cancelButton.BackgroundColor3 = Color3.fromRGB(58, 46, 80)
             cancelButton.BorderSizePixel = 0
             cancelButton.AutoButtonColor = true
             cancelButton.Text = "CANCEL"
@@ -19542,7 +20263,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             confirmButton.Name = "ConfirmSlotAction"
             confirmButton.Size = UDim2.new(0.5, -15, 0, 32)
             confirmButton.Position = UDim2.new(0.5, 5, 1, -42)
-            confirmButton.BackgroundColor3 = isReset and Color3.fromRGB(155, 66, 52) or Color3.fromRGB(40, 145, 78)
+            confirmButton.BackgroundColor3 = isReset and Color3.fromRGB(155, 66, 52) or Color3.fromRGB(34, 176, 98)
             confirmButton.BorderSizePixel = 0
             confirmButton.AutoButtonColor = true
             confirmButton.Text = isReset and "RESET" or "SAVE"
@@ -19574,10 +20295,10 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             local function refreshDefaultSlotButtons()
                 for index, button in pairs(defaultSlotButtons) do
                     local isDefault = index == defaultSlotIndex
-                    button.Text = isDefault and "DEFAULT ✓" or "DEFAULT"
+                    button.Text = isDefault and PRISONRP_TR("DEFAULT ✓", "PAR DÉFAUT ✓") or PRISONRP_TR("DEFAULT", "PAR DÉFAUT")
                     button.BackgroundColor3 = isDefault
-                        and Color3.fromRGB(40, 130, 75)
-                        or Color3.fromRGB(58, 67, 82)
+                        and Color3.fromRGB(30, 160, 92)
+                        or Color3.fromRGB(58, 45, 82)
                 end
             end
 
@@ -19587,7 +20308,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 row.Name = "SettingsProfileSlot" .. tostring(slotIndex)
                 row.LayoutOrder = 2 + index
                 row.Size = UDim2.new(1, -4, 0, 54)
-                row.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                row.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
                 row.BorderSizePixel = 0
                 row.ZIndex = 92
                 row.Parent = settingsPage
@@ -19633,12 +20354,13 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 local saveSlotButton = Instance.new("TextButton")
                 saveSlotButton.Size = UDim2.fromOffset(54, 30)
                 saveSlotButton.Position = UDim2.new(1, -258, 0.5, -15)
-                saveSlotButton.BackgroundColor3 = Color3.fromRGB(40,145,78)
+                saveSlotButton.BackgroundColor3 = Color3.fromRGB(34, 176, 98)
                 saveSlotButton.BorderSizePixel = 0
                 saveSlotButton.AutoButtonColor = true
                 saveSlotButton.Text = "SAVE"
                 saveSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
                 saveSlotButton.TextSize = 8
+                PRISONRP_FitButtonText(saveSlotButton, 7, 12)
                 saveSlotButton.Font = Enum.Font.GothamBold
                 saveSlotButton.ZIndex = 94
                 saveSlotButton.Parent = row
@@ -19647,12 +20369,13 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 local loadSlotButton = Instance.new("TextButton")
                 loadSlotButton.Size = UDim2.fromOffset(54, 30)
                 loadSlotButton.Position = UDim2.new(1, -198, 0.5, -15)
-                loadSlotButton.BackgroundColor3 = Color3.fromRGB(52,100,165)
+                loadSlotButton.BackgroundColor3 = Color3.fromRGB(98, 66, 178)
                 loadSlotButton.BorderSizePixel = 0
                 loadSlotButton.AutoButtonColor = true
                 loadSlotButton.Text = "LOAD"
                 loadSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
                 loadSlotButton.TextSize = 8
+                PRISONRP_FitButtonText(loadSlotButton, 7, 12)
                 loadSlotButton.Font = Enum.Font.GothamBold
                 loadSlotButton.ZIndex = 94
                 loadSlotButton.Parent = row
@@ -19668,6 +20391,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 resetSlotButton.Text = "RESET"
                 resetSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
                 resetSlotButton.TextSize = 8
+                PRISONRP_FitButtonText(resetSlotButton, 7, 12)
                 resetSlotButton.Font = Enum.Font.GothamBold
                 resetSlotButton.ZIndex = 94
                 resetSlotButton.Parent = row
@@ -19681,6 +20405,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 defaultSlotButton.AutoButtonColor = true
                 defaultSlotButton.TextColor3 = Color3.fromRGB(255,255,255)
                 defaultSlotButton.TextSize = 7
+                PRISONRP_FitButtonText(defaultSlotButton, 7, 12)
                 defaultSlotButton.Font = Enum.Font.GothamBold
                 defaultSlotButton.ZIndex = 94
                 defaultSlotButton.Parent = row
@@ -19740,6 +20465,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 end)
             end
             refreshDefaultSlotButtons()
+            table.insert(PRISONRP_LANG_HOOKS, refreshDefaultSlotButtons)
         end
         buildProfileSlotRows()
 
@@ -19757,7 +20483,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 local searchBox = Instance.new("TextBox")
                 searchBox.Name = "SettingsSearchBox"
                 searchBox.Size = UDim2.new(1, -8, 1, 0)
-                searchBox.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                searchBox.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
                 searchBox.BorderSizePixel = 0
                 searchBox.ClearTextOnFocus = false
                 searchBox.PlaceholderText = "⌕  Search settings or profiles..."
@@ -19807,7 +20533,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 diagnosticsRow.Name = "SettingsDiagnostics"
                 diagnosticsRow.LayoutOrder = 15
                 diagnosticsRow.Size = UDim2.new(1, -4, 0, 34)
-                diagnosticsRow.BackgroundColor3 = Color3.fromRGB(25, 30, 39)
+                diagnosticsRow.BackgroundColor3 = Color3.fromRGB(25, 18, 39)
                 diagnosticsRow.BackgroundTransparency = 0.15
                 diagnosticsRow.BorderSizePixel = 0
                 diagnosticsRow.ZIndex = 92
@@ -19901,7 +20627,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     panel.AnchorPoint = Vector2.new(0.5, 0.5)
                     panel.Position = UDim2.fromScale(0.5, 0.5)
                     panel.Size = UDim2.new(1, -28, 0, 250)
-                    panel.BackgroundColor3 = Color3.fromRGB(24, 29, 38)
+                    panel.BackgroundColor3 = Color3.fromRGB(24, 17, 38)
                     panel.BorderSizePixel = 0
                     panel.ZIndex = 231
                     panel.Parent = overlay
@@ -19922,7 +20648,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     sourceLabel.Position = UDim2.fromOffset(10, 38)
                     sourceLabel.BackgroundTransparency = 1
                     sourceLabel.Text = tostring(profileName or "Profile") .. "  •  " .. tostring(sourceName or ""):upper()
-                    sourceLabel.TextColor3 = Color3.fromRGB(160, 190, 230)
+                    sourceLabel.TextColor3 = Color3.fromRGB(196, 176, 244)
                     sourceLabel.TextSize = 9
                     sourceLabel.Font = Enum.Font.GothamBold
                     sourceLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -19931,7 +20657,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     local changeLabel = Instance.new("TextLabel")
                     changeLabel.Size = UDim2.new(1, -20, 0, 136)
                     changeLabel.Position = UDim2.fromOffset(10, 64)
-                    changeLabel.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                    changeLabel.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
                     changeLabel.BorderSizePixel = 0
                     changeLabel.Text = buildPreviewText(data) .. "\n\nA backup will be created before applying these changes."
                     changeLabel.TextColor3 = Color3.fromRGB(210, 218, 230)
@@ -19951,7 +20677,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     local cancelButton = Instance.new("TextButton")
                     cancelButton.Size = UDim2.new(0.5, -15, 0, 34)
                     cancelButton.Position = UDim2.new(0, 10, 1, -44)
-                    cancelButton.BackgroundColor3 = Color3.fromRGB(58, 66, 80)
+                    cancelButton.BackgroundColor3 = Color3.fromRGB(58, 46, 80)
                     cancelButton.BorderSizePixel = 0
                     cancelButton.AutoButtonColor = true
                     cancelButton.Text = "CANCEL"
@@ -19964,7 +20690,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     local applyButton = Instance.new("TextButton")
                     applyButton.Size = UDim2.new(0.5, -15, 0, 34)
                     applyButton.Position = UDim2.new(0.5, 5, 1, -44)
-                    applyButton.BackgroundColor3 = Color3.fromRGB(40, 145, 78)
+                    applyButton.BackgroundColor3 = Color3.fromRGB(34, 176, 98)
                     applyButton.BorderSizePixel = 0
                     applyButton.AutoButtonColor = true
                     applyButton.Text = "APPLY"
@@ -20067,7 +20793,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             bindsPage.BackgroundTransparency = 1
             bindsPage.BorderSizePixel = 0
             bindsPage.ScrollBarThickness = 3
-            bindsPage.ScrollBarImageColor3 = Color3.fromRGB(79,142,255)
+            bindsPage.ScrollBarImageColor3 = Color3.fromRGB(150, 92, 255)
             bindsPage.CanvasSize = UDim2.new(0,0,0,0)
             bindsPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
             bindsPage.ScrollingDirection = Enum.ScrollingDirection.Y
@@ -20100,7 +20826,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
             local title = Instance.new("TextLabel")
             title.LayoutOrder = 1; title.Size = UDim2.new(1,-4,0,42)
-            title.BackgroundColor3 = Color3.fromRGB(22,27,35); title.BorderSizePixel = 0
+            title.BackgroundColor3 = Color3.fromRGB(22, 15, 35); title.BorderSizePixel = 0
             title.Text = "BINDS"
             title.TextColor3 = Color3.fromRGB(255,255,255); title.TextSize = 14
             title.Font = Enum.Font.GothamBold; title.TextXAlignment = Enum.TextXAlignment.Left
@@ -20112,7 +20838,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             info.LayoutOrder = 2; info.Size = UDim2.new(1,-4,0,38)
             info.BackgroundTransparency = 1
             info.Text = "Click KEY and press a key/mouse button. Esc cancels; Backspace/Delete clears. SAVE the slot in SETTINGS, then set it as DEFAULT to auto-load it."
-            info.TextColor3 = Color3.fromRGB(170,178,190); info.TextSize = 10
+            info.TextColor3 = Color3.fromRGB(176, 168, 204); info.TextSize = 10
             info.Font = Enum.Font.GothamMedium; info.TextWrapped=true
             info.TextXAlignment = Enum.TextXAlignment.Left; info.TextYAlignment=Enum.TextYAlignment.Center
             info.ZIndex=92; info.Parent=bindsPage
@@ -20140,8 +20866,8 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 bindCaptureEntry = entry
                 bindCaptureButton = ownerButton
                 activeBindDropdown = entry
-                ownerButton.BackgroundColor3 = Color3.fromRGB(60,90,145)
-                ownerButton.Text = "PRESS A KEY"
+                ownerButton.BackgroundColor3 = Color3.fromRGB(92, 64, 152)
+                ownerButton.Text = PRISONRP_TR("PRESS A KEY", "APPUIE…")
             end
 
             local order=3
@@ -20151,7 +20877,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     local row=Instance.new("Frame")
                     row.LayoutOrder=order; order+=1
                     row.Size=UDim2.new(1,-4,0,46)
-                    row.BackgroundColor3=Color3.fromRGB(31,38,48); row.BorderSizePixel=0; row.ZIndex=92
+                    row.BackgroundColor3=Color3.fromRGB(31, 22, 48); row.BorderSizePixel=0; row.ZIndex=92
                     row.Parent=bindsPage; makeCorner(row,8)
                     rowData[id]=row
 
@@ -20164,7 +20890,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
 
                     local keyButton=Instance.new("TextButton")
                     keyButton.Size=UDim2.fromOffset(122,30); keyButton.Position=UDim2.new(1,-132,0.5,-15)
-                    keyButton.BackgroundColor3=Color3.fromRGB(45,54,67); keyButton.BorderSizePixel=0
+                    keyButton.BackgroundColor3=Color3.fromRGB(46, 33, 67); keyButton.BorderSizePixel=0
                     keyButton.AutoButtonColor=true; keyButton.Text="KEY: "..bindKeyToDisplay(entry.key)
                     keyButton:SetAttribute("BindKeyValue", entry.key)
                     keyButton.TextColor3=Color3.fromRGB(245,247,250); keyButton.TextSize=9
@@ -20193,17 +20919,17 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                             end
                         end
                         if bindCaptureEntry == entry then
-                            button.Text = "PRESS A KEY"
-                            button.BackgroundColor3 = Color3.fromRGB(60,90,145)
+                            button.Text = PRISONRP_TR("PRESS A KEY", "APPUIE…")
+                            button.BackgroundColor3 = Color3.fromRGB(92, 64, 152)
                         elseif bindConflictNotice and bindConflictNotice.entry == entry then
-                            button.Text = "IN USE: " .. tostring(bindConflictNotice.owner.label or "OTHER BIND")
+                            button.Text = PRISONRP_TR("IN USE: ", "DÉJÀ PRIS : ") .. tostring(bindConflictNotice.owner.label or PRISONRP_TR("OTHER BIND", "AUTRE RACCOURCI"))
                             button.BackgroundColor3 = Color3.fromRGB(145,75,45)
                         elseif hasConflict then
-                            button.Text = "DUPLICATE:" .. bindKeyToDisplay(entry.key)
+                            button.Text = PRISONRP_TR("DUPLICATE: ", "DOUBLON : ") .. bindKeyToDisplay(entry.key)
                             button.BackgroundColor3 = Color3.fromRGB(145,75,45)
                         else
-                            button.Text = "KEY: " .. bindKeyToDisplay(entry.key)
-                            button.BackgroundColor3 = Color3.fromRGB(45,54,67)
+                            button.Text = PRISONRP_TR("KEY: ", "TOUCHE : ") .. bindKeyToDisplay(entry.key)
+                            button.BackgroundColor3 = Color3.fromRGB(46, 33, 67)
                         end
                     end
                 end
@@ -20217,13 +20943,13 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             clear.MouseButton1Click:Connect(function() resetBindState() end)
 
             local active=false
-            local iconColor=Color3.fromRGB(92,97,108)
-            local activeColor=Color3.fromRGB(132,165,230)
+            local iconColor=Color3.fromRGB(91, 82, 108)
+            local activeColor=Color3.fromRGB(192, 160, 255)
 
             local bindsTab=Instance.new("TextButton")
             bindsTab.Name="V7Tab_Binds"; bindsTab.Parent=settingsSidebar
             bindsTab.Position=UDim2.fromOffset(6,5+(6*31)); bindsTab.Size=UDim2.fromOffset(31,27)
-            bindsTab.BackgroundColor3=Color3.fromRGB(25,29,37); bindsTab.BackgroundTransparency=1
+            bindsTab.BackgroundColor3=Color3.fromRGB(25, 18, 37); bindsTab.BackgroundTransparency=1
             bindsTab.BorderSizePixel=0; bindsTab.AutoButtonColor=false; bindsTab.Text=""; bindsTab.ZIndex=102
             makeCorner(bindsTab,4)
             local bi=Instance.new("TextLabel"); bi.Name="V7Icon"; bi.Parent=bindsTab; bi.Position=UDim2.fromOffset(0,-2); bi.Size=UDim2.fromOffset(31,31)
@@ -20251,6 +20977,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 end
                 bindsPage.Visible=true
                 _G.PRISONRP_ACTIVE_UI_PAGE = 7
+                if type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+                    pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+                end
                 if type(_G.PRISONRP_ENFORCE_ACTIVE_PAGE) == "function" then
                     pcall(_G.PRISONRP_ENFORCE_ACTIVE_PAGE, 7)
                 end
@@ -20295,6 +21024,13 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             refreshBindsUI()
         end
         createBindsPage()
+
+        -- [patch P20] traduction des libellés statiques (Réglages / Raccourcis) + rafraîchissement au changement de langue
+        pcall(PRISONRP_AutoTranslate, settingsPage)
+        if BindPages.Page then pcall(PRISONRP_AutoTranslate, BindPages.Page) end
+        table.insert(PRISONRP_LANG_HOOKS, function()
+            if refreshBindsUI then pcall(refreshBindsUI) end
+        end)
 
         local function loadSettings()
             -- Charger d'abord le slot choisi ; garder l'ancien fichier comme secours.
@@ -20343,7 +21079,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             settingsTab.Parent = settingsSidebar
             settingsTab.Position = UDim2.fromOffset(6, 5 + (5 * 31))
             settingsTab.Size = UDim2.fromOffset(31,27)
-            settingsTab.BackgroundColor3 = Color3.fromRGB(25,29,37)
+            settingsTab.BackgroundColor3 = Color3.fromRGB(25, 18, 37)
             settingsTab.BackgroundTransparency = 1
             settingsTab.BorderSizePixel = 0
             settingsTab.AutoButtonColor = false
@@ -20358,7 +21094,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
             icon.Size = UDim2.fromOffset(31,31)
             icon.BackgroundTransparency = 1
             icon.Text = "⚙"
-            icon.TextColor3 = Color3.fromRGB(92,97,108)
+            icon.TextColor3 = Color3.fromRGB(91, 82, 108)
             icon.Font = Enum.Font.GothamBold
             icon.TextSize = 18
             icon.TextXAlignment = Enum.TextXAlignment.Center
@@ -20396,7 +21132,7 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 local scale = (MainFrameScale and MainFrameScale.Scale) or 1
                 local expanded = (settingsSidebar.AbsoluteSize.X / scale) >= 100
                 settingsTab.BackgroundTransparency = (expanded and active) and 0.72 or 1
-                icon.TextColor3 = active and Color3.fromRGB(132,165,230) or Color3.fromRGB(92,97,108)
+                icon.TextColor3 = active and Color3.fromRGB(192, 160, 255) or Color3.fromRGB(91, 82, 108)
                 if active then
                     if settingsMarker then
                         settingsMarker.Position = UDim2.fromOffset(0, settingsTab.Position.Y.Offset + 5)
@@ -20421,6 +21157,9 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                 end
                 settingsPage.Visible = true
                 _G.PRISONRP_ACTIVE_UI_PAGE = 6
+                if type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+                    pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+                end
                 if type(_G.PRISONRP_ENFORCE_ACTIVE_PAGE) == "function" then
                     pcall(_G.PRISONRP_ENFORCE_ACTIVE_PAGE, 6)
                 end
@@ -20434,12 +21173,12 @@ _G.PRISONRP_HARD_FISH_ENGINE_TOGGLE = function()
                     local b = settingsSidebar:FindFirstChild("V7Tab_" .. tostring(i))
                     local bi = b and b:FindFirstChild("V7Icon")
                     if b then b.BackgroundTransparency = 1 end
-                    if bi then bi.TextColor3 = Color3.fromRGB(92,97,108) end
+                    if bi then bi.TextColor3 = Color3.fromRGB(91, 82, 108) end
                 end
                 local aim = settingsSidebar:FindFirstChild("V7Tab_Aimbot")
                 local ai = aim and aim:FindFirstChild("V7Icon")
                 if aim then aim.BackgroundTransparency = 1 end
-                if ai then ai.TextColor3 = Color3.fromRGB(92,97,108) end
+                if ai then ai.TextColor3 = Color3.fromRGB(91, 82, 108) end
             end
 
             BindPages.Navigate = function(page)
@@ -20548,6 +21287,9 @@ _G.PRISONRP_ENFORCE_ACTIVE_PAGE = function(pageIndex)
     }
     local selected = math.clamp(math.floor(tonumber(pageIndex) or tonumber(_G.PRISONRP_ACTIVE_UI_PAGE) or 1), 1, 7)
     _G.PRISONRP_ACTIVE_UI_PAGE = selected
+    if selected ~= 1 and type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+        pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+    end
 
     for index, name in pairs(pageNames) do
         local page = body:FindFirstChild(name)
@@ -20636,16 +21378,16 @@ pcall(function()
 
     local TweenService = game:GetService("TweenService")
     local UX = {
-        Window = Color3.fromRGB(18, 21, 28),
-        Header = Color3.fromRGB(14, 17, 23),
-        Surface = Color3.fromRGB(31, 38, 48), -- fond uniforme des cartes
-        Panel = Color3.fromRGB(22, 27, 35), -- panneaux plus sombres pour la hiérarchie visuelle
-        Input = Color3.fromRGB(25, 30, 39),
-        Border = Color3.fromRGB(48, 57, 72),
-        Accent = Color3.fromRGB(79, 142, 255),
+        Window = Color3.fromRGB(18, 13, 28),
+        Header = Color3.fromRGB(14, 9, 23),
+        Surface = Color3.fromRGB(31, 22, 48), -- fond uniforme des cartes
+        Panel = Color3.fromRGB(22, 15, 35), -- panneaux plus sombres pour la hiérarchie visuelle
+        Input = Color3.fromRGB(25, 18, 39),
+        Border = Color3.fromRGB(49, 35, 72),
+        Accent = Color3.fromRGB(150, 92, 255),
         Text = Color3.fromRGB(236, 240, 248),
-        Muted = Color3.fromRGB(153, 163, 180),
-        Good = Color3.fromRGB(40, 150, 80),
+        Muted = Color3.fromRGB(160, 152, 190),
+        Good = Color3.fromRGB(30, 168, 96),
     }
 
     local function directChildOfClass(parent, className)
@@ -21032,8 +21774,8 @@ pcall(function()
 
     local activeText = Color3.fromRGB(226, 235, 250)
     local idleText = Color3.fromRGB(116, 124, 139)
-    local activeIcon = Color3.fromRGB(132, 165, 230)
-    local idleIcon = Color3.fromRGB(92, 97, 108)
+    local activeIcon = Color3.fromRGB(192, 160, 255)
+    local idleIcon = Color3.fromRGB(91, 82, 108)
     local tabNames = {
         [1] = "V7Tab_1",
         [2] = "V7Tab_2",
@@ -21093,7 +21835,7 @@ pcall(function()
             if tab and tab:IsA("TextButton") then
                 local selected = index == page
                 tab.AutoButtonColor = false
-                tab.BackgroundColor3 = Color3.fromRGB(25, 29, 37)
+                tab.BackgroundColor3 = Color3.fromRGB(25, 18, 37)
                 tab.BackgroundTransparency = (expanded and selected) and 0.70 or 1
 
                 local icon = tab:FindFirstChild("V7Icon")
@@ -21123,7 +21865,7 @@ pcall(function()
         if RightShiftLabel and RightShiftLabel.Parent then
             local title = pageTitles[page] or "PRISON RP"
             RightShiftLabel.Text = title .. "  •  RIGHT SHIFT: SHOW / HIDE"
-            RightShiftLabel.TextColor3 = Color3.fromRGB(153, 163, 180)
+            RightShiftLabel.TextColor3 = Color3.fromRGB(160, 152, 190)
             RightShiftLabel.TextSize = 9
             RightShiftLabel.Font = Enum.Font.GothamMedium
             RightShiftLabel.TextTruncate = Enum.TextTruncate.AtEnd
@@ -21188,7 +21930,7 @@ pcall(function()
     task.spawn(function()
         local lastPage = nil
         local lastExpanded = nil
-        while running and ScreenGui and ScreenGui.Parent and _G.CombinedHubLoaded do
+        while running and ScreenGui and ScreenGui.Parent and _G.CombinedHubLoaded and type(_G.PRISONRP_UI_V2_SHOW) ~= "function" do
             local currentPage = readActivePage()
             local scale = math.max((MainFrameScale and MainFrameScale.Scale) or 1, 0.01)
             local expanded = (navSidebar.AbsoluteSize.X / scale) >= 100
@@ -21266,7 +22008,7 @@ do
         -- Auto Purple occupe la première ligne disponible sous les cinq cases existantes.
         AutoPurpleButton.Size = UDim2.new(1, -213, 0, 34)
         AutoPurpleButton.Position = UDim2.fromOffset(0, 230)
-        AutoPurpleButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        AutoPurpleButton.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         AutoPurpleButton.BorderSizePixel = 0
         AutoPurpleButton.Text = ""
         AutoPurpleButton.AutoButtonColor = false
@@ -21283,7 +22025,7 @@ do
         -- invisible au repos, accent bleu au survol, plus épais à l'appui.
         local buttonStroke = Instance.new("UIStroke")
         buttonStroke.Name = "PRISONRP_UXHoverStroke"
-        buttonStroke.Color = Color3.fromRGB(79, 142, 255)
+        buttonStroke.Color = Color3.fromRGB(150, 92, 255)
         buttonStroke.Transparency = 1
         buttonStroke.Thickness = 1.4
         buttonStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -21310,7 +22052,7 @@ do
         AutoPurpleSwitch.Name = "GDPCheckbox"
         AutoPurpleSwitch.Size = UDim2.fromOffset(42, 22)
         AutoPurpleSwitch.Position = UDim2.new(1, -52, 0.5, -11)
-        AutoPurpleSwitch.BackgroundColor3 = Color3.fromRGB(70, 76, 88)
+        AutoPurpleSwitch.BackgroundColor3 = Color3.fromRGB(70, 59, 88)
         AutoPurpleSwitch.BorderSizePixel = 0
         AutoPurpleSwitch.Text = ""
         AutoPurpleSwitch.AutoButtonColor = false
@@ -21325,7 +22067,7 @@ do
 
         local switchStroke = Instance.new("UIStroke")
         switchStroke.Name = "SwitchBorder"
-        switchStroke.Color = Color3.fromRGB(48, 57, 72)
+        switchStroke.Color = Color3.fromRGB(49, 35, 72)
         switchStroke.Transparency = 0.18
         switchStroke.Thickness = 1
         switchStroke.Parent = AutoPurpleSwitch
@@ -21350,7 +22092,7 @@ do
         AutoPurpleStatus.BackgroundTransparency = 1
         AutoPurpleStatus.BorderSizePixel = 0
         AutoPurpleStatus.Text = "Basketball: waiting"
-        AutoPurpleStatus.TextColor3 = Color3.fromRGB(145, 155, 172)
+        AutoPurpleStatus.TextColor3 = Color3.fromRGB(154, 146, 182)
         AutoPurpleStatus.TextSize = 9
         AutoPurpleStatus.Font = Enum.Font.GothamMedium
         AutoPurpleStatus.TextXAlignment = Enum.TextXAlignment.Center
@@ -21374,8 +22116,8 @@ do
                     and UDim2.new(1, -19, 0, 3)
                     or UDim2.fromOffset(3, 3)
                 local targetColor = enabled
-                    and Color3.fromRGB(40, 150, 80)
-                    or Color3.fromRGB(70, 76, 88)
+                    and Color3.fromRGB(57, 255, 136)
+                    or Color3.fromRGB(70, 59, 88)
 
                 if knobTween then pcall(function() knobTween:Cancel() end) end
                 if switchColorTween then pcall(function() switchColorTween:Cancel() end) end
@@ -21672,7 +22414,7 @@ do
                 buttonStroke,
                 PRISONRP_UITweenInfo(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
                 {
-                    Color = Color3.fromRGB(79, 142, 255),
+                    Color = Color3.fromRGB(150, 92, 255),
                     Transparency = transparency,
                     Thickness = thickness,
                 }
@@ -21759,7 +22501,7 @@ do
         AutoPurpleSwitch.MouseEnter:Connect(function()
             local hoverColor = enabled
                 and Color3.fromRGB(55, 175, 98)
-                or Color3.fromRGB(89, 97, 114)
+                or Color3.fromRGB(89, 74, 114)
             pcall(function()
                 TweenService:Create(AutoPurpleSwitch, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {
                     BackgroundColor3 = hoverColor
@@ -21813,7 +22555,7 @@ do
         -- Infinite Yield est juste sous Auto Purple, avec le même écart de 6 px.
         InfiniteYieldButton.Size = UDim2.new(1, -213, 0, 34)
         InfiniteYieldButton.Position = UDim2.fromOffset(0, 270)
-        InfiniteYieldButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        InfiniteYieldButton.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         InfiniteYieldButton.BorderSizePixel = 0
         InfiniteYieldButton.Text = ""
         InfiniteYieldButton.AutoButtonColor = false
@@ -21828,7 +22570,7 @@ do
 
         local cardStroke = Instance.new("UIStroke")
         cardStroke.Name = "PRISONRP_UXHoverStroke"
-        cardStroke.Color = Color3.fromRGB(79, 142, 255)
+        cardStroke.Color = Color3.fromRGB(150, 92, 255)
         cardStroke.Transparency = 1
         cardStroke.Thickness = 1.4
         cardStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -21853,7 +22595,7 @@ do
         InfiniteYieldSwitch.Name = "GDPCheckbox"
         InfiniteYieldSwitch.Size = UDim2.fromOffset(42, 22)
         InfiniteYieldSwitch.Position = UDim2.new(1, -52, 0.5, -11)
-        InfiniteYieldSwitch.BackgroundColor3 = Color3.fromRGB(70, 76, 88)
+        InfiniteYieldSwitch.BackgroundColor3 = Color3.fromRGB(70, 59, 88)
         InfiniteYieldSwitch.BorderSizePixel = 0
         InfiniteYieldSwitch.Text = ""
         InfiniteYieldSwitch.AutoButtonColor = false
@@ -21868,7 +22610,7 @@ do
 
         local switchStroke = Instance.new("UIStroke")
         switchStroke.Name = "SwitchBorder"
-        switchStroke.Color = Color3.fromRGB(48, 57, 72)
+        switchStroke.Color = Color3.fromRGB(49, 35, 72)
         switchStroke.Transparency = 0.18
         switchStroke.Thickness = 1
         switchStroke.Parent = InfiniteYieldSwitch
@@ -21896,7 +22638,7 @@ do
         InfiniteYieldStatus.BorderSizePixel = 0
         InfiniteYieldStatus.Text = launched and "Already launched • cannot stop it here"
             or (launching and "Loading already in progress" or "Infinite Yield: inactive")
-        InfiniteYieldStatus.TextColor3 = Color3.fromRGB(145, 155, 172)
+        InfiniteYieldStatus.TextColor3 = Color3.fromRGB(154, 146, 182)
         InfiniteYieldStatus.TextSize = 9
         InfiniteYieldStatus.Font = Enum.Font.GothamMedium
         InfiniteYieldStatus.TextXAlignment = Enum.TextXAlignment.Center
@@ -21915,8 +22657,8 @@ do
                 and UDim2.new(1, -19, 0, 3)
                 or UDim2.fromOffset(3, 3)
             local targetColor = state
-                and Color3.fromRGB(40, 150, 80)
-                or Color3.fromRGB(70, 76, 88)
+                and Color3.fromRGB(57, 255, 136)
+                or Color3.fromRGB(70, 59, 88)
 
             if knobTween then pcall(function() knobTween:Cancel() end) end
             if switchColorTween then pcall(function() switchColorTween:Cancel() end) end
@@ -21947,7 +22689,7 @@ do
             local transparency = cardPressed and 0.02 or (cardHovered and 0.08 or 1)
             local thickness = cardPressed and 2 or (cardHovered and 1.5 or 1.4)
             activeCardTween = TweenService:Create(cardStroke, PRISONRP_AdjustUITweenInfo(cardTweenInfo), {
-                Color = Color3.fromRGB(79, 142, 255),
+                Color = Color3.fromRGB(150, 92, 255),
                 Transparency = transparency,
                 Thickness = thickness,
             })
@@ -21986,7 +22728,7 @@ do
         local function setStatus(message, color)
             if InfiniteYieldStatus and InfiniteYieldStatus.Parent then
                 InfiniteYieldStatus.Text = message
-                InfiniteYieldStatus.TextColor3 = color or Color3.fromRGB(145, 155, 172)
+                InfiniteYieldStatus.TextColor3 = color or Color3.fromRGB(154, 146, 182)
             end
         end
 
@@ -22099,7 +22841,7 @@ do
             button.Name = definition.objectName
             button.Size = UDim2.new(1, -213, 0, 34)
             button.Position = UDim2.fromOffset(0, definition.y)
-            button.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+            button.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
             button.BorderSizePixel = 0
             button.Text = ""
             button.AutoButtonColor = false
@@ -22114,7 +22856,7 @@ do
 
             local stroke = Instance.new("UIStroke")
             stroke.Name = "PRISONRP_UXHoverStroke"
-            stroke.Color = Color3.fromRGB(79, 142, 255)
+            stroke.Color = Color3.fromRGB(150, 92, 255)
             stroke.Transparency = 1
             stroke.Thickness = 1.4
             stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -22170,7 +22912,7 @@ do
         end
 
         -- Chaque case possède son propre callback, séparément.
-        -- Anti V charge le script distant demandé ; les deux autres gardent Infinite Yield.
+        -- Chaque bouton charge son propre script distant.
         autresPageRef:WaitForChild("PRISONRP_Custom_AntiV").Activated:Connect(function()
             local url = "https://raw.githubusercontent.com/imshrak/anti-vcb/refs/heads/main/main"
             local ok, err = pcall(function()
@@ -22244,7 +22986,7 @@ do
         ChatDockCard.Name = "PRISONRP_ChatDockToggle"
         ChatDockCard.Size = UDim2.new(1, -213, 0, 34)
         ChatDockCard.Position = UDim2.fromOffset(0, 430)
-        ChatDockCard.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+        ChatDockCard.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
         ChatDockCard.BorderSizePixel = 0
         ChatDockCard.Text = ""
         ChatDockCard.AutoButtonColor = false
@@ -22256,7 +22998,7 @@ do
 
         local cardStroke = Instance.new("UIStroke")
         cardStroke.Name = "PRISONRP_ChatDockHoverStroke"
-        cardStroke.Color = Color3.fromRGB(38, 135, 235)
+        cardStroke.Color = Color3.fromRGB(138, 84, 240)
         cardStroke.Transparency = 1
         cardStroke.Thickness = 1.4
         cardStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
@@ -22282,7 +23024,7 @@ do
         chatSwitch.Name = "GDPCheckbox"
         chatSwitch.Size = UDim2.fromOffset(42, 22)
         chatSwitch.Position = UDim2.new(1, -52, 0.5, -11)
-        chatSwitch.BackgroundColor3 = Color3.fromRGB(70, 80, 94)
+        chatSwitch.BackgroundColor3 = Color3.fromRGB(70, 56, 94)
         chatSwitch.BorderSizePixel = 0
         chatSwitch.Text = ""
         chatSwitch.AutoButtonColor = false
@@ -22294,7 +23036,7 @@ do
 
         local switchStroke = Instance.new("UIStroke")
         switchStroke.Name = "SwitchBorder"
-        switchStroke.Color = Color3.fromRGB(62, 73, 88)
+        switchStroke.Color = Color3.fromRGB(62, 48, 88)
         switchStroke.Transparency = 0.18
         switchStroke.Thickness = 1
         switchStroke.Parent = chatSwitch
@@ -22338,7 +23080,7 @@ do
             -- Le switch local est remplacé par GDPCheckbox dans le layout final.
             if chatSwitch and chatSwitch.Parent and knob and knob.Parent then
                 local targetPosition = state and UDim2.new(1, -19, 0, 3) or UDim2.fromOffset(3, 3)
-                local targetColor = state and Color3.fromRGB(38, 135, 235) or Color3.fromRGB(70, 80, 94)
+                local targetColor = state and Color3.fromRGB(138, 84, 240) or Color3.fromRGB(70, 56, 94)
                 if knobTween then pcall(function() knobTween:Cancel() end) end
                 if switchTween then pcall(function() switchTween:Cancel() end) end
                 if animated then
@@ -22500,7 +23242,7 @@ do
                 panelFrame.Name = "Dock"
                 panelFrame.Size = UDim2.fromOffset(476, 194)
                 panelFrame.Position = UDim2.fromOffset(8, 120)
-                panelFrame.BackgroundColor3 = Color3.fromRGB(16, 19, 25)
+                panelFrame.BackgroundColor3 = Color3.fromRGB(16, 11, 25)
                 panelFrame.BackgroundTransparency = 1 - CHAT_PANEL_OPACITY
                 panelFrame.BorderSizePixel = 0
                 panelFrame.Active = true
@@ -22508,7 +23250,7 @@ do
                 Instance.new("UICorner", panelFrame).CornerRadius = UDim.new(0, 8)
 
                 local panelStroke = Instance.new("UIStroke")
-                panelStroke.Color = Color3.fromRGB(62, 73, 88)
+                panelStroke.Color = Color3.fromRGB(62, 48, 88)
                 panelStroke.Transparency = 0.18
                 panelStroke.Thickness = 1
                 panelStroke.Parent = panelFrame
@@ -22516,7 +23258,7 @@ do
                 local header = Instance.new("Frame")
                 header.Name = "Header"
                 header.Size = UDim2.new(1, 0, 0, 30)
-                header.BackgroundColor3 = Color3.fromRGB(22, 27, 35)
+                header.BackgroundColor3 = Color3.fromRGB(22, 15, 35)
                 header.BackgroundTransparency = 1 - CHAT_PANEL_OPACITY
                 header.BorderSizePixel = 0
                 header.Active = true
@@ -22546,7 +23288,7 @@ do
                 closeButton.Name = "HideButton"
                 closeButton.Size = UDim2.fromOffset(21, 21)
                 closeButton.Position = UDim2.new(1, -27, 0, 4)
-                closeButton.BackgroundColor3 = Color3.fromRGB(31, 38, 48)
+                closeButton.BackgroundColor3 = Color3.fromRGB(31, 22, 48)
                 closeButton.BackgroundTransparency = 1 - CHAT_PANEL_OPACITY
                 closeButton.BorderSizePixel = 0
                 closeButton.AutoButtonColor = false
@@ -22567,7 +23309,7 @@ do
                 messageList.BackgroundTransparency = 1
                 messageList.BorderSizePixel = 0
                 messageList.ScrollBarThickness = 4
-                messageList.ScrollBarImageColor3 = Color3.fromRGB(38, 135, 235)
+                messageList.ScrollBarImageColor3 = Color3.fromRGB(138, 84, 240)
                 messageList.ScrollingDirection = Enum.ScrollingDirection.Y
                 messageList.AutomaticCanvasSize = Enum.AutomaticSize.Y
                 messageList.CanvasSize = UDim2.new()
@@ -22754,7 +23496,7 @@ do
         leftScroll.BackgroundTransparency = 1
         leftScroll.BorderSizePixel = 0
         leftScroll.ScrollBarThickness = 4
-        leftScroll.ScrollBarImageColor3 = Color3.fromRGB(79, 142, 255)
+        leftScroll.ScrollBarImageColor3 = Color3.fromRGB(150, 92, 255)
         leftScroll.ScrollingDirection = Enum.ScrollingDirection.Y
         leftScroll.AutomaticCanvasSize = Enum.AutomaticSize.None
         leftScroll.CanvasSize = UDim2.fromOffset(0, 0)
@@ -22770,7 +23512,7 @@ do
             autoChangeServerBtn.Name = "PRISONRP_AutoChangeServerToggle"
             autoChangeServerBtn.Text = "Auto Change Server"
             autoChangeServerBtn.Size = UDim2.new(1, -5, 0, 34)
-            autoChangeServerBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            autoChangeServerBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
             autoChangeServerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
             autoChangeServerBtn.BorderSizePixel = 0
             autoChangeServerBtn.AutoButtonColor = true
@@ -22783,7 +23525,7 @@ do
             autoBlockBtn.Name = "PRISONRP_AutoBlockToggle"
             autoBlockBtn.Text = "Auto Parry"
             autoBlockBtn.Size = UDim2.new(1, -5, 0, 34)
-            autoBlockBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            autoBlockBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
             autoBlockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
             autoBlockBtn.BorderSizePixel = 0
             autoBlockBtn.AutoButtonColor = true
@@ -22794,7 +23536,7 @@ do
         if not hardFishBtn then
             hardFishBtn = Instance.new("TextButton")
             hardFishBtn.Size = UDim2.new(1, -5, 0, 34)
-            hardFishBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            hardFishBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
             hardFishBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
             hardFishBtn.BorderSizePixel = 0
             hardFishBtn.AutoButtonColor = true
@@ -22815,7 +23557,7 @@ do
             hardMineBtn = Instance.new("TextButton")
             hardMineBtn.Name = "PRISONRP_HardMineToggle"
             hardMineBtn.Size = UDim2.new(1, -5, 0, 34)
-            hardMineBtn.BackgroundColor3 = Color3.fromRGB(45, 48, 62)
+            hardMineBtn.BackgroundColor3 = Color3.fromRGB(45, 35, 62)
             hardMineBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
             hardMineBtn.BorderSizePixel = 0
             hardMineBtn.AutoButtonColor = true
@@ -23006,19 +23748,19 @@ do
 
         -- Palette. "card" doit rester identique aux anciennes cartes à switch (elles se recolorent toutes seules).
         local T = {
-            bg       = Color3.fromRGB(13, 16, 22),
-            side     = Color3.fromRGB(17, 21, 29),
-            panel    = Color3.fromRGB(22, 27, 35),
-            card     = Color3.fromRGB(31, 38, 48),
-            cardHi   = Color3.fromRGB(40, 49, 63),
-            border   = Color3.fromRGB(48, 57, 72),
-            accent   = Color3.fromRGB(79, 142, 255),
-            accent2  = Color3.fromRGB(0, 190, 255),
-            on       = Color3.fromRGB(40, 150, 80),
+            bg       = Color3.fromRGB(13, 8, 22),
+            side     = Color3.fromRGB(17, 11, 29),
+            panel    = Color3.fromRGB(22, 15, 35),
+            card     = Color3.fromRGB(31, 22, 48),
+            cardHi   = Color3.fromRGB(41, 28, 63),
+            border   = Color3.fromRGB(49, 35, 72),
+            accent   = Color3.fromRGB(150, 92, 255),
+            accent2  = Color3.fromRGB(190, 132, 255),
+            on       = Color3.fromRGB(57, 255, 136),
             danger   = Color3.fromRGB(74, 34, 40),
             dangerHi = Color3.fromRGB(104, 44, 52),
             text     = Color3.fromRGB(236, 240, 248),
-            muted    = Color3.fromRGB(153, 163, 180),
+            muted    = Color3.fromRGB(160, 152, 190),
         }
 
         ---------------- Langue ----------------
@@ -23029,6 +23771,7 @@ do
                 if v == 1 or v == 2 then LANG = v end
             end
         end)
+        LANG = tonumber(_G.PRISONRP_LANG_VALUE) or LANG
         local function L(en, fr) return {en, fr} end
         local function S(p)
             if type(p) == "table" then return p[LANG] or p[1] or "" end
@@ -23986,7 +24729,7 @@ do
         ---------------- Barre latérale : onglets ----------------
         local tabList = new("ScrollingFrame", {
             Name = "Tabs", BackgroundTransparency = 1, BorderSizePixel = 0,
-            Position = UDim2.fromOffset(8, 10), Size = UDim2.new(1, -16, 1, -104),
+            Position = UDim2.fromOffset(8, 10), Size = UDim2.new(1, -16, 1, -122),
             ScrollBarThickness = 0, AutomaticCanvasSize = Enum.AutomaticSize.Y,
             CanvasSize = UDim2.new(), ZIndex = 96,
         }, sidebar)
@@ -24026,7 +24769,7 @@ do
             bind(name, function() return S(def.name) end)
             local badge = text(b, {
                 Name = "Badge", Text = "0", Position = UDim2.new(1, -30, 0.5, -8), Size = UDim2.fromOffset(22, 16),
-                BackgroundTransparency = 0, BackgroundColor3 = T.on, TextXAlignment = Enum.TextXAlignment.Center,
+                BackgroundTransparency = 0, BackgroundColor3 = T.on, TextColor3 = Color3.fromRGB(8, 24, 14), TextXAlignment = Enum.TextXAlignment.Center,
                 Font = Enum.Font.GothamBold, TextSize = 10, Visible = false, ZIndex = 99,
             })
             corner(badge, 8)
@@ -24046,8 +24789,7 @@ do
 
         ---------------- Barre latérale : pied ----------------
         local footer = new("Frame", {
-            Name = "Footer", BackgroundTransparency = 1, Position = UDim2.new(0, 8, 1, -88),
-            Size = UDim2.new(1, -16, 0, 80), ZIndex = 96,
+            Name = "Footer", BackgroundTransparency = 1, Position = UDim2.new(0, 8, 1, -106), Size = UDim2.new(1, -16, 0, 98), ZIndex = 96,
         }, sidebar)
         local stopBtn = new("TextButton", {
             Name = "StopAll", Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = T.danger, BorderSizePixel = 0,
@@ -24073,6 +24815,13 @@ do
             TextColor3 = T.muted, ZIndex = 98,
         })
         bind(langLbl, function() return "🌐  " .. (LANG == 2 and "Français" or "English") end)
+        do
+            local hintLbl = text(footer, {
+                Position = UDim2.fromOffset(0, 82), Size = UDim2.new(1, 0, 0, 14), TextSize = 10, TextColor3 = T.muted,
+                TextXAlignment = Enum.TextXAlignment.Center, ZIndex = 97,
+            })
+            bind(hintLbl, function() return LANG == 2 and "Right Shift : masquer / afficher" or "Right Shift: hide / show" end)
+        end
         stopBtn.MouseEnter:Connect(function() tween(stopBtn, 0.1, {BackgroundColor3 = T.dangerHi}) end)
         stopBtn.MouseLeave:Connect(function() tween(stopBtn, 0.1, {BackgroundColor3 = T.danger}) end)
         langBtn.MouseEnter:Connect(function() tween(langBtn, 0.1, {BackgroundColor3 = T.cardHi}) end)
@@ -24103,8 +24852,13 @@ do
             current = idx
             searching = false
             searchHost.Visible = false
+            -- [patch P33] le texte de recherche ne reste plus affiché sur une page normale
+            if searchBox and searchBox.Text ~= "" then searchBox.Text = "" end
             for i, h in pairs(HOSTS) do h.Visible = (i == idx) end
             _G.PRISONRP_ACTIVE_UI_PAGE = idx
+            if idx ~= 1 and type(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU) == "function" then
+                pcall(_G.PRISONRP_CLOSE_AUTOFISH_MODE_MENU)
+            end
             v7Selected = idx
             for i, tb in pairs(TABS) do
                 local active = (i == idx)
@@ -24324,6 +25078,8 @@ do
             pcall(function()
                 if type(writefile) == "function" then writefile(LANG_FILE, tostring(LANG)) end
             end)
+            _G.PRISONRP_LANG_VALUE = LANG
+            pcall(PRISONRP_RefreshLanguage)
             refreshTexts()
             if type(_G.PRISONRP_GiveMoneyUI.RefreshLanguage) == "function" then
                 pcall(_G.PRISONRP_GiveMoneyUI.RefreshLanguage, LANG)
@@ -24427,7 +25183,7 @@ do
         handle.Size = UDim2.fromOffset(24, 24)
         handle.AnchorPoint = Vector2.new(1, 1)
         handle.Position = UDim2.new(1, -2, 1, -2)
-        handle.BackgroundColor3 = Color3.fromRGB(43, 51, 63)
+        handle.BackgroundColor3 = Color3.fromRGB(43, 32, 63)
         handle.BackgroundTransparency = 0.18
         handle.BorderSizePixel = 0
         handle.AutoButtonColor = true
@@ -24499,7 +25255,7 @@ do
             -- Fixe le coin supérieur gauche pendant le redimensionnement.
             local absolutePosition = MainFrame.AbsolutePosition
             MainFrame.AnchorPoint = Vector2.zero
-            MainFrame.Position = UDim2.fromOffset(absolutePosition.X, absolutePosition.Y)
+            MainFrame.Position = UDim2.fromOffset(PRISONRP_UiPixelsToOffset(absolutePosition.X), PRISONRP_UiPixelsToOffset(absolutePosition.Y))
             startTopLeft = Vector2.new(absolutePosition.X, absolutePosition.Y)
             HubExpandedPosition = MainFrame.Position
         end)
@@ -24526,7 +25282,7 @@ do
             height = math.floor(height + 0.5)
 
             MainFrame.Size = UDim2.fromOffset(width, height)
-            MainFrame.Position = UDim2.fromOffset(startTopLeft.X, startTopLeft.Y)
+            MainFrame.Position = UDim2.fromOffset(PRISONRP_UiPixelsToOffset(startTopLeft.X), PRISONRP_UiPixelsToOffset(startTopLeft.Y))
             HubFullSize = MainFrame.Size
             HubExpandedPosition = MainFrame.Position
         end)
@@ -24594,7 +25350,7 @@ do
                 40
             )
             -- Le titre de la carte reste volontairement à la taille définie.
-            obj.TextSize = obj == StaffListTitle and 10 or readableTextSize
+            if not obj.TextScaled then obj.TextSize = obj == StaffListTitle and 10 or readableTextSize end
 
             if baseFont == "bold" then
                 obj.Font = Enum.Font.GothamBold
@@ -24684,6 +25440,29 @@ pcall(function()
         _G.CombinedHubReady = true
         ScreenGui.Enabled = true
     end
+end)
+
+-- [patch P25] mesure (une fois) comment UIScale traite l'offset de Position
+task.spawn(function()
+    pcall(function()
+        local probe = Instance.new("Frame")
+        probe.BackgroundTransparency = 1
+        probe.BorderSizePixel = 0
+        probe.AnchorPoint = Vector2.new(0, 0)
+        probe.Position = UDim2.fromOffset(120, 120)
+        probe.Size = UDim2.fromOffset(10, 10)
+        local probeScale = Instance.new("UIScale")
+        probeScale.Scale = 0.5
+        probeScale.Parent = probe
+        probe.Parent = ScreenGui
+        RunService.Heartbeat:Wait()
+        RunService.Heartbeat:Wait()
+        local measured = probe.AbsolutePosition.X - ScreenGui.AbsolutePosition.X
+        pcall(function() probe:Destroy() end)
+        if measured > 1 then
+            _G.PRISONRP_UI_OFFSET_SCALED = math.abs(measured - 60) < math.abs(measured - 120)
+        end
+    end)
 end)
 
 ]=]
